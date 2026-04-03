@@ -691,6 +691,99 @@ button {
   color: var(--accent);
 }
 
+.upload-destination-shell {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 22px;
+  background: rgba(6, 14, 26, 0.82);
+}
+
+.upload-current-destination {
+  display: grid;
+  gap: 4px;
+}
+
+.upload-current-label,
+.upload-folder-button-meta,
+.upload-browser-helper {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.upload-current-value {
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.upload-root-row,
+.upload-breadcrumb-row,
+.upload-browser-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.upload-root-button,
+.upload-breadcrumb-button,
+.upload-nav-button {
+  min-height: 38px;
+}
+
+.upload-root-button.is-active,
+.upload-breadcrumb-button.is-active {
+  border-color: rgba(114, 199, 255, 0.38);
+  background: rgba(114, 199, 255, 0.16);
+  color: var(--accent);
+}
+
+.upload-browser {
+  display: grid;
+  gap: 12px;
+  padding-top: 2px;
+}
+
+.upload-browser-list {
+  display: grid;
+  gap: 10px;
+}
+
+.upload-folder-button {
+  width: 100%;
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  text-align: left;
+}
+
+.upload-folder-button:hover {
+  border-color: rgba(114, 199, 255, 0.34);
+  background: rgba(114, 199, 255, 0.08);
+}
+
+.upload-folder-button-title {
+  font-size: 0.97rem;
+  line-height: 1.4;
+}
+
+.upload-folder-button-meta {
+  overflow-wrap: anywhere;
+}
+
+.upload-browser-empty {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+  border-radius: 18px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
 .upload-activity {
   display: grid;
   gap: 12px;

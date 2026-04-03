@@ -128,6 +128,26 @@ install_packages() {
   run_root apt-get install -y git python3 python3-venv ca-certificates network-manager
 }
 
+clean_generated_checkout_files() {
+  local generated_path
+
+  log "Cleaning generated files from the existing checkout"
+  for generated_path in ".venv" ".tmp" ".pytest_cache"; do
+    if [[ -e "${INSTALL_DIR}/${generated_path}" ]]; then
+      run_root rm -rf "${INSTALL_DIR}/${generated_path}"
+    fi
+  done
+
+  run_root find "${INSTALL_DIR}" \
+    -type d \
+    \( -name "__pycache__" -o -name ".pytest_cache" \) \
+    -prune \
+    -exec rm -rf {} +
+
+  run_as_install_user git -C "${INSTALL_DIR}" clean -fdX >/dev/null 2>&1 || true
+  run_root chown -R "${INSTALL_USER}:${INSTALL_GROUP}" "${INSTALL_DIR}"
+}
+
 prepare_repo() {
   local install_parent
 
@@ -146,6 +166,7 @@ prepare_repo() {
 
   if [[ -d "${INSTALL_DIR}/.git" ]]; then
     log "Updating existing checkout in ${INSTALL_DIR}"
+    clean_generated_checkout_files
     if run_as_install_user git -C "${INSTALL_DIR}" status --porcelain | grep -q .; then
       die "Existing checkout has local changes. Commit or discard them before rerunning the installer."
     fi

@@ -337,6 +337,70 @@ function uploadDestinationHelp(destination) {
   return config ? config.help : "Choose a destination under /media and upload files there.";
 }
 
+function uploadDestinationTitle(path) {
+  const normalized = normalizeUploadDestinationPath(path);
+  if (!normalized) {
+    return "";
+  }
+  const config = uploadRootConfigForPath(normalized);
+  if (normalized === config.root) {
+    return config.label;
+  }
+  return titleFromPath(normalized);
+}
+
+function uploadDestinationBreadcrumbs(path) {
+  const normalized = normalizeUploadDestinationPath(path);
+  if (!normalized) {
+    return [];
+  }
+
+  const segments = sanitizeUploadSegments(normalized);
+  const breadcrumbs = [];
+  let current = "";
+  for (let index = 0; index < segments.length; index += 1) {
+    current += `/${segments[index]}`;
+    if (index === 0) {
+      continue;
+    }
+    const candidate = normalizeUploadDestinationPath(current);
+    if (!candidate) {
+      continue;
+    }
+    breadcrumbs.push({
+      path: candidate,
+      label: index === 1 ? uploadRootConfigForPath(candidate).label : titleFromPath(candidate),
+    });
+  }
+  return breadcrumbs;
+}
+
+function uploadParentDestination(path) {
+  const breadcrumbs = uploadDestinationBreadcrumbs(path);
+  if (breadcrumbs.length <= 1) {
+    return "";
+  }
+  return breadcrumbs[breadcrumbs.length - 2].path;
+}
+
+function uploadChildDestinations(path) {
+  const normalized = normalizeUploadDestinationPath(path);
+  if (!normalized) {
+    return [];
+  }
+
+  const prefix = `${normalized}/`;
+  const targetDepth = sanitizeUploadSegments(normalized).length + 1;
+  return uploadDestinationSuggestions()
+    .filter(
+      (candidate) =>
+        candidate !== normalized &&
+        candidate.startsWith(prefix) &&
+        sanitizeUploadSegments(candidate).length === targetDepth,
+    )
+    .sort((left, right) => uploadDestinationTitle(left).localeCompare(uploadDestinationTitle(right)));
+}
+
 function collectUploadEntries(looseFiles, folderFiles) {
   const entries = [];
   const seen = new Set();
@@ -3001,10 +3065,9 @@ function createInfoCard(config) {
 
 function createUploadCard() {
   const draft = state.uploadDraft || {};
-  const suggestions = uploadDestinationSuggestions();
   const initialDestination = normalizeUploadDestinationPath(draft.destination) || defaultUploadDestination();
+  let selectedDestination = initialDestination;
   const config = uploadRootConfigForPath(initialDestination);
-  const datalistId = "upload-destination-options";
   const sharedUpload = uploadStatusSnapshot();
   const card = document.createElement("article");
   card.className = "info-card info-card--upload";
@@ -3019,7 +3082,7 @@ function createUploadCard() {
   const copy = document.createElement("p");
   copy.className = "info-copy";
   copy.textContent =
-    "Pick an existing folder from the media tree or type a new destination under /media. You can add a new subfolder, upload loose files, or send a whole folder tree and keep its structure intact.";
+    "Browse the media tree, click the folder you want, and upload straight into it. You can still add a new subfolder on top of the selected destination, or send a whole folder tree and preserve its structure.";
 
   const activity = document.createElement("div");
   renderUploadActivity(activity, sharedUpload);
@@ -3030,29 +3093,40 @@ function createUploadCard() {
   const fields = document.createElement("div");
   fields.className = "upload-grid";
 
-  const destinationField = document.createElement("label");
+  const destinationField = document.createElement("div");
   destinationField.className = "upload-field upload-field--full";
   const destinationLabel = document.createElement("span");
   destinationLabel.className = "upload-label";
   destinationLabel.textContent = "Destination folder";
-  const destinationInput = document.createElement("input");
-  destinationInput.className = "upload-text";
-  destinationInput.type = "text";
-  destinationInput.name = "upload-destination";
-  destinationInput.setAttribute("list", datalistId);
-  destinationInput.placeholder = "/media/tv/Show Name";
-  destinationInput.value = normalizeUploadDestinationPath(draft.destination) || initialDestination;
-  const destinationList = document.createElement("datalist");
-  destinationList.id = datalistId;
-  for (const path of suggestions) {
-    const option = document.createElement("option");
-    option.value = path;
-    option.textContent = path;
-    destinationList.appendChild(option);
-  }
+  const destinationShell = document.createElement("div");
+  destinationShell.className = "upload-destination-shell";
+  const destinationCurrent = document.createElement("div");
+  destinationCurrent.className = "upload-current-destination";
+  const destinationCurrentLabel = document.createElement("span");
+  destinationCurrentLabel.className = "upload-current-label";
+  destinationCurrentLabel.textContent = "Selected";
+  const destinationCurrentValue = document.createElement("strong");
+  destinationCurrentValue.className = "upload-current-value";
+  const rootRow = document.createElement("div");
+  rootRow.className = "upload-root-row";
+  const breadcrumbRow = document.createElement("div");
+  breadcrumbRow.className = "upload-breadcrumb-row";
+  const browser = document.createElement("div");
+  browser.className = "upload-browser";
+  const browserActions = document.createElement("div");
+  browserActions.className = "upload-browser-actions";
+  const browserList = document.createElement("div");
+  browserList.className = "upload-browser-list";
+  destinationCurrent.appendChild(destinationCurrentLabel);
+  destinationCurrent.appendChild(destinationCurrentValue);
+  destinationShell.appendChild(destinationCurrent);
+  destinationShell.appendChild(rootRow);
+  destinationShell.appendChild(breadcrumbRow);
+  destinationShell.appendChild(browser);
+  browser.appendChild(browserActions);
+  browser.appendChild(browserList);
   destinationField.appendChild(destinationLabel);
-  destinationField.appendChild(destinationInput);
-  destinationField.appendChild(destinationList);
+  destinationField.appendChild(destinationShell);
 
   const newFolderField = document.createElement("label");
   newFolderField.className = "upload-field";
@@ -3127,24 +3201,102 @@ function createUploadCard() {
     }
   };
 
+  const renderDestinationPicker = () => {
+    const activeConfig = uploadRootConfigForPath(selectedDestination);
+    destinationCurrentValue.textContent = selectedDestination;
+
+    rootRow.innerHTML = "";
+    for (const root of UPLOAD_ROOTS) {
+      const button = createButton(root.label, "ghost-button upload-root-button", () => {
+        selectedDestination = root.root;
+        state.uploadDraft.destination = selectedDestination;
+        renderDestinationPicker();
+        syncHints();
+      });
+      if (selectedDestination === root.root || selectedDestination.startsWith(`${root.root}/`)) {
+        button.classList.add("is-active");
+      }
+      rootRow.appendChild(button);
+    }
+
+    breadcrumbRow.innerHTML = "";
+    for (const crumb of uploadDestinationBreadcrumbs(selectedDestination)) {
+      const button = createButton(crumb.label, "ghost-button upload-breadcrumb-button", () => {
+        selectedDestination = crumb.path;
+        state.uploadDraft.destination = selectedDestination;
+        renderDestinationPicker();
+        syncHints();
+      });
+      if (crumb.path === selectedDestination) {
+        button.classList.add("is-active");
+      }
+      breadcrumbRow.appendChild(button);
+    }
+
+    browserActions.innerHTML = "";
+    const parentPath = uploadParentDestination(selectedDestination);
+    if (parentPath) {
+      browserActions.appendChild(
+        createButton(`Up To ${uploadDestinationTitle(parentPath)}`, "ghost-button upload-nav-button", () => {
+          selectedDestination = parentPath;
+          state.uploadDraft.destination = selectedDestination;
+          renderDestinationPicker();
+          syncHints();
+        }),
+      );
+    } else {
+      const helper = document.createElement("p");
+      helper.className = "upload-browser-helper";
+      helper.textContent = `Browsing ${activeConfig.label}`;
+      browserActions.appendChild(helper);
+    }
+
+    browserList.innerHTML = "";
+    const childDestinations = uploadChildDestinations(selectedDestination);
+    if (!childDestinations.length) {
+      const empty = document.createElement("p");
+      empty.className = "upload-browser-empty";
+      empty.textContent = "No deeper folders here yet. Use New subfolder to create one during upload.";
+      browserList.appendChild(empty);
+      return;
+    }
+
+    for (const childPath of childDestinations) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "upload-folder-button";
+      const titleText = document.createElement("strong");
+      titleText.className = "upload-folder-button-title";
+      titleText.textContent = uploadDestinationTitle(childPath);
+      const metaText = document.createElement("span");
+      metaText.className = "upload-folder-button-meta";
+      metaText.textContent = childPath;
+      button.appendChild(titleText);
+      button.appendChild(metaText);
+      button.addEventListener("click", () => {
+        selectedDestination = childPath;
+        state.uploadDraft.destination = selectedDestination;
+        renderDestinationPicker();
+        syncHints();
+      });
+      browserList.appendChild(button);
+    }
+  };
+
   const syncHints = () => {
-    const normalizedDestination = normalizeUploadDestinationPath(destinationInput.value);
-    const activeConfig = uploadRootConfigForPath(normalizedDestination || initialDestination);
-    const finalDestination = uploadDestinationPreview(destinationInput.value, newFolderInput.value);
+    const activeConfig = uploadRootConfigForPath(selectedDestination || initialDestination);
+    const finalDestination = uploadDestinationPreview(selectedDestination, newFolderInput.value);
     const selectedSummary = describeUploadSelection(fileInput.files, folderInput.files);
     newFolderInput.placeholder = activeConfig.newFolderPlaceholder;
-    note.textContent = normalizedDestination
-      ? `${uploadDestinationHelp(normalizedDestination)} Final destination: ${finalDestination || normalizedDestination}.${selectedSummary ? ` Selected: ${selectedSummary}.` : " Select loose files, a whole folder, or both."}`
-      : `Pick an existing folder from the list or type a destination under /media. ${selectedSummary ? `Selected: ${selectedSummary}.` : "Select loose files, a whole folder, or both."}`;
-    state.uploadDraft.destination = destinationInput.value.trim();
+    note.textContent = `${uploadDestinationHelp(selectedDestination)} Selected folder: ${selectedDestination}. Final destination: ${finalDestination || selectedDestination}.${selectedSummary ? ` Selected: ${selectedSummary}.` : " Select loose files, a whole folder, or both."}`;
+    state.uploadDraft.destination = selectedDestination;
     state.uploadDraft.newFolder = newFolderInput.value.trim();
   };
 
-  destinationInput.addEventListener("input", syncHints);
-  destinationInput.addEventListener("change", syncHints);
   newFolderInput.addEventListener("input", syncHints);
   fileInput.addEventListener("change", syncHints);
   folderInput.addEventListener("change", syncHints);
+  renderDestinationPicker();
   syncHints();
   applyUploadState(state.uploadFeedback, state.uploadFeedbackTone);
 
@@ -3169,7 +3321,7 @@ function createUploadCard() {
       return;
     }
 
-    const destination = buildUploadDestination(destinationInput.value, newFolderInput.value);
+    const destination = buildUploadDestination(selectedDestination, newFolderInput.value);
     if (!destination) {
       state.uploadFeedback = "Pick a destination under /media before uploading.";
       state.uploadFeedbackTone = "error";
@@ -3177,7 +3329,7 @@ function createUploadCard() {
       return;
     }
 
-    state.uploadDraft.destination = destinationInput.value.trim();
+    state.uploadDraft.destination = selectedDestination;
     state.uploadDraft.newFolder = newFolderInput.value.trim();
     state.uploadingLocally = true;
 
