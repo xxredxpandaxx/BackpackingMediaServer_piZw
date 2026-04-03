@@ -10,6 +10,7 @@ REPO_URL="${NOMADSCREEN_REPO_URL:-https://github.com/xxredxpandaxx/BackpackingMe
 REPO_REF="${NOMADSCREEN_REPO_REF:-main}"
 GITHUB_SLUG="${NOMADSCREEN_GITHUB_SLUG:-xxredxpandaxx/BackpackingMediaServer_piZw}"
 HTTP_PORT="${NOMADSCREEN_PORT:-80}"
+TMP_DIR="${NOMADSCREEN_TMP_DIR:-${INSTALL_DIR}/.tmp}"
 
 usage() {
   cat <<'EOF'
@@ -27,6 +28,7 @@ Options:
   --install-dir PATH      App install path (default: /opt/nomadscreen)
   --storage-root PATH     Runtime storage root (default: /srv/nomadscreen)
   --port PORT             HTTP port for the service (default: 80)
+  --tmp-dir PATH          Temp build dir for venv/pip work (default: /opt/nomadscreen/.tmp)
   -h, --help              Show this help
 
 If no repo is provided, the installer uses:
@@ -90,6 +92,11 @@ parse_args() {
       --port)
         [[ $# -ge 2 ]] || die "--port requires a value"
         HTTP_PORT="$2"
+        shift 2
+        ;;
+      --tmp-dir)
+        [[ $# -ge 2 ]] || die "--tmp-dir requires a value"
+        TMP_DIR="$2"
         shift 2
         ;;
       -h|--help)
@@ -166,13 +173,21 @@ seed_storage() {
   run_root chown -R "${INSTALL_USER}:${INSTALL_GROUP}" "${STORAGE_ROOT}"
 }
 
+prepare_tmp_dir() {
+  log "Preparing temp build directory at ${TMP_DIR}"
+  run_root mkdir -p "${TMP_DIR}"
+  run_root chown -R "${INSTALL_USER}:${INSTALL_GROUP}" "${TMP_DIR}"
+}
+
 install_python_deps() {
   log "Creating virtual environment"
-  run_as_install_user python3 -m venv "${INSTALL_DIR}/.venv"
+  run_as_install_user env TMPDIR="${TMP_DIR}" python3 -m venv "${INSTALL_DIR}/.venv"
 
   log "Installing Python dependencies"
-  run_as_install_user "${INSTALL_DIR}/.venv/bin/pip" install --upgrade pip
-  run_as_install_user "${INSTALL_DIR}/.venv/bin/pip" install -r "${INSTALL_DIR}/requirements.txt"
+  run_as_install_user env TMPDIR="${TMP_DIR}" PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    "${INSTALL_DIR}/.venv/bin/pip" install --no-cache-dir --upgrade pip
+  run_as_install_user env TMPDIR="${TMP_DIR}" PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    "${INSTALL_DIR}/.venv/bin/pip" install --no-cache-dir -r "${INSTALL_DIR}/requirements.txt"
 }
 
 write_network_service() {
@@ -299,6 +314,7 @@ ensure_install_user
 install_packages
 prepare_repo
 seed_storage
+prepare_tmp_dir
 install_python_deps
 write_network_service
 write_service
