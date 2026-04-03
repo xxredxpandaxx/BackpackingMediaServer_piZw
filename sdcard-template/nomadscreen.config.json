@@ -1,0 +1,14 @@
+{
+  "deviceName": "Nomad Screen",
+  "wifiPassword": "backpackingmedia",
+  "httpPort": 80,
+  "bindAddress": "0.0.0.0",
+  "mdnsEnabled": false,
+  "tmdbApiKey": "",
+  "tmdbBearerToken": "",
+  "language": "en-US",
+  "country": "US",
+  "downloadImages": true,
+  "overwriteImages": false,
+  "minimumMatchScore": 0.55
+}
