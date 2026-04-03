@@ -10,7 +10,7 @@ REPO_URL="${NOMADSCREEN_REPO_URL:-https://github.com/xxredxpandaxx/BackpackingMe
 REPO_REF="${NOMADSCREEN_REPO_REF:-main}"
 GITHUB_SLUG="${NOMADSCREEN_GITHUB_SLUG:-xxredxpandaxx/BackpackingMediaServer_piZw}"
 HTTP_PORT="${NOMADSCREEN_PORT:-80}"
-TMP_DIR="${NOMADSCREEN_TMP_DIR:-${INSTALL_DIR}/.tmp}"
+TMP_DIR="${NOMADSCREEN_TMP_DIR:-/var/tmp/nomadscreen-install}"
 
 usage() {
   cat <<'EOF'
@@ -28,7 +28,7 @@ Options:
   --install-dir PATH      App install path (default: /opt/nomadscreen)
   --storage-root PATH     Runtime storage root (default: /srv/nomadscreen)
   --port PORT             HTTP port for the service (default: 80)
-  --tmp-dir PATH          Temp build dir for venv/pip work (default: /opt/nomadscreen/.tmp)
+  --tmp-dir PATH          Temp build dir for venv/pip work (default: /var/tmp/nomadscreen-install)
   -h, --help              Show this help
 
 If no repo is provided, the installer uses:
