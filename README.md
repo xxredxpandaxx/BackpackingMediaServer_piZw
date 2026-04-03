@@ -1,12 +1,12 @@
 # Backpacking Media Server
 
-A Raspberry Pi Zero W portable media server that keeps the existing Nomad Screen web UI, media-library layout, and metadata format, while replacing the old ESP32 firmware with a Pi-native Python service.
+A Raspberry Pi Zero W portable media server that keeps the existing Nomad Screen web UI, media-library layout, and metadata format, while replacing the old microcontroller firmware with a Pi-native Python service.
 
 ## What changed
 
-- The project now runs on Raspberry Pi Zero W with Python instead of PlatformIO/ESP32 firmware.
+- The project now runs on Raspberry Pi Zero W with Python.
 - The web app in `data/` is still the main user interface.
-- The backend now serves the same core routes from Linux:
+- The backend serves the same core routes from Linux:
   - `/app`
   - `/api/status`
   - `/api/library`
@@ -22,7 +22,7 @@ A Raspberry Pi Zero W portable media server that keeps the existing Nomad Screen
 - `sdcard-template/`: copy-ready storage layout with `/media`, metadata tooling, and sample config
 - `deploy/nomadscreen.service`: example `systemd` unit
 - `deploy/hostapd/hostapd.conf.example`: optional Pi hotspot template
-- `deploy/dnsmasq/nomadscreen.conf.example`: optional DHCP/captive-network helper template
+- `deploy/dnsmasq/nomadscreen.conf.example`: optional DHCP helper template
 
 ## Storage layout
 
@@ -32,7 +32,7 @@ The server expects a storage root that contains:
 - `media/`
 - `media/.nomadscreen/library.json` when metadata has been generated
 
-By default, the repo uses `sdcard-template/` as the storage root so the project can run immediately in-place. On the Pi, point `NOMADSCREEN_STORAGE_ROOT` at your real storage path, for example `/srv/nomadscreen` or a mounted USB/SD volume.
+By default, the repo uses `sdcard-template/` as the storage root so the project can run immediately in-place. On the Pi, point `NOMADSCREEN_STORAGE_ROOT` at your real storage path, for example `/srv/nomadscreen` or a mounted USB or SD volume.
 
 ## Local run
 
@@ -83,7 +83,7 @@ By default, the repo uses `sdcard-template/` as the storage root so the project 
 
 ## Optional hotspot mode
 
-The ESP32 used to create its own access point directly. On Raspberry Pi Zero W, that responsibility moves to Raspberry Pi OS networking.
+On Raspberry Pi Zero W, hotspot behavior is handled by Raspberry Pi OS networking rather than by the app itself.
 
 - Use `deploy/hostapd/hostapd.conf.example` as the starting point for `hostapd`
 - Use `deploy/dnsmasq/nomadscreen.conf.example` as the starting point for `dnsmasq`
@@ -114,5 +114,4 @@ Nothing about the metadata format changed.
 
 ## Notes
 
-- `platformio.ini` is now only a migration note so the repo clearly stops looking like an ESP32 build target.
-- The frontend still exposes a “Device” page, but it now reports Raspberry Pi service status instead of onboard LCD or firmware state.
+- The frontend still exposes a "Device" page, but it now reports Raspberry Pi service status instead of onboard firmware state.
