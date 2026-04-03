@@ -293,17 +293,78 @@ def sanitize_relative_segments(raw_path: str) -> list[str]:
     return segments
 
 
-def build_upload_virtual_path(section: str, folder: str, file_name: str) -> str:
+def build_upload_destination_path(section: str, folder: str) -> str:
     section_config = UPLOAD_SECTION_CONFIG.get(section)
     if section_config is None:
         return ""
 
-    pieces = split_path(str(section_config["base_path"])) + sanitize_relative_segments(folder) + [file_name]
-    virtual_path = normalize_virtual_path("/" + "/".join(pieces))
-    expected_prefix = normalize_virtual_path(str(section_config["base_path"]))
-    if not virtual_path.startswith(expected_prefix):
+    base_path = normalize_virtual_path(str(section_config["base_path"]))
+    pieces = split_path(base_path) + sanitize_relative_segments(folder)
+    destination = normalize_virtual_path("/" + "/".join(pieces))
+    if not destination:
         return ""
-    return virtual_path
+    if destination != base_path and not destination.startswith(base_path + "/"):
+        return ""
+    return destination
+
+
+def upload_section_from_destination(destination_path: str) -> str:
+    normalized = normalize_virtual_path(destination_path)
+    for section, config in UPLOAD_SECTION_CONFIG.items():
+        base_path = normalize_virtual_path(str(config["base_path"]))
+        if normalized == base_path or normalized.startswith(base_path + "/"):
+            return section
+    return ""
+
+
+def normalize_upload_destination(raw_path: str) -> str:
+    normalized = normalize_virtual_path(raw_path)
+    return normalized if upload_section_from_destination(normalized) else ""
+
+
+def upload_folder_from_destination(destination_path: str, section: str) -> str:
+    section_config = UPLOAD_SECTION_CONFIG.get(section)
+    if section_config is None:
+        return ""
+    base_path = normalize_virtual_path(str(section_config["base_path"]))
+    normalized = normalize_upload_destination(destination_path)
+    if not normalized or normalized == base_path:
+        return ""
+    if normalized.startswith(base_path + "/"):
+        return normalized[len(base_path) + 1 :]
+    return ""
+
+
+def build_upload_virtual_path_from_destination(destination: str, relative_path: str, fallback_name: str = "") -> str:
+    safe_destination = normalize_upload_destination(destination)
+    if not safe_destination:
+        return ""
+
+    segments = sanitize_relative_segments(relative_path)
+    if not segments and fallback_name:
+        fallback = sanitize_upload_filename(fallback_name)
+        segments = [fallback] if fallback else []
+    if not segments:
+        return ""
+
+    file_name = sanitize_upload_filename(segments[-1] or fallback_name)
+    if not file_name:
+        return ""
+
+    pieces = split_path(safe_destination) + segments[:-1] + [file_name]
+    target_path = normalize_virtual_path("/" + "/".join(pieces))
+    if not target_path or target_path == safe_destination:
+        return ""
+    if not target_path.startswith(safe_destination.rstrip("/") + "/"):
+        return ""
+    return target_path
+
+
+def build_upload_virtual_path(section: str, folder: str, file_name: str) -> str:
+    destination = build_upload_destination_path(section, folder)
+    if not destination:
+        return ""
+    return build_upload_virtual_path_from_destination(destination, file_name, file_name)
 
 
 def ensure_unique_path(target_path: Path) -> Path:
@@ -448,6 +509,7 @@ class AppState:
             "id": "",
             "active": False,
             "phase": "idle",
+            "destination": "",
             "section": "",
             "folder": "",
             "fileCount": 0,
@@ -475,6 +537,7 @@ class AppState:
         *,
         active: bool | None = None,
         phase: str | None = None,
+        destination: str | None = None,
         section: str | None = None,
         folder: str | None = None,
         file_count: int | None = None,
@@ -489,10 +552,18 @@ class AppState:
         safe_phase = lowercase_copy(phase) if phase is not None else None
         if safe_phase not in {None, "idle", "uploading", "processing", "completed", "error"}:
             safe_phase = "uploading"
+        safe_destination = normalize_upload_destination(destination) if destination is not None else None
         safe_section = lowercase_copy(section) if section is not None else None
-        if safe_section and safe_section not in UPLOAD_SECTION_CONFIG:
-            safe_section = ""
         safe_folder = "/".join(sanitize_relative_segments(folder)) if folder is not None else None
+        if safe_destination:
+            safe_section = upload_section_from_destination(safe_destination)
+            safe_folder = upload_folder_from_destination(safe_destination, safe_section)
+        elif safe_section:
+            if safe_section not in UPLOAD_SECTION_CONFIG:
+                safe_section = ""
+                safe_folder = ""
+            else:
+                safe_destination = build_upload_destination_path(safe_section, safe_folder or "")
         safe_message = " ".join(str(message or "").split()).strip()[:240] if message is not None else None
         safe_error = " ".join(str(error or "").split()).strip()[:240] if error is not None else None
         safe_warnings = (
@@ -513,6 +584,8 @@ class AppState:
 
             if safe_phase is not None:
                 current["phase"] = safe_phase
+            if safe_destination is not None:
+                current["destination"] = safe_destination
             if safe_section is not None:
                 current["section"] = safe_section
             if safe_folder is not None:
@@ -1062,6 +1135,49 @@ class AppState:
             "sections": sections,
         }
 
+    def upload_destinations_payload(self) -> dict[str, object]:
+        storage_root = Path(self.settings["storage_root"])
+        paths: set[str] = set()
+        roots: list[dict[str, str]] = []
+
+        for section, config in UPLOAD_SECTION_CONFIG.items():
+            root_path = normalize_virtual_path(str(config["base_path"]))
+            roots.append(
+                {
+                    "section": section,
+                    "label": str(config["label"]),
+                    "path": root_path,
+                }
+            )
+            paths.add(root_path)
+            actual_root = self.resolve_virtual_path(root_path)
+            if actual_root is None or not actual_root.exists() or not actual_root.is_dir():
+                continue
+
+            for root, dirs, _files in os.walk(actual_root):
+                dirs[:] = [directory for directory in dirs if directory.lower() != ".nomadscreen"]
+                try:
+                    virtual_path = "/" + Path(root).relative_to(storage_root).as_posix()
+                except ValueError:
+                    continue
+                normalized = normalize_virtual_path(virtual_path)
+                if normalized:
+                    paths.add(normalized)
+
+        ordered_paths = sorted(
+            paths,
+            key=lambda path: (
+                SECTION_ORDER.get(upload_section_from_destination(path), 99),
+                len(split_path(path)),
+                lowercase_copy(path),
+            ),
+        )
+        return {
+            "count": len(ordered_paths),
+            "paths": ordered_paths,
+            "roots": roots,
+        }
+
     def status_payload(self) -> dict[str, object]:
         local_ip = self.best_local_ip()
         port = int(self.settings["http_port"])
@@ -1240,6 +1356,7 @@ def api_upload_progress() -> Response:
         upload_id,
         active=lowercase_copy(str(payload.get("phase") or "uploading")) not in {"completed", "error", "idle"},
         phase=str(payload.get("phase") or "uploading"),
+        destination=str(payload.get("destination") or ""),
         section=str(payload.get("section") or ""),
         folder=str(payload.get("folder") or ""),
         file_count=safe_int(payload.get("fileCount"), 0, 0),
@@ -1259,6 +1376,13 @@ def api_library() -> Response:
     return no_store_json(state.library_payload())
 
 
+@app.get("/api/upload-destinations")
+def api_upload_destinations() -> Response:
+    if not state.storage_ready:
+        return no_store_json({"error": "Media storage unavailable"}, 503)
+    return no_store_json(state.upload_destinations_payload())
+
+
 @app.route("/api/stream", methods=["GET", "HEAD", "OPTIONS"])
 def api_stream() -> Response:
     if not state.storage_ready:
@@ -1276,31 +1400,40 @@ def api_asset() -> Response:
 @app.post("/api/upload")
 def api_upload() -> Response:
     upload_id = normalize_upload_id(request.form.get("uploadId")) or f"upload-{int(time.time() * 1000)}"
-    section = lowercase_copy(str(request.form.get("section") or ""))
+    raw_destination = str(request.form.get("destination") or "")
+    destination = normalize_upload_destination(raw_destination)
+    if not destination:
+        legacy_section = lowercase_copy(str(request.form.get("section") or ""))
+        legacy_folder = str(request.form.get("folder") or "")
+        destination = build_upload_destination_path(legacy_section, legacy_folder)
+
+    section = upload_section_from_destination(destination)
     section_config = UPLOAD_SECTION_CONFIG.get(section)
-    if section_config is None:
+    if not destination or section_config is None:
+        allowed_roots = ", ".join(str(config["base_path"]) for config in UPLOAD_SECTION_CONFIG.values())
         state.set_upload_status(
             upload_id,
             phase="error",
-            section=section,
-            message="Upload failed. The selected library section is invalid.",
-            error="Invalid upload section",
+            destination=raw_destination,
+            message="Upload failed. Pick a destination under one of the library roots.",
+            error=f"Choose a destination inside {allowed_roots}",
         )
-        return no_store_json({"error": "Invalid upload section"}, 400)
+        return no_store_json({"error": f"Choose a destination inside {allowed_roots}"}, 400)
 
     files = [uploaded for uploaded in request.files.getlist("files") if str(uploaded.filename or "").strip()]
     if not files:
         state.set_upload_status(
             upload_id,
             phase="error",
+            destination=destination,
             section=section,
             message="Upload failed. Choose at least one file first.",
             error="Choose at least one file to upload",
         )
         return no_store_json({"error": "Choose at least one file to upload"}, 400)
 
-    folder = str(request.form.get("folder") or "")
-    normalized_folder = "/".join(sanitize_relative_segments(folder))
+    relative_paths = request.form.getlist("relativePaths")
+    normalized_folder = upload_folder_from_destination(destination, section)
     current_upload = state.upload_status_payload()
     known_total_bytes = (
         int(current_upload.get("bytesTotal") or 0) if str(current_upload.get("id") or "") == upload_id else 0
@@ -1309,6 +1442,7 @@ def api_upload() -> Response:
         upload_id,
         active=True,
         phase="processing",
+        destination=destination,
         section=section,
         folder=normalized_folder,
         file_count=len(files),
@@ -1323,13 +1457,20 @@ def api_upload() -> Response:
     warnings: list[str] = []
     saved_bytes = 0
 
-    for uploaded in files:
-        file_name = sanitize_upload_filename(str(uploaded.filename or ""))
+    for index, uploaded in enumerate(files):
+        requested_relative_path = (
+            str(relative_paths[index])
+            if index < len(relative_paths) and str(relative_paths[index] or "").strip()
+            else str(uploaded.filename or "")
+        )
+        file_name = sanitize_upload_filename(Path(requested_relative_path).name) or sanitize_upload_filename(
+            str(uploaded.filename or "")
+        )
         if not file_name:
             warnings.append("Skipped a file with an invalid name.")
             continue
 
-        virtual_path = build_upload_virtual_path(section, normalized_folder, file_name)
+        virtual_path = build_upload_virtual_path_from_destination(destination, requested_relative_path, file_name)
         if not virtual_path:
             warnings.append(f"Skipped {file_name}: invalid destination.")
             continue
@@ -1337,7 +1478,7 @@ def api_upload() -> Response:
         media_type = classify_media_type(virtual_path)
         allowed_types = set(section_config["media_types"])
         if media_type not in allowed_types:
-            warnings.append(f"Skipped {file_name}: unsupported file type for {section}.")
+            warnings.append(f"Skipped {file_name}: unsupported file type for {section_config['label']}.")
             continue
 
         actual_path = state.resolve_virtual_path(virtual_path)
@@ -1365,6 +1506,7 @@ def api_upload() -> Response:
                 upload_id,
                 active=True,
                 phase="processing",
+                destination=destination,
                 section=section,
                 folder=normalized_folder,
                 file_count=len(files),
@@ -1381,6 +1523,7 @@ def api_upload() -> Response:
         state.set_upload_status(
             upload_id,
             phase="error",
+            destination=destination,
             section=section,
             folder=normalized_folder,
             file_count=len(files),
@@ -1398,6 +1541,7 @@ def api_upload() -> Response:
         upload_id,
         active=True,
         phase="processing",
+        destination=destination,
         section=section,
         folder=normalized_folder,
         file_count=len(files),
@@ -1411,6 +1555,7 @@ def api_upload() -> Response:
     upload_status = state.set_upload_status(
         upload_id,
         phase="completed",
+        destination=destination,
         section=section,
         folder=normalized_folder,
         file_count=len(files),
@@ -1425,6 +1570,7 @@ def api_upload() -> Response:
         {
             "ok": True,
             "uploadId": upload_id,
+            "destination": destination,
             "section": section,
             "folder": normalized_folder,
             "count": len(uploaded_items),
