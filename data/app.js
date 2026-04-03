@@ -15,6 +15,13 @@ const state = {
   },
   uploadFeedback: "",
   uploadFeedbackTone: "",
+  deviceConfigDraft: {
+    deviceName: "",
+    hotspotSsid: "",
+    wifiPassword: "",
+  },
+  deviceConfigFeedback: "",
+  deviceConfigFeedbackTone: "",
   preferServerLibrary: false,
   uploadingLocally: false,
   uploadDestinations: [],
@@ -541,7 +548,7 @@ function uploadTransferredLabel(upload) {
 function uploadStatusCopy(upload) {
   const phase = uploadStatusPhase(upload);
   if (!uploadHasActivity(upload)) {
-    return "No uploads are active yet. Start one from any phone or laptop and this Device page will mirror it here.";
+    return "";
   }
   if (phase === "error") {
     return upload.error || upload.message || "The last upload did not finish cleanly.";
@@ -2812,6 +2819,22 @@ async function refreshDeviceData() {
   await refreshAll();
 }
 
+async function saveDeviceConfig(values) {
+  const response = await fetch("/api/device-config", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    cache: "no-store",
+    body: JSON.stringify(values),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || `Device config returned HTTP ${response.status}`);
+  }
+  return payload;
+}
+
 function createUploadId() {
   return `upload-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -3084,6 +3107,197 @@ function createInfoCard(config) {
     card.appendChild(actions);
   }
 
+  return card;
+}
+
+function createDeviceConfigCard() {
+  const status = state.status || {};
+  const storedDraft = state.deviceConfigDraft || {};
+  const initialDeviceName = String(storedDraft.deviceName || status.device || appDisplayName()).trim();
+  const initialHotspotSsid = String(storedDraft.hotspotSsid || status.hotspotSsid || hotspotNetworkName(status) || appNetworkName()).trim();
+  const initialWifiPassword = String(storedDraft.wifiPassword || status.hotspotPassword || "").trim();
+  const card = document.createElement("article");
+  card.className = "info-card info-card--config";
+
+  const eyebrow = document.createElement("p");
+  eyebrow.className = "eyebrow";
+  eyebrow.textContent = "Config";
+
+  const title = document.createElement("h3");
+  title.textContent = "Device Settings";
+
+  const copy = document.createElement("p");
+  copy.className = "info-copy";
+  copy.textContent =
+    "Choose the name shown in the web app, plus the fallback Wi-Fi name and password the Pi will use when it cannot join a known network.";
+
+  const form = document.createElement("form");
+  form.className = "upload-form";
+
+  const fields = document.createElement("div");
+  fields.className = "upload-grid";
+
+  const deviceNameField = document.createElement("label");
+  deviceNameField.className = "upload-field";
+  const deviceNameLabel = document.createElement("span");
+  deviceNameLabel.className = "upload-label";
+  deviceNameLabel.textContent = "Server name";
+  const deviceNameInput = document.createElement("input");
+  deviceNameInput.className = "upload-text";
+  deviceNameInput.type = "text";
+  deviceNameInput.name = "device-name";
+  deviceNameInput.maxLength = 80;
+  deviceNameInput.value = initialDeviceName;
+  deviceNameField.appendChild(deviceNameLabel);
+  deviceNameField.appendChild(deviceNameInput);
+
+  const hotspotNameField = document.createElement("label");
+  hotspotNameField.className = "upload-field";
+  const hotspotNameLabel = document.createElement("span");
+  hotspotNameLabel.className = "upload-label";
+  hotspotNameLabel.textContent = "Fallback Wi-Fi name";
+  const hotspotNameInput = document.createElement("input");
+  hotspotNameInput.className = "upload-text";
+  hotspotNameInput.type = "text";
+  hotspotNameInput.name = "hotspot-ssid";
+  hotspotNameInput.maxLength = 32;
+  hotspotNameInput.value = initialHotspotSsid;
+  hotspotNameField.appendChild(hotspotNameLabel);
+  hotspotNameField.appendChild(hotspotNameInput);
+
+  const wifiPasswordField = document.createElement("label");
+  wifiPasswordField.className = "upload-field upload-field--full";
+  const wifiPasswordLabel = document.createElement("span");
+  wifiPasswordLabel.className = "upload-label";
+  wifiPasswordLabel.textContent = "Fallback Wi-Fi password";
+  const wifiPasswordInput = document.createElement("input");
+  wifiPasswordInput.className = "upload-text";
+  wifiPasswordInput.type = "text";
+  wifiPasswordInput.name = "hotspot-password";
+  wifiPasswordInput.autocomplete = "new-password";
+  wifiPasswordInput.minLength = 8;
+  wifiPasswordInput.maxLength = 63;
+  wifiPasswordInput.value = initialWifiPassword;
+  wifiPasswordField.appendChild(wifiPasswordLabel);
+  wifiPasswordField.appendChild(wifiPasswordInput);
+
+  const note = document.createElement("p");
+  note.className = "upload-note";
+  note.textContent =
+    "These values are saved on the Pi. Fallback Wi-Fi changes take effect the next time hotspot mode starts.";
+
+  const feedback = document.createElement("p");
+  feedback.className = "upload-status";
+
+  const actions = document.createElement("div");
+  actions.className = "upload-actions";
+  const submit = document.createElement("button");
+  submit.type = "submit";
+  submit.className = "primary-button";
+  submit.textContent = "Save Settings";
+  actions.appendChild(submit);
+
+  fields.appendChild(deviceNameField);
+  fields.appendChild(hotspotNameField);
+  fields.appendChild(wifiPasswordField);
+  form.appendChild(fields);
+  form.appendChild(note);
+  form.appendChild(feedback);
+  form.appendChild(actions);
+
+  const applyConfigState = (message, tone) => {
+    feedback.textContent = message || "";
+    feedback.className = "upload-status";
+    if (tone) {
+      feedback.classList.add(`upload-status--${tone}`);
+    }
+  };
+
+  const syncDraft = () => {
+    state.deviceConfigDraft = {
+      deviceName: deviceNameInput.value.trim(),
+      hotspotSsid: hotspotNameInput.value.trim(),
+      wifiPassword: wifiPasswordInput.value.trim(),
+    };
+  };
+
+  deviceNameInput.addEventListener("input", syncDraft);
+  hotspotNameInput.addEventListener("input", syncDraft);
+  wifiPasswordInput.addEventListener("input", syncDraft);
+  syncDraft();
+  applyConfigState(state.deviceConfigFeedback, state.deviceConfigFeedbackTone);
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    syncDraft();
+    const draft = {
+      deviceName: String(state.deviceConfigDraft.deviceName || "").trim(),
+      hotspotSsid: String(state.deviceConfigDraft.hotspotSsid || "").trim(),
+      wifiPassword: String(state.deviceConfigDraft.wifiPassword || "").trim(),
+    };
+
+    if (!draft.deviceName) {
+      state.deviceConfigFeedback = "Enter a server name.";
+      state.deviceConfigFeedbackTone = "error";
+      applyConfigState(state.deviceConfigFeedback, state.deviceConfigFeedbackTone);
+      return;
+    }
+    if (!draft.hotspotSsid) {
+      state.deviceConfigFeedback = "Enter a fallback Wi-Fi name.";
+      state.deviceConfigFeedbackTone = "error";
+      applyConfigState(state.deviceConfigFeedback, state.deviceConfigFeedbackTone);
+      return;
+    }
+    if (draft.wifiPassword.length < 8 || draft.wifiPassword.length > 63) {
+      state.deviceConfigFeedback = "Fallback Wi-Fi password must be 8-63 characters.";
+      state.deviceConfigFeedbackTone = "error";
+      applyConfigState(state.deviceConfigFeedback, state.deviceConfigFeedbackTone);
+      return;
+    }
+
+    const previousHotspotSsid = String(status.hotspotSsid || "").trim();
+    const previousWifiPassword = String(status.hotspotPassword || "").trim();
+    form.querySelectorAll("input, button").forEach((element) => {
+      element.disabled = true;
+    });
+    applyConfigState("Saving device settings on the Pi...", "pending");
+
+    try {
+      const payload = await saveDeviceConfig(draft);
+      const savedConfig = payload.config || draft;
+      state.deviceConfigDraft = {
+        deviceName: String(savedConfig.deviceName || draft.deviceName).trim(),
+        hotspotSsid: String(savedConfig.hotspotSsid || draft.hotspotSsid).trim(),
+        wifiPassword: String(savedConfig.wifiPassword || draft.wifiPassword).trim(),
+      };
+      if (payload.status) {
+        state.status = payload.status;
+        refreshLiveUploadActivity(uploadStatusSnapshot());
+      }
+      const wifiChanged =
+        state.deviceConfigDraft.hotspotSsid !== previousHotspotSsid ||
+        state.deviceConfigDraft.wifiPassword !== previousWifiPassword;
+      state.deviceConfigFeedback = payload.message || "Saved device settings.";
+      if (wifiChanged) {
+        state.deviceConfigFeedback = `${state.deviceConfigFeedback} If the hotspot is already live, reconnect after it restarts or reboot the Pi.`;
+      }
+      state.deviceConfigFeedbackTone = "success";
+      render();
+      els.pageSubtitle.textContent = state.deviceConfigFeedback;
+    } catch (error) {
+      state.deviceConfigFeedback = error.message || "Unable to save device settings.";
+      state.deviceConfigFeedbackTone = "error";
+      applyConfigState(state.deviceConfigFeedback, state.deviceConfigFeedbackTone);
+      form.querySelectorAll("input, button").forEach((element) => {
+        element.disabled = false;
+      });
+    }
+  });
+
+  card.appendChild(eyebrow);
+  card.appendChild(title);
+  card.appendChild(copy);
+  card.appendChild(form);
   return card;
 }
 
@@ -4528,6 +4742,13 @@ function renderDevicePage(container) {
         },
       ],
       searchText: "admin controls rescan refresh cache clear watch history wipe everything local data metadata",
+    },
+    {
+      eyebrow: "Config",
+      title: "Device Settings",
+      copy: "Change the server name and fallback Wi-Fi details without opening the Pi shell.",
+      renderCard: () => createDeviceConfigCard(),
+      searchText: `config settings server name device name hotspot wifi ssid password ${status.device || ""} ${hotspotName || ""} ${hotspotPassword || ""}`,
     },
     {
       eyebrow: "Upload",

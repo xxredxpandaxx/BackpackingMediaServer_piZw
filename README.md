@@ -32,7 +32,7 @@ The server expects a storage root that contains:
 - `media/`
 - `media/.nomadscreen/library.json` when metadata has been generated
 
-By default, the repo uses `sdcard-template/` as the storage root so the project can run immediately in-place. On the Pi, point `NOMADSCREEN_STORAGE_ROOT` at your real storage path, for example `/srv/nomadscreen` or a mounted USB or SD volume.
+By default, the repo uses `sdcard-template/` as the storage root so the project can run immediately in-place. On the Pi, `NOMADSCREEN_STORAGE_ROOT` holds config/runtime files such as `nomadscreen.config.json`, while `NOMADSCREEN_MEDIA_ROOT` can point at the real media library path. The installer now defaults that media path to `~/media`.
 
 ## Local run
 
@@ -71,7 +71,7 @@ What that installer does:
 
 - installs `git`, `python3`, `python3-venv`, and `NetworkManager`
 - clones or updates the repo into `/opt/nomadscreen`
-- seeds `/srv/nomadscreen` from `sdcard-template/` without overwriting existing media
+- seeds `/srv/nomadscreen` with config/tools and seeds `~/media` with the media folder layout without overwriting existing files
 - creates `/opt/nomadscreen/.venv` and installs Python dependencies
 - writes and enables `nomadscreen-network.service`
 - writes and enables `nomadscreen.service`
@@ -94,7 +94,7 @@ You can rerun the same command later to pull the latest code onto the Pi.
    sudo chown -R $USER:$USER /opt/nomadscreen
    ```
 
-3. Copy the contents of `sdcard-template/` to your runtime storage root, for example `/srv/nomadscreen`.
+3. Copy `sdcard-template/nomadscreen.config.json` into your runtime storage root, for example `/srv/nomadscreen`, and copy `sdcard-template/media/` into your real media path, for example `~/media`.
 4. Create a virtual environment and install the dependency:
 
    ```bash
@@ -105,14 +105,14 @@ You can rerun the same command later to pull the latest code onto the Pi.
 5. Start the server manually once to confirm the library loads:
 
    ```bash
-   NOMADSCREEN_STORAGE_ROOT=/srv/nomadscreen /opt/nomadscreen/.venv/bin/python /opt/nomadscreen/src/main.py
+   NOMADSCREEN_STORAGE_ROOT=/srv/nomadscreen NOMADSCREEN_MEDIA_ROOT=/home/pi/media /opt/nomadscreen/.venv/bin/python /opt/nomadscreen/src/main.py
    ```
 
 6. Install the example service if you want it to start on boot:
 
    ```bash
    sudo cp /opt/nomadscreen/deploy/network/nomadscreen-network.service /etc/systemd/system/nomadscreen-network.service
-   # If your Pi login is not "pi", edit User= and Group= in nomadscreen.service first.
+   # If your Pi login is not "pi", edit User=, Group=, and NOMADSCREEN_MEDIA_ROOT= in nomadscreen.service first.
    sudo cp /opt/nomadscreen/deploy/nomadscreen.service /etc/systemd/system/nomadscreen.service
    sudo systemctl daemon-reload
    sudo systemctl enable --now NetworkManager.service
@@ -120,13 +120,13 @@ You can rerun the same command later to pull the latest code onto the Pi.
    sudo systemctl enable --now nomadscreen.service
    ```
 
-7. Open `/app/device` and use the built-in upload panel to send files over Wi-Fi, or copy media into `/srv/nomadscreen/media` manually if you prefer.
+7. Open `/app/device` and use the built-in upload panel to send files over Wi-Fi, or copy media into `~/media` manually if you prefer.
 
 ## Loading content over Wi-Fi
 
 Once the Pi is online, the fastest path is the upload panel on `/app/device`, which saves files into the library and rescans automatically.
 
-You can still move media into `/srv/nomadscreen/media` with whatever network workflow fits your setup, then run `/api/rescan` or use the Device page in the web UI.
+You can still move media into `~/media` with whatever network workflow fits your setup, then run `/api/rescan` or use the Device page in the web UI.
 
 Common choices are:
 

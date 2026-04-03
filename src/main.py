@@ -34,6 +34,10 @@ DEFAULT_HTTP_PORT = 80
 DEFAULT_MAX_CLIENTS = 6
 DEFAULT_MAX_STREAMS = 12
 DEFAULT_CLIENT_WINDOW_SECONDS = 300
+MAX_DEVICE_NAME_LENGTH = 80
+MAX_HOTSPOT_SSID_LENGTH = 32
+MIN_HOTSPOT_PASSWORD_LENGTH = 8
+MAX_HOTSPOT_PASSWORD_LENGTH = 63
 
 SECTION_ORDER = {
     "movies": 0,
@@ -54,6 +58,23 @@ UPLOAD_SECTION_CONFIG = {
 
 def normalize_device_name(value: str) -> str:
     return " ".join(str(value or "").split()).strip()
+
+
+def normalize_hotspot_ssid(value: str) -> str:
+    return " ".join(str(value or "").split()).strip()[:MAX_HOTSPOT_SSID_LENGTH]
+
+
+def normalize_hotspot_password(value: str) -> str:
+    return str(value or "").strip()
+
+
+def validated_hotspot_password(value: str) -> str:
+    password = normalize_hotspot_password(value)
+    if len(password) < MIN_HOTSPOT_PASSWORD_LENGTH or len(password) > MAX_HOTSPOT_PASSWORD_LENGTH:
+        raise ValueError(
+            f"Fallback Wi-Fi password must be {MIN_HOTSPOT_PASSWORD_LENGTH}-{MAX_HOTSPOT_PASSWORD_LENGTH} characters."
+        )
+    return password
 
 
 def derive_compact_device_token(device_name: str, lowercase: bool) -> str:
@@ -99,6 +120,30 @@ def derived_mdns_host(device_name: str) -> str:
         return compact
     sanitized = sanitize_mdns_host(device_name)
     return sanitized or DEFAULT_MDNS_HOST
+
+
+def configured_access_point_ssid(raw_config: dict[str, object], device_name: str) -> str:
+    wifi_block = raw_config.get("wifi") if isinstance(raw_config.get("wifi"), dict) else {}
+    raw_value = (
+        raw_config.get("hotspotSsid")
+        or raw_config.get("accessPointSsid")
+        or wifi_block.get("ssid")
+        or ""
+    )
+    return normalize_hotspot_ssid(str(raw_value)) or derived_access_point_ssid(device_name)
+
+
+def read_runtime_config_file(config_path: Path) -> tuple[dict[str, object], str]:
+    raw_config: dict[str, object] = {}
+    config_source = "defaults"
+    if config_path.exists():
+        try:
+            raw_config = json.loads(config_path.read_text(encoding="utf-8"))
+            config_source = str(config_path)
+        except (OSError, json.JSONDecodeError):
+            raw_config = {}
+            config_source = f"{config_path} (unreadable)"
+    return raw_config, config_source
 
 
 def normalize_virtual_path(raw_path: str) -> str:
@@ -406,27 +451,32 @@ def load_settings() -> dict[str, object]:
     storage_root = Path(storage_root_value) if storage_root_value else DEFAULT_STORAGE_ROOT
     storage_root = storage_root.expanduser()
     config_path = storage_root / DEFAULT_RUNTIME_CONFIG_PATH.lstrip("/")
-    raw_config: dict[str, object] = {}
-    config_source = "defaults"
-
-    if config_path.exists():
-        try:
-            raw_config = json.loads(config_path.read_text(encoding="utf-8"))
-            config_source = str(config_path)
-        except (OSError, json.JSONDecodeError):
-            raw_config = {}
-            config_source = f"{config_path} (unreadable)"
+    raw_config, config_source = read_runtime_config_file(config_path)
 
     raw_name = raw_config.get("deviceName") or raw_config.get("serverName") or DEFAULT_DEVICE_NAME
-    device_name = normalize_device_name(str(raw_name)) or DEFAULT_DEVICE_NAME
+    device_name = normalize_device_name(str(raw_name))[:MAX_DEVICE_NAME_LENGTH] or DEFAULT_DEVICE_NAME
 
-    wifi_password = str(
+    wifi_password = normalize_hotspot_password(
         raw_config.get("wifiPassword")
         or ((raw_config.get("wifi") or {}).get("password") if isinstance(raw_config.get("wifi"), dict) else "")
         or DEFAULT_ACCESS_POINT_PASSWORD
     )
-    if wifi_password and len(wifi_password) < 8:
+    if wifi_password and (
+        len(wifi_password) < MIN_HOTSPOT_PASSWORD_LENGTH or len(wifi_password) > MAX_HOTSPOT_PASSWORD_LENGTH
+    ):
         wifi_password = DEFAULT_ACCESS_POINT_PASSWORD
+    hotspot_ssid = configured_access_point_ssid(raw_config, device_name)
+    media_root_value = (
+        os.environ.get("NOMADSCREEN_MEDIA_ROOT", "").strip()
+        or str(raw_config.get("mediaPath") or raw_config.get("mediaDirectory") or "")
+    )
+    if media_root_value:
+        media_directory = Path(media_root_value).expanduser()
+        if not media_directory.is_absolute():
+            media_directory = storage_root / media_directory
+    else:
+        media_directory = storage_root / DEFAULT_MEDIA_ROOT.lstrip("/")
+    media_directory = media_directory.expanduser()
 
     bind_address = (
         os.environ.get("NOMADSCREEN_BIND", "").strip()
@@ -461,10 +511,10 @@ def load_settings() -> dict[str, object]:
 
     return {
         "storage_root": storage_root,
-        "media_directory": storage_root / DEFAULT_MEDIA_ROOT.lstrip("/"),
+        "media_directory": media_directory,
         "config_path": config_path,
         "device_name": device_name,
-        "ssid": derived_access_point_ssid(device_name),
+        "ssid": hotspot_ssid,
         "wifi_password": wifi_password,
         "wifi_interface": wifi_interface or DEFAULT_WIFI_INTERFACE,
         "known_wifi_timeout_seconds": known_wifi_timeout_seconds,
@@ -753,13 +803,26 @@ class AppState:
             return f"http://{safe_host}{safe_suffix}"
         return f"http://{safe_host}:{port}{safe_suffix}"
 
+    def media_root_path(self) -> Path:
+        return Path(self.settings["media_directory"]).resolve(strict=False)
+
+    def virtual_media_path(self, actual_path: Path) -> str:
+        try:
+            relative_path = actual_path.resolve(strict=False).relative_to(self.media_root_path())
+        except ValueError:
+            return ""
+        if str(relative_path) in {"", "."}:
+            return DEFAULT_MEDIA_ROOT
+        return normalize_virtual_path(f"{DEFAULT_MEDIA_ROOT}/{relative_path.as_posix()}")
+
     def resolve_virtual_path(self, virtual_path: str) -> Path | None:
         normalized = normalize_virtual_path(virtual_path)
         if not normalized or not normalized.startswith(DEFAULT_MEDIA_ROOT):
             return None
-        storage_root = Path(self.settings["storage_root"]).resolve(strict=False)
-        candidate = (storage_root / normalized.lstrip("/")).resolve(strict=False)
-        storage_text = str(storage_root).lower()
+        media_root = self.media_root_path()
+        relative_path = normalized[len(DEFAULT_MEDIA_ROOT) :].lstrip("/")
+        candidate = (media_root / relative_path).resolve(strict=False)
+        storage_text = str(media_root).lower()
         candidate_text = str(candidate).lower()
         if candidate_text != storage_text and not candidate_text.startswith(storage_text + os.sep.lower()):
             return None
@@ -932,8 +995,7 @@ class AppState:
 
     def scan_library(self) -> None:
         item_entries, show_entries, generated_at, generator = self.load_metadata()
-        storage_root = Path(self.settings["storage_root"])
-        media_directory = Path(self.settings["media_directory"])
+        media_directory = self.media_root_path()
         scanned_items: list[dict[str, object]] = []
         storage_ready = media_directory.exists() and media_directory.is_dir()
 
@@ -942,9 +1004,8 @@ class AppState:
                 dirs[:] = [directory for directory in dirs if directory.lower() != ".nomadscreen"]
                 for file_name in files:
                     actual_path = Path(root) / file_name
-                    try:
-                        virtual_path = "/" + actual_path.relative_to(storage_root).as_posix()
-                    except ValueError:
+                    virtual_path = self.virtual_media_path(actual_path)
+                    if not virtual_path:
                         continue
                     media_type = classify_media_type(virtual_path)
                     if not media_type:
@@ -1136,7 +1197,6 @@ class AppState:
         }
 
     def upload_destinations_payload(self) -> dict[str, object]:
-        storage_root = Path(self.settings["storage_root"])
         paths: set[str] = set()
         roots: list[dict[str, str]] = []
 
@@ -1156,9 +1216,8 @@ class AppState:
 
             for root, dirs, _files in os.walk(actual_root):
                 dirs[:] = [directory for directory in dirs if directory.lower() != ".nomadscreen"]
-                try:
-                    virtual_path = "/" + Path(root).relative_to(storage_root).as_posix()
-                except ValueError:
+                virtual_path = self.virtual_media_path(Path(root))
+                if not virtual_path:
                     continue
                 normalized = normalize_virtual_path(virtual_path)
                 if normalized:
@@ -1212,7 +1271,8 @@ class AppState:
             "configSource": self.settings["config_source"],
             "sdMounted": self.storage_ready,
             "libraryCount": len(self.media_library),
-            "mediaRoot": DEFAULT_MEDIA_ROOT,
+            "mediaRoot": str(self.settings["media_directory"]),
+            "mediaVirtualRoot": DEFAULT_MEDIA_ROOT,
             "clients": self.active_client_count(),
             "lastPlayed": self.last_played_title,
             "lastPlayedType": self.last_played_type,
@@ -1224,6 +1284,49 @@ class AppState:
             "preferServerLibrary": self.metadata_index_stale,
             "upload": self.upload_status_payload(),
             "platform": "raspberry-pi-zero-w",
+        }
+
+    def device_config_payload(self) -> dict[str, object]:
+        return {
+            "deviceName": str(self.settings["device_name"]),
+            "hotspotSsid": str(self.settings["ssid"]),
+            "wifiPassword": str(self.settings["wifi_password"]),
+            "configSource": self.settings["config_source"],
+        }
+
+    def save_device_config(self, device_name: object, hotspot_ssid: object, wifi_password: object) -> dict[str, object]:
+        safe_device_name = normalize_device_name(str(device_name or ""))[:MAX_DEVICE_NAME_LENGTH]
+        if not safe_device_name:
+            raise ValueError("Enter a server name.")
+
+        safe_hotspot_ssid = normalize_hotspot_ssid(str(hotspot_ssid or ""))
+        if not safe_hotspot_ssid:
+            raise ValueError("Enter a fallback Wi-Fi name.")
+
+        safe_wifi_password = validated_hotspot_password(str(wifi_password or ""))
+
+        with self.lock:
+            config_path = Path(self.settings["config_path"])
+            raw_config, _ = read_runtime_config_file(config_path)
+            raw_config["deviceName"] = safe_device_name
+            raw_config.pop("serverName", None)
+            raw_config["hotspotSsid"] = safe_hotspot_ssid
+            raw_config.pop("accessPointSsid", None)
+            raw_config["wifiPassword"] = safe_wifi_password
+            if isinstance(raw_config.get("wifi"), dict):
+                wifi_block = dict(raw_config.get("wifi") or {})
+                wifi_block["ssid"] = safe_hotspot_ssid
+                wifi_block["password"] = safe_wifi_password
+                raw_config["wifi"] = wifi_block
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(json.dumps(raw_config, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            self.settings = load_settings()
+
+        return {
+            "ok": True,
+            "message": "Saved device settings. Fallback Wi-Fi changes apply the next time the hotspot starts.",
+            "config": self.device_config_payload(),
+            "status": self.status_payload(),
         }
 
     def find_library_item(self, path: str) -> dict[str, object] | None:
@@ -1343,6 +1446,22 @@ def app_js() -> Response:
 @app.get("/api/status")
 def api_status() -> Response:
     return no_store_json(state.status_payload())
+
+
+@app.post("/api/device-config")
+def api_device_config() -> Response:
+    payload = request.get_json(silent=True) or {}
+    try:
+        result = state.save_device_config(
+            payload.get("deviceName"),
+            payload.get("hotspotSsid") or payload.get("wifiName"),
+            payload.get("wifiPassword"),
+        )
+    except ValueError as error:
+        return no_store_json({"error": str(error)}, 400)
+    except OSError:
+        return no_store_json({"error": "Could not save the device settings file."}, 500)
+    return no_store_json(result)
 
 
 @app.post("/api/upload-progress")
@@ -1491,7 +1610,10 @@ def api_upload() -> Response:
             final_path = ensure_unique_path(actual_path)
             uploaded.save(final_path)
             saved_bytes += final_path.stat().st_size
-            final_virtual_path = "/" + final_path.relative_to(Path(state.settings["storage_root"])).as_posix()
+            final_virtual_path = state.virtual_media_path(final_path)
+            if not final_virtual_path:
+                warnings.append(f"Skipped {file_name}: destination could not be resolved after save.")
+                continue
             uploaded_items.append(
                 {
                     "name": final_path.name,

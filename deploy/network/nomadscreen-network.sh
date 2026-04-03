@@ -61,9 +61,10 @@ if config_path.exists():
 
 wifi_block = raw.get("wifi") if isinstance(raw.get("wifi"), dict) else {}
 device_name = normalize_device_name(str(raw.get("deviceName") or raw.get("serverName") or DEFAULT_DEVICE_NAME)) or DEFAULT_DEVICE_NAME
-ssid = derive_compact_device_token(device_name) or "NomadScreen"
+ssid = str(raw.get("hotspotSsid") or raw.get("accessPointSsid") or wifi_block.get("ssid") or "").strip()
+ssid = " ".join(ssid.split())[:32] or derive_compact_device_token(device_name) or "NomadScreen"
 password = str(raw.get("wifiPassword") or wifi_block.get("password") or DEFAULT_ACCESS_POINT_PASSWORD)
-if len(password) < 8:
+if len(password) < 8 or len(password) > 63:
     password = DEFAULT_ACCESS_POINT_PASSWORD
 wifi_interface = str(raw.get("wifiInterface") or wifi_block.get("interface") or DEFAULT_WIFI_INTERFACE).strip() or DEFAULT_WIFI_INTERFACE
 connect_timeout = raw.get("knownWifiTimeoutSeconds") or raw.get("wifiConnectTimeoutSeconds") or DEFAULT_CONNECT_TIMEOUT_SECONDS

@@ -611,6 +611,10 @@ button {
   grid-column: span 2;
 }
 
+.info-card--config {
+  grid-column: span 2;
+}
+
 .upload-form {
   display: grid;
   gap: 14px;
@@ -1456,6 +1460,10 @@ button {
   }
 
   .info-card--upload {
+    grid-column: auto;
+  }
+
+  .info-card--config {
     grid-column: auto;
   }
 

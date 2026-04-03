@@ -6,6 +6,7 @@ SERVICE_NAME="${NOMADSCREEN_SERVICE_NAME:-nomadscreen}"
 NETWORK_SERVICE_NAME="${NOMADSCREEN_NETWORK_SERVICE_NAME:-nomadscreen-network}"
 INSTALL_DIR="${NOMADSCREEN_INSTALL_DIR:-/opt/nomadscreen}"
 STORAGE_ROOT="${NOMADSCREEN_STORAGE_ROOT:-/srv/nomadscreen}"
+MEDIA_ROOT="${NOMADSCREEN_MEDIA_ROOT:-}"
 REPO_URL="${NOMADSCREEN_REPO_URL:-https://github.com/xxredxpandaxx/BackpackingMediaServer_piZw.git}"
 REPO_REF="${NOMADSCREEN_REPO_REF:-main}"
 GITHUB_SLUG="${NOMADSCREEN_GITHUB_SLUG:-xxredxpandaxx/BackpackingMediaServer_piZw}"
@@ -27,6 +28,7 @@ Options:
   --ref REF               Branch, tag, or ref to install (default: main)
   --install-dir PATH      App install path (default: /opt/nomadscreen)
   --storage-root PATH     Runtime storage root (default: /srv/nomadscreen)
+  --media-root PATH       Media library path (default: ~/media for the install user)
   --port PORT             HTTP port for the service (default: 80)
   --tmp-dir PATH          Temp build dir for venv/pip work (default: /var/tmp/nomadscreen-install)
   -h, --help              Show this help
@@ -89,6 +91,11 @@ parse_args() {
         STORAGE_ROOT="$2"
         shift 2
         ;;
+      --media-root)
+        [[ $# -ge 2 ]] || die "--media-root requires a value"
+        MEDIA_ROOT="$2"
+        shift 2
+        ;;
       --port)
         [[ $# -ge 2 ]] || die "--port requires a value"
         HTTP_PORT="$2"
@@ -120,6 +127,9 @@ ensure_install_user() {
   [[ -n "${INSTALL_USER}" ]] || die "Could not determine the install user"
   id "${INSTALL_USER}" >/dev/null 2>&1 || die "Install user '${INSTALL_USER}' does not exist"
   INSTALL_GROUP="$(id -gn "${INSTALL_USER}")"
+  INSTALL_HOME="$(getent passwd "${INSTALL_USER}" | cut -d: -f6)"
+  [[ -n "${INSTALL_HOME}" ]] || INSTALL_HOME="$(eval echo "~${INSTALL_USER}")"
+  [[ -n "${MEDIA_ROOT}" ]] || MEDIA_ROOT="${INSTALL_HOME}/media"
 }
 
 install_packages() {
@@ -189,9 +199,20 @@ prepare_repo() {
 seed_storage() {
   log "Preparing runtime storage at ${STORAGE_ROOT}"
   run_root mkdir -p "${STORAGE_ROOT}"
-  run_root cp -a -n "${INSTALL_DIR}/sdcard-template/." "${STORAGE_ROOT}/"
-  run_root mkdir -p "${STORAGE_ROOT}/media"
+  if [[ -f "${INSTALL_DIR}/sdcard-template/nomadscreen.config.json" ]]; then
+    run_root cp -a -n "${INSTALL_DIR}/sdcard-template/nomadscreen.config.json" "${STORAGE_ROOT}/"
+  fi
+  if [[ -d "${INSTALL_DIR}/sdcard-template/tools" ]]; then
+    run_root mkdir -p "${STORAGE_ROOT}/tools"
+    run_root cp -a -n "${INSTALL_DIR}/sdcard-template/tools/." "${STORAGE_ROOT}/tools/"
+  fi
+  log "Preparing media library at ${MEDIA_ROOT}"
+  run_root mkdir -p "${MEDIA_ROOT}"
+  if [[ -d "${INSTALL_DIR}/sdcard-template/media" ]]; then
+    run_root cp -a -n "${INSTALL_DIR}/sdcard-template/media/." "${MEDIA_ROOT}/"
+  fi
   run_root chown -R "${INSTALL_USER}:${INSTALL_GROUP}" "${STORAGE_ROOT}"
+  run_root chown -R "${INSTALL_USER}:${INSTALL_GROUP}" "${MEDIA_ROOT}"
 }
 
 prepare_tmp_dir() {
@@ -260,6 +281,7 @@ Group=${INSTALL_GROUP}
 WorkingDirectory=${INSTALL_DIR}
 Environment=PYTHONUNBUFFERED=1
 Environment=NOMADSCREEN_STORAGE_ROOT=${STORAGE_ROOT}
+Environment=NOMADSCREEN_MEDIA_ROOT=${MEDIA_ROOT}
 Environment=NOMADSCREEN_PORT=${HTTP_PORT}
 ExecStart=${INSTALL_DIR}/.venv/bin/python ${INSTALL_DIR}/src/main.py
 Restart=on-failure
@@ -311,9 +333,10 @@ print_success() {
   log "Install complete"
   log "App directory: ${INSTALL_DIR}"
   log "Storage root: ${STORAGE_ROOT}"
+  log "Media library: ${MEDIA_ROOT}"
   log "Network service: ${NETWORK_SERVICE_NAME}.service"
   log "Service name: ${SERVICE_NAME}.service"
-  log "Copy your media into ${STORAGE_ROOT}/media and then use the Device page to rescan."
+  log "Copy your media into ${MEDIA_ROOT} and then use the Device page to rescan."
 
   if [[ -n "${host_ip}" ]]; then
     log "Open http://${host_ip}/app"
