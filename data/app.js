@@ -17,7 +17,6 @@ const state = {
   uploadFeedbackTone: "",
   preferServerLibrary: false,
   uploadingLocally: false,
-  uploadPendingSelection: false,
   uploadDestinations: [],
 };
 
@@ -96,6 +95,7 @@ let deviceStatusPollTimer = 0;
 let deviceStatusPollInFlight = false;
 let lastCompletedUploadRefreshKey = "";
 let uploadDestinationsRequest = null;
+let liveUploadActivityTargets = new Set();
 
 function parseRoute(pathname) {
   const cleanPath = pathname.replace(/\/+$/, "") || "/";
@@ -643,6 +643,29 @@ function renderUploadActivity(target, upload) {
     warning.className = "upload-activity-warning";
     warning.textContent = upload.warnings.join(" ");
     target.appendChild(warning);
+  }
+}
+
+function pruneLiveUploadActivityTargets() {
+  for (const target of Array.from(liveUploadActivityTargets)) {
+    if (!target || !target.isConnected) {
+      liveUploadActivityTargets.delete(target);
+    }
+  }
+}
+
+function registerLiveUploadActivityTarget(target) {
+  pruneLiveUploadActivityTargets();
+  if (target) {
+    liveUploadActivityTargets.add(target);
+  }
+  return target;
+}
+
+function refreshLiveUploadActivity(upload = uploadStatusSnapshot()) {
+  pruneLiveUploadActivityTargets();
+  for (const target of liveUploadActivityTargets) {
+    renderUploadActivity(target, upload);
   }
 }
 
@@ -3086,6 +3109,7 @@ function createUploadCard() {
     "Browse the media tree, click the folder you want, and upload straight into it. You can still add a new subfolder on top of the selected destination, or send a whole folder tree and preserve its structure.";
 
   const activity = document.createElement("div");
+  registerLiveUploadActivityTarget(activity);
   renderUploadActivity(activity, sharedUpload);
 
   const form = document.createElement("form");
@@ -3287,14 +3311,11 @@ function createUploadCard() {
   const syncHints = () => {
     const activeConfig = uploadRootConfigForPath(selectedDestination || initialDestination);
     const finalDestination = uploadDestinationPreview(selectedDestination, newFolderInput.value);
-    const selectedEntries = collectUploadEntries(fileInput.files, folderInput.files);
     const selectedSummary = describeUploadSelection(fileInput.files, folderInput.files);
     newFolderInput.placeholder = activeConfig.newFolderPlaceholder;
     note.textContent = `${uploadDestinationHelp(selectedDestination)} Selected folder: ${selectedDestination}. Final destination: ${finalDestination || selectedDestination}.${selectedSummary ? ` Selected: ${selectedSummary}.` : " Select loose files, a whole folder, or both."}`;
     state.uploadDraft.destination = selectedDestination;
     state.uploadDraft.newFolder = newFolderInput.value.trim();
-    state.uploadPendingSelection = Boolean(selectedEntries.length);
-    syncDeviceStatusPolling();
   };
 
   newFolderInput.addEventListener("input", syncHints);
@@ -3311,7 +3332,7 @@ function createUploadCard() {
         ...upload,
       };
     }
-    renderUploadActivity(activity, upload);
+    refreshLiveUploadActivity(upload);
   };
 
   form.addEventListener("submit", async (event) => {
@@ -4689,7 +4710,7 @@ function stopDeviceStatusPolling() {
 }
 
 function shouldPollDeviceStatus() {
-  return state.route.name === "device" && !document.hidden && !state.uploadingLocally && !state.uploadPendingSelection;
+  return state.route.name === "device" && !document.hidden && !state.uploadingLocally;
 }
 
 function scheduleDeviceStatusPolling(delayMs) {
@@ -4716,10 +4737,8 @@ async function pollDeviceStatus() {
 
   try {
     await loadStatus();
-    if (!shouldPollDeviceStatus()) {
-      return;
-    }
     const nextUpload = uploadStatusSnapshot();
+    refreshLiveUploadActivity(nextUpload);
     const completionKey = uploadCompletionRefreshKey(nextUpload);
     if (completionKey && completionKey !== lastCompletedUploadRefreshKey) {
       state.preferServerLibrary = true;
@@ -4730,10 +4749,6 @@ async function pollDeviceStatus() {
     if (uploadCompletionRefreshKey(previousUpload) && !completionKey) {
       lastCompletedUploadRefreshKey = "";
     }
-    if (!shouldPollDeviceStatus()) {
-      return;
-    }
-    render();
   } catch (error) {
     console.warn("Device status poll failed", error);
   } finally {
