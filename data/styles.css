@@ -691,6 +691,118 @@ button {
   color: var(--accent);
 }
 
+.upload-activity {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 22px;
+  background: rgba(6, 14, 26, 0.82);
+}
+
+.upload-activity-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.upload-activity-title,
+.upload-progress-label,
+.upload-activity-copy,
+.upload-activity-warning {
+  margin: 0;
+}
+
+.upload-activity-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.upload-phase-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.upload-phase-badge--pending {
+  background: rgba(114, 199, 255, 0.16);
+  color: var(--accent);
+}
+
+.upload-phase-badge--success {
+  background: rgba(112, 214, 166, 0.14);
+  color: var(--success);
+}
+
+.upload-phase-badge--error {
+  background: rgba(255, 143, 143, 0.14);
+  color: #ffb3b3;
+}
+
+.upload-activity-copy {
+  color: var(--text);
+  line-height: 1.6;
+}
+
+.upload-progress-track {
+  position: relative;
+  height: 12px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.upload-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(114, 199, 255, 0.55), rgba(170, 229, 255, 0.92));
+}
+
+.upload-progress-label {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.upload-activity-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.upload-metric {
+  display: grid;
+  gap: 4px;
+}
+
+.upload-metric-label {
+  color: var(--muted);
+  font-size: 0.74rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.upload-metric-value {
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.upload-activity-warning {
+  color: #ffd37d;
+  line-height: 1.6;
+}
+
 .upload-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1255,6 +1367,10 @@ button {
   }
 
   .upload-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .upload-activity-metrics {
     grid-template-columns: 1fr;
   }
 

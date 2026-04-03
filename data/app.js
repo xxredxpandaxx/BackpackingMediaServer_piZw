@@ -16,6 +16,7 @@ const state = {
   uploadFeedback: "",
   uploadFeedbackTone: "",
   preferServerLibrary: false,
+  uploadingLocally: false,
 };
 
 const NOMAD_STORAGE_PREFIX = "nomadscreen-";
@@ -88,6 +89,10 @@ const els = {
   episodeTemplate: document.getElementById("episode-row-template"),
   nav: Array.from(document.querySelectorAll(".nav-link")),
 };
+
+let deviceStatusPollTimer = 0;
+let deviceStatusPollInFlight = false;
+let lastCompletedUploadRefreshKey = "";
 
 function parseRoute(pathname) {
   const cleanPath = pathname.replace(/\/+$/, "") || "/";
@@ -271,6 +276,199 @@ function uploadDestinationPreview(section, folder) {
     .filter((piece) => piece && piece !== "." && piece !== "..")
     .join("/");
   return cleanFolder ? `${config.root}/${cleanFolder}` : config.root;
+}
+
+function uploadStatusSnapshot() {
+  return (state.status && state.status.upload) || null;
+}
+
+function uploadStatusPhase(upload) {
+  return String((upload && upload.phase) || "idle").toLowerCase();
+}
+
+function uploadHasActivity(upload) {
+  const phase = uploadStatusPhase(upload);
+  return Boolean(upload && (upload.active || upload.id || phase === "completed" || phase === "error"));
+}
+
+function uploadPercent(upload) {
+  const reported = Number(upload && upload.percent);
+  if (Number.isFinite(reported) && reported >= 0) {
+    return Math.max(0, Math.min(100, Math.round(reported)));
+  }
+
+  const bytesSent = Number((upload && upload.bytesSent) || 0);
+  const bytesTotal = Number((upload && upload.bytesTotal) || 0);
+  if (bytesTotal > 0) {
+    return Math.max(0, Math.min(100, Math.round((bytesSent / bytesTotal) * 100)));
+  }
+  return 0;
+}
+
+function uploadPhaseLabel(upload) {
+  const phase = uploadStatusPhase(upload);
+  if (phase === "uploading") return "Uploading";
+  if (phase === "processing") return "Processing";
+  if (phase === "completed") return "Complete";
+  if (phase === "error") return "Needs attention";
+  return "Standing by";
+}
+
+function uploadPhaseTone(upload) {
+  const phase = uploadStatusPhase(upload);
+  if (phase === "completed") return "success";
+  if (phase === "error") return "error";
+  if (phase === "uploading" || phase === "processing") return "pending";
+  return "";
+}
+
+function uploadIsActive(upload) {
+  const phase = uploadStatusPhase(upload);
+  return Boolean(upload && (upload.active || phase === "uploading" || phase === "processing"));
+}
+
+function uploadDestinationLabel(upload) {
+  if (!uploadHasActivity(upload)) {
+    return "Waiting for the next upload";
+  }
+  const section = (upload && upload.section) || "movies";
+  const folder = (upload && upload.folder) || "";
+  return uploadDestinationPreview(section, folder);
+}
+
+function uploadFileCountLabel(upload) {
+  const fileCount = Number((upload && upload.fileCount) || 0);
+  const uploadedCount = Number((upload && upload.uploadedCount) || 0);
+  if (!fileCount) {
+    return "Waiting for file list";
+  }
+  if (uploadStatusPhase(upload) === "completed") {
+    return `${uploadedCount || fileCount} of ${fileCount} saved`;
+  }
+  if (uploadedCount > 0) {
+    return `${uploadedCount} of ${fileCount} saved`;
+  }
+  return `${fileCount} file${fileCount === 1 ? "" : "s"}`;
+}
+
+function uploadTransferredLabel(upload) {
+  const bytesSent = Number((upload && upload.bytesSent) || 0);
+  const bytesTotal = Number((upload && upload.bytesTotal) || 0);
+  if (bytesTotal > 0) {
+    return `${formatBytes(bytesSent)} / ${formatBytes(bytesTotal)}`;
+  }
+  if (bytesSent > 0) {
+    return formatBytes(bytesSent);
+  }
+  return uploadHasActivity(upload) ? "Starting now" : "Waiting";
+}
+
+function uploadStatusCopy(upload) {
+  const phase = uploadStatusPhase(upload);
+  if (!uploadHasActivity(upload)) {
+    return "No uploads are active yet. Start one from any phone or laptop and this Device page will mirror it here.";
+  }
+  if (phase === "error") {
+    return upload.error || upload.message || "The last upload did not finish cleanly.";
+  }
+  if (upload.message) {
+    return upload.message;
+  }
+  if (phase === "uploading") {
+    return "Receiving files over Wi-Fi now.";
+  }
+  if (phase === "processing") {
+    return "Transfer finished. The Pi is saving files and refreshing the library.";
+  }
+  if (phase === "completed") {
+    return "Upload finished and the refreshed library is ready.";
+  }
+  return "Standing by for the next upload.";
+}
+
+function uploadCompletionRefreshKey(upload) {
+  if (uploadStatusPhase(upload) !== "completed" || !upload || !upload.id) {
+    return "";
+  }
+  return `${upload.id}|${upload.completedAt || upload.updatedAt || ""}`;
+}
+
+function renderUploadActivity(target, upload) {
+  target.innerHTML = "";
+  target.className = "upload-activity";
+
+  const header = document.createElement("div");
+  header.className = "upload-activity-header";
+
+  const heading = document.createElement("p");
+  heading.className = "upload-activity-title";
+  heading.textContent = "Shared Upload Status";
+
+  const badge = document.createElement("span");
+  badge.className = "upload-phase-badge";
+  const tone = uploadPhaseTone(upload);
+  if (tone) {
+    badge.classList.add(`upload-phase-badge--${tone}`);
+  }
+  badge.textContent = uploadPhaseLabel(upload);
+
+  header.appendChild(heading);
+  header.appendChild(badge);
+  target.appendChild(header);
+
+  const copy = document.createElement("p");
+  copy.className = "upload-activity-copy";
+  copy.textContent = uploadStatusCopy(upload);
+  target.appendChild(copy);
+
+  const track = document.createElement("div");
+  track.className = "upload-progress-track";
+  const fill = document.createElement("div");
+  fill.className = "upload-progress-fill";
+  fill.style.width = `${uploadPercent(upload)}%`;
+  track.appendChild(fill);
+  target.appendChild(track);
+
+  const progressLabel = document.createElement("p");
+  progressLabel.className = "upload-progress-label";
+  progressLabel.textContent = uploadHasActivity(upload)
+    ? `${uploadPercent(upload)}% complete`
+    : "Waiting for the next transfer";
+  target.appendChild(progressLabel);
+
+  const metrics = document.createElement("div");
+  metrics.className = "upload-activity-metrics";
+  const rows = [
+    { label: "Destination", value: uploadDestinationLabel(upload) },
+    { label: "Files", value: uploadFileCountLabel(upload) },
+    { label: "Transferred", value: uploadTransferredLabel(upload) },
+    {
+      label: "Updated",
+      value: formatTimestamp((upload && (upload.completedAt || upload.updatedAt)) || "") || "Waiting",
+    },
+  ];
+
+  for (const row of rows) {
+    const metric = document.createElement("div");
+    metric.className = "upload-metric";
+    const metricLabel = document.createElement("span");
+    metricLabel.className = "upload-metric-label";
+    metricLabel.textContent = row.label;
+    const metricValue = document.createElement("strong");
+    metricValue.className = "upload-metric-value";
+    metricValue.textContent = row.value;
+    metric.appendChild(metricLabel);
+    metric.appendChild(metricValue);
+    metrics.appendChild(metric);
+  }
+  target.appendChild(metrics);
+
+  if (upload && Array.isArray(upload.warnings) && upload.warnings.length) {
+    const warning = document.createElement("p");
+    warning.className = "upload-activity-warning";
+    warning.textContent = upload.warnings.join(" ");
+    target.appendChild(warning);
+  }
 }
 
 function activeNetworkName(status) {
@@ -2410,31 +2608,222 @@ async function refreshDeviceData() {
   await refreshAll();
 }
 
-async function uploadLibraryFiles(section, folder, files) {
+function createUploadId() {
+  return `upload-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function postSharedUploadProgress(payload) {
+  return fetch("/api/upload-progress", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  }).catch(() => null);
+}
+
+async function uploadLibraryFiles(section, folder, files, handlers = {}) {
+  const uploadId = createUploadId();
+  const totalBytes = files.reduce((sum, file) => sum + Math.max(Number(file.size) || 0, 0), 0);
   const formData = new FormData();
+  formData.append("uploadId", uploadId);
   formData.append("section", section);
   formData.append("folder", folder);
   for (const file of files) {
     formData.append("files", file, file.name);
   }
+  let lastProgressSentAt = 0;
 
-  const response = await fetch("/api/upload", {
-    method: "POST",
-    body: formData,
+  const emitProgress = (update) => {
+    if (typeof handlers.onProgress === "function") {
+      handlers.onProgress(update);
+    }
+  };
+
+  const progressUpdate = (update) => ({
+    uploadId,
+    section,
+    folder,
+    fileCount: files.length,
+    ...update,
   });
 
-  let payload = {};
-  try {
-    payload = await response.json();
-  } catch (_error) {
-    payload = {};
-  }
+  const sendProgress = (update, force = false) => {
+    const now = Date.now();
+    if (!force && now - lastProgressSentAt < 400) {
+      return;
+    }
+    lastProgressSentAt = now;
+    void postSharedUploadProgress({
+      uploadId,
+      section,
+      folder,
+      fileCount: files.length,
+      bytesTotal: totalBytes,
+      ...update,
+    });
+  };
 
-  if (!response.ok) {
-    throw new Error(payload.error || `Upload failed with HTTP ${response.status}`);
-  }
+  const initialMessage = `Starting upload of ${files.length} file${files.length === 1 ? "" : "s"}...`;
+  emitProgress(progressUpdate({
+    phase: "uploading",
+    bytesSent: 0,
+    bytesTotal: totalBytes,
+    percent: 0,
+    message: initialMessage,
+  }));
+  sendProgress(
+    {
+      phase: "uploading",
+      bytesSent: 0,
+      message: initialMessage,
+    },
+    true,
+  );
 
-  return payload;
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/upload");
+    xhr.responseType = "json";
+
+    const parsePayload = () => {
+      if (xhr.response && typeof xhr.response === "object") {
+        return xhr.response;
+      }
+      if (!xhr.responseText) {
+        return {};
+      }
+      try {
+        return JSON.parse(xhr.responseText);
+      } catch (_error) {
+        return {};
+      }
+    };
+
+    xhr.upload.addEventListener("progress", (event) => {
+      const bytesTotal = Math.max(event.lengthComputable ? event.total : 0, totalBytes);
+      const bytesSent = Math.max(0, Math.min(event.loaded || 0, bytesTotal || event.loaded || 0));
+      const percent = bytesTotal > 0 ? Math.round((bytesSent / bytesTotal) * 100) : 0;
+      const message = percent
+        ? `Uploading ${files.length} file${files.length === 1 ? "" : "s"}... ${percent}%`
+        : `Uploading ${files.length} file${files.length === 1 ? "" : "s"}...`;
+      const update = progressUpdate({
+        phase: "uploading",
+        bytesSent,
+        bytesTotal,
+        percent,
+        message,
+      });
+      emitProgress(update);
+      sendProgress(
+        {
+          phase: "uploading",
+          bytesSent,
+          bytesTotal,
+          message,
+        },
+        percent >= 100,
+      );
+    });
+
+    xhr.upload.addEventListener("load", () => {
+      const message = "Transfer finished. The Pi is saving files and rescanning the library...";
+      const update = progressUpdate({
+        phase: "processing",
+        bytesSent: totalBytes,
+        bytesTotal: totalBytes,
+        percent: 100,
+        message,
+      });
+      emitProgress(update);
+      sendProgress(
+        {
+          phase: "processing",
+          bytesSent: totalBytes,
+          bytesTotal: totalBytes,
+          message,
+        },
+        true,
+      );
+    });
+
+    xhr.addEventListener("load", () => {
+      const payload = parsePayload();
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(payload);
+        return;
+      }
+
+      const errorMessage = payload.error || `Upload failed with HTTP ${xhr.status}`;
+      emitProgress(progressUpdate({
+        phase: "error",
+        bytesSent: totalBytes,
+        bytesTotal: totalBytes,
+        percent: 100,
+        message: errorMessage,
+        error: errorMessage,
+      }));
+      sendProgress(
+        {
+          phase: "error",
+          bytesSent: totalBytes,
+          bytesTotal: totalBytes,
+          message: errorMessage,
+          error: errorMessage,
+        },
+        true,
+      );
+      reject(new Error(errorMessage));
+    });
+
+    xhr.addEventListener("error", () => {
+      const errorMessage = "Upload failed because the connection to the Pi was interrupted.";
+      emitProgress(progressUpdate({
+        phase: "error",
+        bytesSent: 0,
+        bytesTotal: totalBytes,
+        percent: 0,
+        message: errorMessage,
+        error: errorMessage,
+      }));
+      sendProgress(
+        {
+          phase: "error",
+          bytesSent: 0,
+          bytesTotal: totalBytes,
+          message: errorMessage,
+          error: errorMessage,
+        },
+        true,
+      );
+      reject(new Error(errorMessage));
+    });
+
+    xhr.addEventListener("abort", () => {
+      const errorMessage = "Upload was canceled before it finished.";
+      emitProgress(progressUpdate({
+        phase: "error",
+        bytesSent: 0,
+        bytesTotal: totalBytes,
+        percent: 0,
+        message: errorMessage,
+        error: errorMessage,
+      }));
+      sendProgress(
+        {
+          phase: "error",
+          bytesSent: 0,
+          bytesTotal: totalBytes,
+          message: errorMessage,
+          error: errorMessage,
+        },
+        true,
+      );
+      reject(new Error(errorMessage));
+    });
+
+    xhr.send(formData);
+  });
 }
 
 function createInfoCard(config) {
@@ -2499,6 +2888,7 @@ function createInfoCard(config) {
 function createUploadCard() {
   const draft = state.uploadDraft || {};
   const config = uploadSectionConfig(draft.section);
+  const sharedUpload = uploadStatusSnapshot();
   const card = document.createElement("article");
   card.className = "info-card info-card--upload";
 
@@ -2512,7 +2902,10 @@ function createUploadCard() {
   const copy = document.createElement("p");
   copy.className = "info-copy";
   copy.textContent =
-    "Pick a library section, choose files from this device, and send them straight to the Pi. The library rescans automatically after upload.";
+    "Pick a library section, choose files from this device, and send them straight to the Pi. The library rescans automatically after upload, and this panel mirrors the live transfer for the HDMI screen too.";
+
+  const activity = document.createElement("div");
+  renderUploadActivity(activity, sharedUpload);
 
   const form = document.createElement("form");
   form.className = "upload-form";
@@ -2609,6 +3002,16 @@ function createUploadCard() {
   syncHints();
   applyUploadState(state.uploadFeedback, state.uploadFeedbackTone);
 
+  const applySharedUploadPreview = (upload) => {
+    if (state.status) {
+      state.status.upload = {
+        ...((state.status && state.status.upload) || {}),
+        ...upload,
+      };
+    }
+    renderUploadActivity(activity, upload);
+  };
+
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
 
@@ -2625,6 +3028,7 @@ function createUploadCard() {
     const destination = uploadDestinationPreview(section, folder);
     state.uploadDraft.section = section;
     state.uploadDraft.folder = folder;
+    state.uploadingLocally = true;
 
     form.querySelectorAll("input, select, button").forEach((element) => {
       element.disabled = true;
@@ -2633,20 +3037,38 @@ function createUploadCard() {
     els.pageSubtitle.textContent = `Uploading files to ${destination}...`;
 
     try {
-      const payload = await uploadLibraryFiles(section, folder, files);
+      const payload = await uploadLibraryFiles(section, folder, files, {
+        onProgress: (progress) => {
+          applySharedUploadPreview(progress);
+          applyUploadState(progress.message || "Uploading files...", "pending");
+          els.pageSubtitle.textContent = progress.message || "Uploading files...";
+        },
+      });
       const warningText =
         Array.isArray(payload.warnings) && payload.warnings.length ? ` ${payload.warnings.join(" ")}` : "";
       state.uploadFeedback = `Uploaded ${payload.count} file${payload.count === 1 ? "" : "s"} to ${destination}. The library has been rescanned.${warningText}`;
       state.uploadFeedbackTone = Array.isArray(payload.warnings) && payload.warnings.length ? "pending" : "success";
       state.preferServerLibrary = true;
+      if (payload.upload) {
+        applySharedUploadPreview(payload.upload);
+      }
       fileInput.value = "";
       els.pageSubtitle.textContent = state.uploadFeedback;
+      state.uploadingLocally = false;
       await refreshAll();
     } catch (error) {
       state.uploadFeedback = error.message || "Upload failed.";
       state.uploadFeedbackTone = "error";
       els.pageSubtitle.textContent = `Upload failed: ${state.uploadFeedback}`;
       applyUploadState(state.uploadFeedback, state.uploadFeedbackTone);
+      applySharedUploadPreview({
+        ...(uploadStatusSnapshot() || {}),
+        active: false,
+        phase: "error",
+        message: state.uploadFeedback,
+        error: state.uploadFeedback,
+      });
+      state.uploadingLocally = false;
       form.querySelectorAll("input, select, button").forEach((element) => {
         element.disabled = false;
       });
@@ -2656,6 +3078,7 @@ function createUploadCard() {
   card.appendChild(eyebrow);
   card.appendChild(title);
   card.appendChild(copy);
+  card.appendChild(activity);
   card.appendChild(form);
   return card;
 }
@@ -3937,6 +4360,71 @@ function renderDevicePage(container) {
   container.appendChild(section);
 }
 
+function stopDeviceStatusPolling() {
+  if (deviceStatusPollTimer) {
+    window.clearTimeout(deviceStatusPollTimer);
+    deviceStatusPollTimer = 0;
+  }
+}
+
+function shouldPollDeviceStatus() {
+  return state.route.name === "device" && !document.hidden && !state.uploadingLocally;
+}
+
+function scheduleDeviceStatusPolling(delayMs) {
+  stopDeviceStatusPolling();
+  if (!shouldPollDeviceStatus()) {
+    return;
+  }
+  deviceStatusPollTimer = window.setTimeout(pollDeviceStatus, delayMs);
+}
+
+async function pollDeviceStatus() {
+  if (!shouldPollDeviceStatus()) {
+    stopDeviceStatusPolling();
+    return;
+  }
+  if (deviceStatusPollInFlight) {
+    scheduleDeviceStatusPolling(1200);
+    return;
+  }
+
+  deviceStatusPollTimer = 0;
+  deviceStatusPollInFlight = true;
+  const previousUpload = uploadStatusSnapshot();
+
+  try {
+    await loadStatus();
+    const nextUpload = uploadStatusSnapshot();
+    const completionKey = uploadCompletionRefreshKey(nextUpload);
+    if (completionKey && completionKey !== lastCompletedUploadRefreshKey) {
+      state.preferServerLibrary = true;
+      await loadLibrary();
+      lastCompletedUploadRefreshKey = completionKey;
+    }
+
+    if (uploadCompletionRefreshKey(previousUpload) && !completionKey) {
+      lastCompletedUploadRefreshKey = "";
+    }
+    render();
+  } catch (error) {
+    console.warn("Device status poll failed", error);
+  } finally {
+    deviceStatusPollInFlight = false;
+    scheduleDeviceStatusPolling(uploadIsActive(uploadStatusSnapshot()) ? 900 : 2500);
+  }
+}
+
+function syncDeviceStatusPolling() {
+  if (!shouldPollDeviceStatus()) {
+    stopDeviceStatusPolling();
+    return;
+  }
+  if (!deviceStatusPollTimer) {
+    scheduleDeviceStatusPolling(uploadIsActive(uploadStatusSnapshot()) ? 900 : 2500);
+  }
+}
+
 function renderNav() {
   for (const link of els.nav) {
     link.classList.remove("is-active");
@@ -3997,12 +4485,14 @@ function render() {
   } else {
     renderHomePage(els.content);
   }
+
+  syncDeviceStatusPolling();
 }
 
 async function loadStatus() {
   const response = await fetch("/api/status");
   state.status = await response.json();
-  state.preferServerLibrary = Boolean(state.status && state.status.preferServerLibrary);
+  state.preferServerLibrary = Boolean((state.status && state.status.preferServerLibrary) || state.preferServerLibrary);
 }
 
 async function loadLibraryFromIndex() {
@@ -4074,6 +4564,7 @@ async function loadLibrary() {
 async function refreshAll() {
   await loadStatus();
   await loadLibrary();
+  lastCompletedUploadRefreshKey = uploadCompletionRefreshKey(uploadStatusSnapshot());
 }
 
 document.addEventListener("click", (event) => {
@@ -4096,6 +4587,9 @@ window.addEventListener("beforeunload", () => persistActivePlaybackProgress(true
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
     persistActivePlaybackProgress(true, false, false);
+    stopDeviceStatusPolling();
+  } else {
+    syncDeviceStatusPolling();
   }
 });
 

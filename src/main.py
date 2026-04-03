@@ -7,6 +7,7 @@ import socket
 import subprocess
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -319,6 +320,26 @@ def ensure_unique_path(target_path: Path) -> Path:
         counter += 1
 
 
+def iso_timestamp_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def normalize_upload_id(raw_value: object) -> str:
+    output = []
+    previous_dash = False
+    for character in str(raw_value or "").strip():
+        if character.isalnum():
+            output.append(character.lower())
+            previous_dash = False
+        elif character in {"-", "_"} and output and not previous_dash:
+            output.append(character)
+            previous_dash = True
+        elif output and not previous_dash:
+            output.append("-")
+            previous_dash = True
+    return "".join(output).strip("-")[:80]
+
+
 def load_settings() -> dict[str, object]:
     storage_root_value = os.environ.get("NOMADSCREEN_STORAGE_ROOT", "").strip()
     storage_root = Path(storage_root_value) if storage_root_value else DEFAULT_STORAGE_ROOT
@@ -419,7 +440,125 @@ class AppState:
         self.active_streams = 0
         self.recent_clients: dict[str, float] = {}
         self.storage_ready = False
+        self.upload_status = self.default_upload_status()
         self.scan_library()
+
+    def default_upload_status(self) -> dict[str, object]:
+        return {
+            "id": "",
+            "active": False,
+            "phase": "idle",
+            "section": "",
+            "folder": "",
+            "fileCount": 0,
+            "uploadedCount": 0,
+            "bytesSent": 0,
+            "bytesTotal": 0,
+            "percent": 0,
+            "message": "",
+            "error": "",
+            "warnings": [],
+            "startedAt": "",
+            "updatedAt": "",
+            "completedAt": "",
+        }
+
+    def upload_status_payload(self) -> dict[str, object]:
+        with self.lock:
+            payload = dict(self.upload_status)
+        payload["warnings"] = list(payload.get("warnings") or [])
+        return payload
+
+    def set_upload_status(
+        self,
+        upload_id: str,
+        *,
+        active: bool | None = None,
+        phase: str | None = None,
+        section: str | None = None,
+        folder: str | None = None,
+        file_count: int | None = None,
+        uploaded_count: int | None = None,
+        bytes_sent: int | None = None,
+        bytes_total: int | None = None,
+        message: str | None = None,
+        error: str | None = None,
+        warnings: list[str] | None = None,
+    ) -> dict[str, object]:
+        safe_upload_id = normalize_upload_id(upload_id) or f"upload-{int(time.time() * 1000)}"
+        safe_phase = lowercase_copy(phase) if phase is not None else None
+        if safe_phase not in {None, "idle", "uploading", "processing", "completed", "error"}:
+            safe_phase = "uploading"
+        safe_section = lowercase_copy(section) if section is not None else None
+        if safe_section and safe_section not in UPLOAD_SECTION_CONFIG:
+            safe_section = ""
+        safe_folder = "/".join(sanitize_relative_segments(folder)) if folder is not None else None
+        safe_message = " ".join(str(message or "").split()).strip()[:240] if message is not None else None
+        safe_error = " ".join(str(error or "").split()).strip()[:240] if error is not None else None
+        safe_warnings = (
+            [" ".join(str(entry or "").split()).strip()[:240] for entry in warnings if str(entry or "").strip()]
+            if warnings is not None
+            else None
+        )
+        now = iso_timestamp_now()
+
+        with self.lock:
+            current = dict(self.upload_status)
+            if str(current.get("id") or "") != safe_upload_id:
+                current = self.default_upload_status()
+                current["id"] = safe_upload_id
+                current["startedAt"] = now
+            elif not str(current.get("startedAt") or ""):
+                current["startedAt"] = now
+
+            if safe_phase is not None:
+                current["phase"] = safe_phase
+            if safe_section is not None:
+                current["section"] = safe_section
+            if safe_folder is not None:
+                current["folder"] = safe_folder
+            if file_count is not None:
+                current["fileCount"] = max(int(file_count), 0)
+            if uploaded_count is not None:
+                current["uploadedCount"] = max(int(uploaded_count), 0)
+            if bytes_total is not None:
+                current["bytesTotal"] = max(int(bytes_total), 0)
+            if bytes_sent is not None:
+                current["bytesSent"] = max(int(bytes_sent), 0)
+            if current["bytesTotal"] > 0 and current["bytesSent"] > current["bytesTotal"]:
+                current["bytesSent"] = current["bytesTotal"]
+            if safe_message is not None:
+                current["message"] = safe_message
+            if safe_error is not None:
+                current["error"] = safe_error
+            if safe_warnings is not None:
+                current["warnings"] = safe_warnings
+
+            if current["phase"] == "processing" and current["bytesTotal"] > 0:
+                current["bytesSent"] = current["bytesTotal"]
+            if current["phase"] == "completed":
+                current["bytesSent"] = current["bytesTotal"] or current["bytesSent"]
+                current["completedAt"] = now
+            elif current["phase"] != "completed":
+                current["completedAt"] = ""
+
+            if current["bytesTotal"] > 0:
+                current["percent"] = int(round((current["bytesSent"] / current["bytesTotal"]) * 100))
+            elif current["phase"] in {"processing", "completed"} and current["bytesSent"] > 0:
+                current["percent"] = 100
+            else:
+                current["percent"] = 0
+
+            if active is not None:
+                current["active"] = bool(active)
+            else:
+                current["active"] = current["phase"] in {"uploading", "processing"}
+            if current["phase"] in {"idle", "completed", "error"}:
+                current["active"] = False
+
+            current["updatedAt"] = now
+            self.upload_status = current
+            return self.upload_status_payload()
 
     def cleanup_recent_clients(self, now: float | None = None) -> None:
         cutoff = (now or time.time()) - int(self.settings["client_window_seconds"])
@@ -967,6 +1106,7 @@ class AppState:
             "metadataItemCount": len(self.item_metadata),
             "metadataShowCount": len(self.show_metadata),
             "preferServerLibrary": self.metadata_index_stale,
+            "upload": self.upload_status_payload(),
             "platform": "raspberry-pi-zero-w",
         }
 
@@ -1089,6 +1229,29 @@ def api_status() -> Response:
     return no_store_json(state.status_payload())
 
 
+@app.post("/api/upload-progress")
+def api_upload_progress() -> Response:
+    payload = request.get_json(silent=True) or {}
+    upload_id = normalize_upload_id(payload.get("uploadId"))
+    if not upload_id:
+        return no_store_json({"error": "Missing uploadId"}, 400)
+
+    upload = state.set_upload_status(
+        upload_id,
+        active=lowercase_copy(str(payload.get("phase") or "uploading")) not in {"completed", "error", "idle"},
+        phase=str(payload.get("phase") or "uploading"),
+        section=str(payload.get("section") or ""),
+        folder=str(payload.get("folder") or ""),
+        file_count=safe_int(payload.get("fileCount"), 0, 0),
+        uploaded_count=safe_int(payload.get("uploadedCount"), 0, 0),
+        bytes_sent=safe_int(payload.get("bytesSent"), 0, 0),
+        bytes_total=safe_int(payload.get("bytesTotal"), 0, 0),
+        message=str(payload.get("message") or ""),
+        error=str(payload.get("error") or ""),
+    )
+    return no_store_json({"ok": True, "upload": upload}, 202)
+
+
 @app.get("/api/library")
 def api_library() -> Response:
     if not state.storage_ready:
@@ -1112,19 +1275,53 @@ def api_asset() -> Response:
 
 @app.post("/api/upload")
 def api_upload() -> Response:
+    upload_id = normalize_upload_id(request.form.get("uploadId")) or f"upload-{int(time.time() * 1000)}"
     section = lowercase_copy(str(request.form.get("section") or ""))
     section_config = UPLOAD_SECTION_CONFIG.get(section)
     if section_config is None:
+        state.set_upload_status(
+            upload_id,
+            phase="error",
+            section=section,
+            message="Upload failed. The selected library section is invalid.",
+            error="Invalid upload section",
+        )
         return no_store_json({"error": "Invalid upload section"}, 400)
 
     files = [uploaded for uploaded in request.files.getlist("files") if str(uploaded.filename or "").strip()]
     if not files:
+        state.set_upload_status(
+            upload_id,
+            phase="error",
+            section=section,
+            message="Upload failed. Choose at least one file first.",
+            error="Choose at least one file to upload",
+        )
         return no_store_json({"error": "Choose at least one file to upload"}, 400)
 
     folder = str(request.form.get("folder") or "")
     normalized_folder = "/".join(sanitize_relative_segments(folder))
+    current_upload = state.upload_status_payload()
+    known_total_bytes = (
+        int(current_upload.get("bytesTotal") or 0) if str(current_upload.get("id") or "") == upload_id else 0
+    )
+    state.set_upload_status(
+        upload_id,
+        active=True,
+        phase="processing",
+        section=section,
+        folder=normalized_folder,
+        file_count=len(files),
+        uploaded_count=0,
+        bytes_sent=known_total_bytes,
+        bytes_total=known_total_bytes,
+        message="Transfer finished. Saving files on the Pi...",
+        error="",
+        warnings=[],
+    )
     uploaded_items: list[dict[str, object]] = []
     warnings: list[str] = []
+    saved_bytes = 0
 
     for uploaded in files:
         file_name = sanitize_upload_filename(str(uploaded.filename or ""))
@@ -1152,6 +1349,7 @@ def api_upload() -> Response:
             actual_path.parent.mkdir(parents=True, exist_ok=True)
             final_path = ensure_unique_path(actual_path)
             uploaded.save(final_path)
+            saved_bytes += final_path.stat().st_size
             final_virtual_path = "/" + final_path.relative_to(Path(state.settings["storage_root"])).as_posix()
             uploaded_items.append(
                 {
@@ -1162,21 +1360,77 @@ def api_upload() -> Response:
                     "type": media_type,
                 }
             )
+            processing_bytes = known_total_bytes or saved_bytes
+            state.set_upload_status(
+                upload_id,
+                active=True,
+                phase="processing",
+                section=section,
+                folder=normalized_folder,
+                file_count=len(files),
+                uploaded_count=len(uploaded_items),
+                bytes_sent=processing_bytes,
+                bytes_total=processing_bytes,
+                message=f"Saving files on the Pi ({len(uploaded_items)}/{len(files)})...",
+                warnings=warnings,
+            )
         except OSError:
             warnings.append(f"Failed to save {file_name}.")
 
     if not uploaded_items:
+        state.set_upload_status(
+            upload_id,
+            phase="error",
+            section=section,
+            folder=normalized_folder,
+            file_count=len(files),
+            uploaded_count=0,
+            bytes_sent=known_total_bytes,
+            bytes_total=known_total_bytes,
+            message="Upload failed before any files were saved.",
+            error="No files were uploaded",
+            warnings=warnings,
+        )
         return no_store_json({"error": "No files were uploaded", "warnings": warnings}, 400)
 
+    processing_bytes = known_total_bytes or saved_bytes
+    state.set_upload_status(
+        upload_id,
+        active=True,
+        phase="processing",
+        section=section,
+        folder=normalized_folder,
+        file_count=len(files),
+        uploaded_count=len(uploaded_items),
+        bytes_sent=processing_bytes,
+        bytes_total=processing_bytes,
+        message="Upload complete. Rescanning the library...",
+        warnings=warnings,
+    )
     state.scan_library()
+    upload_status = state.set_upload_status(
+        upload_id,
+        phase="completed",
+        section=section,
+        folder=normalized_folder,
+        file_count=len(files),
+        uploaded_count=len(uploaded_items),
+        bytes_sent=processing_bytes,
+        bytes_total=processing_bytes,
+        message=f"Uploaded {len(uploaded_items)} file{'s' if len(uploaded_items) != 1 else ''}.",
+        error="",
+        warnings=warnings,
+    )
     return no_store_json(
         {
             "ok": True,
+            "uploadId": upload_id,
             "section": section,
             "folder": normalized_folder,
             "count": len(uploaded_items),
             "uploaded": uploaded_items,
             "warnings": warnings,
+            "upload": upload_status,
         },
         201,
     )
