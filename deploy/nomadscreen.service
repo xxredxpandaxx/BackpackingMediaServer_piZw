@@ -8,9 +8,10 @@ Type=simple
 User=pi
 Group=pi
 WorkingDirectory=/opt/nomadscreen
+Environment=PYTHONUNBUFFERED=1
 Environment=NOMADSCREEN_STORAGE_ROOT=/srv/nomadscreen
 Environment=NOMADSCREEN_PORT=80
-ExecStart=/usr/bin/python3 /opt/nomadscreen/src/main.py
+ExecStart=/opt/nomadscreen/.venv/bin/python /opt/nomadscreen/src/main.py
 Restart=on-failure
 RestartSec=5
 AmbientCapabilities=CAP_NET_BIND_SERVICE

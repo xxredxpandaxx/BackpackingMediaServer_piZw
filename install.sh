@@ -1,0 +1,251 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+SERVICE_NAME="${NOMADSCREEN_SERVICE_NAME:-nomadscreen}"
+INSTALL_DIR="${NOMADSCREEN_INSTALL_DIR:-/opt/nomadscreen}"
+STORAGE_ROOT="${NOMADSCREEN_STORAGE_ROOT:-/srv/nomadscreen}"
+REPO_URL="${NOMADSCREEN_REPO_URL:-}"
+REPO_REF="${NOMADSCREEN_REPO_REF:-main}"
+GITHUB_SLUG="${NOMADSCREEN_GITHUB_SLUG:-}"
+HTTP_PORT="${NOMADSCREEN_PORT:-80}"
+
+usage() {
+  cat <<'EOF'
+Nomad Screen installer
+
+Usage:
+  install.sh --repo https://github.com/owner/repo.git [options]
+  install.sh --github owner/repo [options]
+
+Options:
+  --repo URL              Public git clone URL to install from
+  --github owner/repo     GitHub repo shorthand for public repos
+  --ref REF               Branch, tag, or ref to install (default: main)
+  --install-dir PATH      App install path (default: /opt/nomadscreen)
+  --storage-root PATH     Runtime storage root (default: /srv/nomadscreen)
+  --port PORT             HTTP port for the service (default: 80)
+  -h, --help              Show this help
+EOF
+}
+
+log() {
+  printf '[nomadscreen-install] %s\n' "$*"
+}
+
+die() {
+  printf '[nomadscreen-install] Error: %s\n' "$*" >&2
+  exit 1
+}
+
+run_root() {
+  if [[ "${EUID}" -eq 0 ]]; then
+    "$@"
+  else
+    sudo "$@"
+  fi
+}
+
+run_as_install_user() {
+  if [[ "$(id -un)" == "${INSTALL_USER}" ]]; then
+    "$@"
+  else
+    sudo -u "${INSTALL_USER}" "$@"
+  fi
+}
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --repo)
+        [[ $# -ge 2 ]] || die "--repo requires a value"
+        REPO_URL="$2"
+        shift 2
+        ;;
+      --github)
+        [[ $# -ge 2 ]] || die "--github requires a value"
+        GITHUB_SLUG="$2"
+        shift 2
+        ;;
+      --ref)
+        [[ $# -ge 2 ]] || die "--ref requires a value"
+        REPO_REF="$2"
+        shift 2
+        ;;
+      --install-dir)
+        [[ $# -ge 2 ]] || die "--install-dir requires a value"
+        INSTALL_DIR="$2"
+        shift 2
+        ;;
+      --storage-root)
+        [[ $# -ge 2 ]] || die "--storage-root requires a value"
+        STORAGE_ROOT="$2"
+        shift 2
+        ;;
+      --port)
+        [[ $# -ge 2 ]] || die "--port requires a value"
+        HTTP_PORT="$2"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        die "Unknown argument: $1"
+        ;;
+    esac
+  done
+}
+
+ensure_install_user() {
+  if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+    INSTALL_USER="${SUDO_USER}"
+  else
+    INSTALL_USER="$(id -un)"
+  fi
+
+  [[ -n "${INSTALL_USER}" ]] || die "Could not determine the install user"
+  id "${INSTALL_USER}" >/dev/null 2>&1 || die "Install user '${INSTALL_USER}' does not exist"
+  INSTALL_GROUP="$(id -gn "${INSTALL_USER}")"
+}
+
+install_packages() {
+  log "Installing required packages"
+  run_root apt-get update
+  run_root apt-get install -y git python3 python3-venv ca-certificates
+}
+
+prepare_repo() {
+  local install_parent
+
+  install_parent="$(dirname "${INSTALL_DIR}")"
+  run_root mkdir -p "${install_parent}"
+
+  if [[ -e "${INSTALL_DIR}" && ! -d "${INSTALL_DIR}" ]]; then
+    die "Install path exists and is not a directory: ${INSTALL_DIR}"
+  fi
+
+  if [[ ! -d "${INSTALL_DIR}" ]]; then
+    run_root mkdir -p "${INSTALL_DIR}"
+  fi
+
+  run_root chown -R "${INSTALL_USER}:${INSTALL_GROUP}" "${INSTALL_DIR}"
+
+  if [[ -d "${INSTALL_DIR}/.git" ]]; then
+    log "Updating existing checkout in ${INSTALL_DIR}"
+    if run_as_install_user git -C "${INSTALL_DIR}" status --porcelain | grep -q .; then
+      die "Existing checkout has local changes. Commit or discard them before rerunning the installer."
+    fi
+
+    run_as_install_user git -C "${INSTALL_DIR}" remote set-url origin "${REPO_URL}"
+    run_as_install_user git -C "${INSTALL_DIR}" fetch --depth 1 origin "${REPO_REF}"
+    run_as_install_user git -C "${INSTALL_DIR}" checkout -B "${REPO_REF}" FETCH_HEAD
+  else
+    if find "${INSTALL_DIR}" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
+      die "Install directory is not empty and is not a git checkout: ${INSTALL_DIR}"
+    fi
+
+    log "Cloning ${REPO_URL} into ${INSTALL_DIR}"
+    run_as_install_user git clone --depth 1 --branch "${REPO_REF}" "${REPO_URL}" "${INSTALL_DIR}"
+  fi
+}
+
+seed_storage() {
+  log "Preparing runtime storage at ${STORAGE_ROOT}"
+  run_root mkdir -p "${STORAGE_ROOT}"
+  run_root cp -a -n "${INSTALL_DIR}/sdcard-template/." "${STORAGE_ROOT}/"
+  run_root mkdir -p "${STORAGE_ROOT}/media"
+  run_root chown -R "${INSTALL_USER}:${INSTALL_GROUP}" "${STORAGE_ROOT}"
+}
+
+install_python_deps() {
+  log "Creating virtual environment"
+  run_as_install_user python3 -m venv "${INSTALL_DIR}/.venv"
+
+  log "Installing Python dependencies"
+  run_as_install_user "${INSTALL_DIR}/.venv/bin/pip" install --upgrade pip
+  run_as_install_user "${INSTALL_DIR}/.venv/bin/pip" install -r "${INSTALL_DIR}/requirements.txt"
+}
+
+write_service() {
+  local tmp_service
+  local service_path
+
+  service_path="/etc/systemd/system/${SERVICE_NAME}.service"
+  tmp_service="$(mktemp)"
+
+  cat >"${tmp_service}" <<EOF
+[Unit]
+Description=Nomad Screen media server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${INSTALL_USER}
+Group=${INSTALL_GROUP}
+WorkingDirectory=${INSTALL_DIR}
+Environment=PYTHONUNBUFFERED=1
+Environment=NOMADSCREEN_STORAGE_ROOT=${STORAGE_ROOT}
+Environment=NOMADSCREEN_PORT=${HTTP_PORT}
+ExecStart=${INSTALL_DIR}/.venv/bin/python ${INSTALL_DIR}/src/main.py
+Restart=on-failure
+RestartSec=5
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  log "Writing systemd service to ${service_path}"
+  run_root install -m 0644 "${tmp_service}" "${service_path}"
+  rm -f "${tmp_service}"
+}
+
+start_service() {
+  log "Enabling and starting ${SERVICE_NAME}.service"
+  run_root systemctl daemon-reload
+  run_root systemctl enable --now "${SERVICE_NAME}.service"
+
+  if ! run_root systemctl is-active --quiet "${SERVICE_NAME}.service"; then
+    run_root systemctl --no-pager --full status "${SERVICE_NAME}.service" || true
+    die "Service failed to start"
+  fi
+}
+
+print_success() {
+  local host_ip
+  host_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+
+  log "Install complete"
+  log "App directory: ${INSTALL_DIR}"
+  log "Storage root: ${STORAGE_ROOT}"
+  log "Service name: ${SERVICE_NAME}.service"
+  log "Copy your media into ${STORAGE_ROOT}/media and then use the Device page to rescan."
+
+  if [[ -n "${host_ip}" ]]; then
+    log "Open http://${host_ip}/app"
+  fi
+}
+
+parse_args "$@"
+
+if [[ -z "${REPO_URL}" && -n "${GITHUB_SLUG}" ]]; then
+  REPO_URL="https://github.com/${GITHUB_SLUG}.git"
+fi
+
+[[ -n "${REPO_URL}" ]] || die "Pass --repo or --github so the installer knows what to clone"
+
+command -v sudo >/dev/null 2>&1 || die "sudo is required"
+command -v python3 >/dev/null 2>&1 || die "python3 is required"
+
+ensure_install_user
+install_packages
+prepare_repo
+seed_storage
+install_python_deps
+write_service
+start_service
+print_success

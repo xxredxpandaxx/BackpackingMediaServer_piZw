@@ -17,6 +17,7 @@ A Raspberry Pi Zero W portable media server that keeps the existing Nomad Screen
 
 ## Project layout
 
+- `install.sh`: idempotent Pi installer for public GitHub repos
 - `src/main.py`: Pi-native HTTP server, media scan logic, metadata merge, and streaming endpoints
 - `data/`: static web app shell, styles, and client-side browsing logic
 - `sdcard-template/`: copy-ready storage layout with `/media`, metadata tooling, and sample config
@@ -59,27 +60,75 @@ By default, the repo uses `sdcard-template/` as the storage root so the project 
 
 ## Raspberry Pi Zero W setup
 
-1. Copy the repo to the Pi, for example `/opt/nomadscreen`.
-2. Copy the contents of `sdcard-template/` to your runtime storage root, for example `/srv/nomadscreen`.
-3. Install Python 3 and the project dependency:
+### One-command install
+
+Once the repo is public, you can install or update the Pi with one command:
+
+```bash
+sudo apt update && sudo apt install -y curl && curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/install.sh | bash -s -- --github YOUR_USERNAME/YOUR_REPO
+```
+
+What that installer does:
+
+- installs `git`, `python3`, and `python3-venv`
+- clones or updates the repo into `/opt/nomadscreen`
+- seeds `/srv/nomadscreen` from `sdcard-template/` without overwriting existing media
+- creates `/opt/nomadscreen/.venv` and installs Python dependencies
+- writes and enables `nomadscreen.service`
+
+You can rerun the same command later to pull the latest code onto the Pi.
+
+### Manual setup
+
+1. Install the base packages on the Pi:
 
    ```bash
-   python3 -m pip install -r /opt/nomadscreen/requirements.txt
+   sudo apt update
+   sudo apt install -y git python3 python3-venv
    ```
 
-4. Start the server manually once to confirm the library loads:
+2. Clone the repo onto the Pi:
 
    ```bash
-   NOMADSCREEN_STORAGE_ROOT=/srv/nomadscreen python3 /opt/nomadscreen/src/main.py
+   sudo git clone <your-repo-url> /opt/nomadscreen
+   sudo chown -R $USER:$USER /opt/nomadscreen
    ```
 
-5. Install the example service if you want it to start on boot:
+3. Copy the contents of `sdcard-template/` to your runtime storage root, for example `/srv/nomadscreen`.
+4. Create a virtual environment and install the dependency:
 
    ```bash
+   python3 -m venv /opt/nomadscreen/.venv
+   /opt/nomadscreen/.venv/bin/pip install -r /opt/nomadscreen/requirements.txt
+   ```
+
+5. Start the server manually once to confirm the library loads:
+
+   ```bash
+   NOMADSCREEN_STORAGE_ROOT=/srv/nomadscreen /opt/nomadscreen/.venv/bin/python /opt/nomadscreen/src/main.py
+   ```
+
+6. Install the example service if you want it to start on boot:
+
+   ```bash
+   # If your Pi login is not "pi", edit User= and Group= first.
    sudo cp /opt/nomadscreen/deploy/nomadscreen.service /etc/systemd/system/nomadscreen.service
    sudo systemctl daemon-reload
    sudo systemctl enable --now nomadscreen.service
    ```
+
+7. Copy media into `/srv/nomadscreen/media` using the Pi filesystem or your preferred network transfer tool, then trigger a rescan from the Device page.
+
+## Loading content over Wi-Fi
+
+This project does not bundle a file-transfer service of its own. Once the Pi is online, move media into `/srv/nomadscreen/media` with whatever network workflow fits your setup, then run `/api/rescan` or use the Device page in the web UI.
+
+Common choices are:
+
+- `scp` or `sftp`
+- SMB or Samba shares
+- `rsync`
+- Syncthing or another sync tool
 
 ## Optional hotspot mode
 

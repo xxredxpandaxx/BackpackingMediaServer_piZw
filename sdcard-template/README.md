@@ -28,9 +28,9 @@ The backend still derives the Wi-Fi name and `.local` host automatically from `d
 ## Metadata workflow
 
 1. Copy media into the `/media` folders in this storage root.
-2. Double-click `NomadScreen Refresh Metadata.cmd` on Windows if you are maintaining the library from a removable drive.
+2. If you maintain the library from a Windows machine before sending it to the Pi, double-click `NomadScreen Refresh Metadata.cmd`.
 3. Let the script rebuild `/media/.nomadscreen/library.json` and any downloaded artwork.
-4. Reconnect that storage to the Pi if needed, then trigger `/api/rescan` from the Device page.
+4. Transfer the updated media tree to the Pi if needed, then trigger `/api/rescan` from the Device page.
 
 The Pi backend reads those generated files for titles, summaries, ratings, and poster art, but it does not show `.nomadscreen` as normal media.
 
