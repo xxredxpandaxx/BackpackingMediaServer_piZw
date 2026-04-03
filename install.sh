@@ -5,9 +5,9 @@ set -Eeuo pipefail
 SERVICE_NAME="${NOMADSCREEN_SERVICE_NAME:-nomadscreen}"
 INSTALL_DIR="${NOMADSCREEN_INSTALL_DIR:-/opt/nomadscreen}"
 STORAGE_ROOT="${NOMADSCREEN_STORAGE_ROOT:-/srv/nomadscreen}"
-REPO_URL="${NOMADSCREEN_REPO_URL:-}"
+REPO_URL="${NOMADSCREEN_REPO_URL:-https://github.com/xxredxpandaxx/BackpackingMediaServer_piZw.git}"
 REPO_REF="${NOMADSCREEN_REPO_REF:-main}"
-GITHUB_SLUG="${NOMADSCREEN_GITHUB_SLUG:-}"
+GITHUB_SLUG="${NOMADSCREEN_GITHUB_SLUG:-xxredxpandaxx/BackpackingMediaServer_piZw}"
 HTTP_PORT="${NOMADSCREEN_PORT:-80}"
 
 usage() {
@@ -15,6 +15,7 @@ usage() {
 Nomad Screen installer
 
 Usage:
+  install.sh
   install.sh --repo https://github.com/owner/repo.git [options]
   install.sh --github owner/repo [options]
 
@@ -26,6 +27,9 @@ Options:
   --storage-root PATH     Runtime storage root (default: /srv/nomadscreen)
   --port PORT             HTTP port for the service (default: 80)
   -h, --help              Show this help
+
+If no repo is provided, the installer uses:
+  https://github.com/xxredxpandaxx/BackpackingMediaServer_piZw.git
 EOF
 }
 
@@ -236,7 +240,7 @@ if [[ -z "${REPO_URL}" && -n "${GITHUB_SLUG}" ]]; then
   REPO_URL="https://github.com/${GITHUB_SLUG}.git"
 fi
 
-[[ -n "${REPO_URL}" ]] || die "Pass --repo or --github so the installer knows what to clone"
+[[ -n "${REPO_URL}" ]] || die "No repository URL is configured"
 
 command -v sudo >/dev/null 2>&1 || die "sudo is required"
 command -v python3 >/dev/null 2>&1 || die "python3 is required"

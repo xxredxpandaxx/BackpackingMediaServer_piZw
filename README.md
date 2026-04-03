@@ -65,7 +65,7 @@ By default, the repo uses `sdcard-template/` as the storage root so the project 
 Once the repo is public, you can install or update the Pi with one command:
 
 ```bash
-sudo apt update && sudo apt install -y curl && curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/install.sh | bash -s -- --github YOUR_USERNAME/YOUR_REPO
+curl -fsSL https://raw.githubusercontent.com/xxredxpandaxx/BackpackingMediaServer_piZw/main/install.sh | sudo bash
 ```
 
 What that installer does:
