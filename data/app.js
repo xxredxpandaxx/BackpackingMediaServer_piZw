@@ -3526,8 +3526,9 @@ function createUploadCard() {
     const activeConfig = uploadRootConfigForPath(selectedDestination || initialDestination);
     const finalDestination = uploadDestinationPreview(selectedDestination, newFolderInput.value);
     const selectedSummary = describeUploadSelection(fileInput.files, folderInput.files);
+    const actualMediaRoot = (state.status && state.status.mediaRoot) || "";
     newFolderInput.placeholder = activeConfig.newFolderPlaceholder;
-    note.textContent = `${uploadDestinationHelp(selectedDestination)} Selected folder: ${selectedDestination}. Final destination: ${finalDestination || selectedDestination}.${selectedSummary ? ` Selected: ${selectedSummary}.` : " Select loose files, a whole folder, or both."}`;
+    note.textContent = `${uploadDestinationHelp(selectedDestination)} Selected folder: ${selectedDestination}. Final destination: ${finalDestination || selectedDestination}.${actualMediaRoot ? ` Files are stored on the Pi under ${actualMediaRoot}.` : ""}${selectedSummary ? ` Selected: ${selectedSummary}.` : " Select loose files, a whole folder, or both."}`;
     state.uploadDraft.destination = selectedDestination;
     state.uploadDraft.newFolder = newFolderInput.value.trim();
   };
@@ -3588,7 +3589,9 @@ function createUploadCard() {
       });
       const warningText =
         Array.isArray(payload.warnings) && payload.warnings.length ? ` ${payload.warnings.join(" ")}` : "";
-      state.uploadFeedback = `Uploaded ${payload.count} file${payload.count === 1 ? "" : "s"} to ${payload.destination || destination}. The library has been rescanned.${warningText}`;
+      const savedBytesText = Number(payload.savedBytes || 0) > 0 ? ` Saved ${formatBytes(payload.savedBytes)}.` : "";
+      const mediaRootText = payload.mediaRoot ? ` Stored under ${payload.mediaRoot}.` : "";
+      state.uploadFeedback = `Uploaded ${payload.count} file${payload.count === 1 ? "" : "s"} to ${payload.destination || destination}. The library has been rescanned.${savedBytesText}${mediaRootText}${warningText}`;
       state.uploadFeedbackTone = Array.isArray(payload.warnings) && payload.warnings.length ? "pending" : "success";
       state.preferServerLibrary = true;
       if (payload.upload) {

@@ -998,6 +998,12 @@ class AppState:
         media_directory = self.media_root_path()
         scanned_items: list[dict[str, object]] = []
         storage_ready = media_directory.exists() and media_directory.is_dir()
+        if not storage_ready:
+            try:
+                media_directory.mkdir(parents=True, exist_ok=True)
+                storage_ready = media_directory.exists() and media_directory.is_dir()
+            except OSError:
+                storage_ready = False
 
         if storage_ready:
             for root, dirs, files in os.walk(media_directory):
@@ -1490,15 +1496,11 @@ def api_upload_progress() -> Response:
 
 @app.get("/api/library")
 def api_library() -> Response:
-    if not state.storage_ready:
-        return no_store_json({"error": "Media storage unavailable"}, 503)
     return no_store_json(state.library_payload())
 
 
 @app.get("/api/upload-destinations")
 def api_upload_destinations() -> Response:
-    if not state.storage_ready:
-        return no_store_json({"error": "Media storage unavailable"}, 503)
     return no_store_json(state.upload_destinations_payload())
 
 
@@ -1696,6 +1698,8 @@ def api_upload() -> Response:
             "section": section,
             "folder": normalized_folder,
             "count": len(uploaded_items),
+            "savedBytes": saved_bytes,
+            "mediaRoot": str(state.settings["media_directory"]),
             "uploaded": uploaded_items,
             "warnings": warnings,
             "upload": upload_status,
