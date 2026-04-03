@@ -17,6 +17,7 @@ const state = {
   uploadFeedbackTone: "",
   preferServerLibrary: false,
   uploadingLocally: false,
+  uploadPendingSelection: false,
   uploadDestinations: [],
 };
 
@@ -3286,11 +3287,14 @@ function createUploadCard() {
   const syncHints = () => {
     const activeConfig = uploadRootConfigForPath(selectedDestination || initialDestination);
     const finalDestination = uploadDestinationPreview(selectedDestination, newFolderInput.value);
+    const selectedEntries = collectUploadEntries(fileInput.files, folderInput.files);
     const selectedSummary = describeUploadSelection(fileInput.files, folderInput.files);
     newFolderInput.placeholder = activeConfig.newFolderPlaceholder;
     note.textContent = `${uploadDestinationHelp(selectedDestination)} Selected folder: ${selectedDestination}. Final destination: ${finalDestination || selectedDestination}.${selectedSummary ? ` Selected: ${selectedSummary}.` : " Select loose files, a whole folder, or both."}`;
     state.uploadDraft.destination = selectedDestination;
     state.uploadDraft.newFolder = newFolderInput.value.trim();
+    state.uploadPendingSelection = Boolean(selectedEntries.length);
+    syncDeviceStatusPolling();
   };
 
   newFolderInput.addEventListener("input", syncHints);
@@ -4685,7 +4689,7 @@ function stopDeviceStatusPolling() {
 }
 
 function shouldPollDeviceStatus() {
-  return state.route.name === "device" && !document.hidden && !state.uploadingLocally;
+  return state.route.name === "device" && !document.hidden && !state.uploadingLocally && !state.uploadPendingSelection;
 }
 
 function scheduleDeviceStatusPolling(delayMs) {
@@ -4712,6 +4716,9 @@ async function pollDeviceStatus() {
 
   try {
     await loadStatus();
+    if (!shouldPollDeviceStatus()) {
+      return;
+    }
     const nextUpload = uploadStatusSnapshot();
     const completionKey = uploadCompletionRefreshKey(nextUpload);
     if (completionKey && completionKey !== lastCompletedUploadRefreshKey) {
@@ -4722,6 +4729,9 @@ async function pollDeviceStatus() {
 
     if (uploadCompletionRefreshKey(previousUpload) && !completionKey) {
       lastCompletedUploadRefreshKey = "";
+    }
+    if (!shouldPollDeviceStatus()) {
+      return;
     }
     render();
   } catch (error) {
