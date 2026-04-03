@@ -193,6 +193,12 @@ prepare_repo() {
     run_as_install_user git clone --depth 1 --branch "${REPO_REF}" "${REPO_URL}" "${INSTALL_DIR}"
   fi
 
+  if [[ -f "${INSTALL_DIR}/install.sh" ]]; then
+    run_root chmod 0755 "${INSTALL_DIR}/install.sh"
+  fi
+  if [[ -f "${INSTALL_DIR}/update.sh" ]]; then
+    run_root chmod 0755 "${INSTALL_DIR}/update.sh"
+  fi
   run_root chmod 0755 "${INSTALL_DIR}/deploy/network/nomadscreen-network.sh"
 }
 

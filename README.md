@@ -76,7 +76,25 @@ What that installer does:
 - writes and enables `nomadscreen-network.service`
 - writes and enables `nomadscreen.service`
 
-You can rerun the same command later to pull the latest code onto the Pi.
+For normal updates after the first install, use the updater instead of the full installer:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/xxredxpandaxx/BackpackingMediaServer_piZw/main/update.sh | bash
+```
+
+That updater:
+
+- pulls the latest code into `/opt/nomadscreen`
+- refreshes Python dependencies
+- rewrites the service units with your current paths
+- restarts `nomadscreen`
+- leaves `nomadscreen-network` alone by default so you do not get kicked off the Pi's Wi-Fi mid-update
+
+If you know you want to apply network-service changes immediately too, run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/xxredxpandaxx/BackpackingMediaServer_piZw/main/update.sh | bash -s -- --restart-network
+```
 
 ### Manual setup
 
