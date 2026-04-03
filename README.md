@@ -21,9 +21,8 @@ A Raspberry Pi Zero W portable media server that keeps the existing Nomad Screen
 - `src/main.py`: Pi-native HTTP server, media scan logic, metadata merge, and streaming endpoints
 - `data/`: static web app shell, styles, and client-side browsing logic
 - `sdcard-template/`: copy-ready storage layout with `/media`, metadata tooling, and sample config
+- `deploy/network/`: fallback Wi-Fi script and `systemd` unit for known-network-first hotspot mode
 - `deploy/nomadscreen.service`: example `systemd` unit
-- `deploy/hostapd/hostapd.conf.example`: optional Pi hotspot template
-- `deploy/dnsmasq/nomadscreen.conf.example`: optional DHCP helper template
 
 ## Storage layout
 
@@ -70,10 +69,11 @@ curl -fsSL https://raw.githubusercontent.com/xxredxpandaxx/BackpackingMediaServe
 
 What that installer does:
 
-- installs `git`, `python3`, and `python3-venv`
+- installs `git`, `python3`, `python3-venv`, and `NetworkManager`
 - clones or updates the repo into `/opt/nomadscreen`
 - seeds `/srv/nomadscreen` from `sdcard-template/` without overwriting existing media
 - creates `/opt/nomadscreen/.venv` and installs Python dependencies
+- writes and enables `nomadscreen-network.service`
 - writes and enables `nomadscreen.service`
 
 You can rerun the same command later to pull the latest code onto the Pi.
@@ -111,17 +111,22 @@ You can rerun the same command later to pull the latest code onto the Pi.
 6. Install the example service if you want it to start on boot:
 
    ```bash
-   # If your Pi login is not "pi", edit User= and Group= first.
+   sudo cp /opt/nomadscreen/deploy/network/nomadscreen-network.service /etc/systemd/system/nomadscreen-network.service
+   # If your Pi login is not "pi", edit User= and Group= in nomadscreen.service first.
    sudo cp /opt/nomadscreen/deploy/nomadscreen.service /etc/systemd/system/nomadscreen.service
    sudo systemctl daemon-reload
+   sudo systemctl enable --now NetworkManager.service
+   sudo systemctl enable --now nomadscreen-network.service
    sudo systemctl enable --now nomadscreen.service
    ```
 
-7. Copy media into `/srv/nomadscreen/media` using the Pi filesystem or your preferred network transfer tool, then trigger a rescan from the Device page.
+7. Open `/app/device` and use the built-in upload panel to send files over Wi-Fi, or copy media into `/srv/nomadscreen/media` manually if you prefer.
 
 ## Loading content over Wi-Fi
 
-This project does not bundle a file-transfer service of its own. Once the Pi is online, move media into `/srv/nomadscreen/media` with whatever network workflow fits your setup, then run `/api/rescan` or use the Device page in the web UI.
+Once the Pi is online, the fastest path is the upload panel on `/app/device`, which saves files into the library and rescans automatically.
+
+You can still move media into `/srv/nomadscreen/media` with whatever network workflow fits your setup, then run `/api/rescan` or use the Device page in the web UI.
 
 Common choices are:
 
@@ -130,13 +135,24 @@ Common choices are:
 - `rsync`
 - Syncthing or another sync tool
 
-## Optional hotspot mode
+## Fallback hotspot mode
 
-On Raspberry Pi Zero W, hotspot behavior is handled by Raspberry Pi OS networking rather than by the app itself.
+On Raspberry Pi OS Bookworm and newer, the project uses NetworkManager for Wi-Fi handling.
 
-- Use `deploy/hostapd/hostapd.conf.example` as the starting point for `hostapd`
-- Use `deploy/dnsmasq/nomadscreen.conf.example` as the starting point for `dnsmasq`
-- Keep `deviceName` and `wifiPassword` in `nomadscreen.config.json` aligned with your Pi hotspot settings so the UI still reports the same network name and password
+The built-in `nomadscreen-network.service` does this on boot:
+
+- tries to join a known Wi-Fi network on `wlan0`
+- waits `knownWifiTimeoutSeconds` for that connection to come up
+- starts a fallback hotspot if no known network is available
+
+The fallback hotspot uses:
+
+- `deviceName` to derive the hotspot SSID shown in the UI
+- `wifiPassword` as the hotspot password
+- `fallbackAccessPointEnabled` to turn the fallback behavior on or off
+- `wifiInterface` if your wireless adapter is not `wlan0`
+
+To preload known networks, use Raspberry Pi Imager advanced settings before first boot or connect once with `nmcli` on the Pi. NetworkManager will remember those credentials for future boots.
 
 ## Runtime config
 
@@ -146,6 +162,9 @@ On Raspberry Pi Zero W, hotspot behavior is handled by Raspberry Pi OS networkin
 - `bindAddress`
 - `mdnsEnabled`
 - `mdnsHost`
+- `wifiInterface`
+- `fallbackAccessPointEnabled`
+- `knownWifiTimeoutSeconds`
 - `maxClients`
 - `maxStreams`
 - `clientWindowSeconds`

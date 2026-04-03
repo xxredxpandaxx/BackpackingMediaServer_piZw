@@ -19,11 +19,13 @@ You can keep that storage on:
 Edit `nomadscreen.config.json` to set:
 
 - the device/server name shown in the web UI
-- the Wi-Fi password you want the UI to report for hotspot mode
+- the fallback hotspot password
+- whether fallback hotspot mode is enabled
+- how long the Pi should wait for a known Wi-Fi network before it creates its own access point
 - TMDb metadata settings and image-download options
 - optional Pi server settings such as `httpPort`, `bindAddress`, and `mdnsEnabled`
 
-The backend still derives the Wi-Fi name and `.local` host automatically from `deviceName`.
+The backend and the fallback hotspot service both derive the Wi-Fi name and `.local` host automatically from `deviceName`.
 
 ## Metadata workflow
 
@@ -47,3 +49,4 @@ The Pi backend reads those generated files for titles, summaries, ratings, and p
 - The metadata script still works with built-in PowerShell on Windows.
 - `tools/nomadscreen-metadata.config.json` is kept only as a legacy metadata-only fallback.
 - Nested folders inside `media/documents` still show up as clickable folders in the Documents page.
+- On Raspberry Pi OS Bookworm and newer, NetworkManager remembers known Wi-Fi networks and the project will only create its own hotspot when those networks are unavailable.

@@ -45,7 +45,8 @@ body::before {
 
 body,
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -606,6 +607,102 @@ button {
   margin-top: 20px;
 }
 
+.info-card--upload {
+  grid-column: span 2;
+}
+
+.upload-form {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.upload-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.upload-field {
+  display: grid;
+  gap: 6px;
+}
+
+.upload-field--full {
+  grid-column: 1 / -1;
+}
+
+.upload-label {
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+}
+
+.upload-text,
+.upload-select,
+.upload-file {
+  width: 100%;
+  padding: 11px 14px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(7, 18, 33, 0.9);
+  color: var(--text);
+}
+
+.upload-file {
+  padding: 10px 12px;
+}
+
+.upload-file::file-selector-button {
+  margin-right: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.upload-note,
+.upload-status {
+  margin: 0;
+  line-height: 1.6;
+}
+
+.upload-note {
+  color: var(--muted);
+}
+
+.upload-status {
+  min-height: 1.6em;
+  color: var(--muted);
+}
+
+.upload-status--success {
+  color: var(--success);
+}
+
+.upload-status--error {
+  color: #ff8f8f;
+}
+
+.upload-status--pending {
+  color: var(--accent);
+}
+
+.upload-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.upload-actions .primary-button:disabled,
+.upload-actions .ghost-button:disabled {
+  opacity: 0.65;
+  cursor: progress;
+}
+
 .poster-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -1150,6 +1247,14 @@ button {
   }
 
   .device-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .info-card--upload {
+    grid-column: auto;
+  }
+
+  .upload-grid {
     grid-template-columns: 1fr;
   }
 

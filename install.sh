@@ -3,6 +3,7 @@
 set -Eeuo pipefail
 
 SERVICE_NAME="${NOMADSCREEN_SERVICE_NAME:-nomadscreen}"
+NETWORK_SERVICE_NAME="${NOMADSCREEN_NETWORK_SERVICE_NAME:-nomadscreen-network}"
 INSTALL_DIR="${NOMADSCREEN_INSTALL_DIR:-/opt/nomadscreen}"
 STORAGE_ROOT="${NOMADSCREEN_STORAGE_ROOT:-/srv/nomadscreen}"
 REPO_URL="${NOMADSCREEN_REPO_URL:-https://github.com/xxredxpandaxx/BackpackingMediaServer_piZw.git}"
@@ -117,7 +118,7 @@ ensure_install_user() {
 install_packages() {
   log "Installing required packages"
   run_root apt-get update
-  run_root apt-get install -y git python3 python3-venv ca-certificates
+  run_root apt-get install -y git python3 python3-venv ca-certificates network-manager
 }
 
 prepare_repo() {
@@ -153,6 +154,8 @@ prepare_repo() {
     log "Cloning ${REPO_URL} into ${INSTALL_DIR}"
     run_as_install_user git clone --depth 1 --branch "${REPO_REF}" "${REPO_URL}" "${INSTALL_DIR}"
   fi
+
+  run_root chmod 0755 "${INSTALL_DIR}/deploy/network/nomadscreen-network.sh"
 }
 
 seed_storage() {
@@ -172,6 +175,35 @@ install_python_deps() {
   run_as_install_user "${INSTALL_DIR}/.venv/bin/pip" install -r "${INSTALL_DIR}/requirements.txt"
 }
 
+write_network_service() {
+  local tmp_service
+  local service_path
+
+  service_path="/etc/systemd/system/${NETWORK_SERVICE_NAME}.service"
+  tmp_service="$(mktemp)"
+
+  cat >"${tmp_service}" <<EOF
+[Unit]
+Description=Nomad Screen Wi-Fi fallback
+Wants=NetworkManager.service
+After=NetworkManager.service
+Before=${SERVICE_NAME}.service
+
+[Service]
+Type=oneshot
+Environment=NOMADSCREEN_STORAGE_ROOT=${STORAGE_ROOT}
+ExecStart=${INSTALL_DIR}/deploy/network/nomadscreen-network.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  log "Writing systemd service to ${service_path}"
+  run_root install -m 0644 "${tmp_service}" "${service_path}"
+  rm -f "${tmp_service}"
+}
+
 write_service() {
   local tmp_service
   local service_path
@@ -182,8 +214,8 @@ write_service() {
   cat >"${tmp_service}" <<EOF
 [Unit]
 Description=Nomad Screen media server
-After=network-online.target
-Wants=network-online.target
+After=network.target ${NETWORK_SERVICE_NAME}.service
+Wants=${NETWORK_SERVICE_NAME}.service
 
 [Service]
 Type=simple
@@ -208,15 +240,32 @@ EOF
   rm -f "${tmp_service}"
 }
 
-start_service() {
-  log "Enabling and starting ${SERVICE_NAME}.service"
-  run_root systemctl daemon-reload
-  run_root systemctl enable --now "${SERVICE_NAME}.service"
+restart_service_unit() {
+  local service_name="$1"
 
-  if ! run_root systemctl is-active --quiet "${SERVICE_NAME}.service"; then
-    run_root systemctl --no-pager --full status "${SERVICE_NAME}.service" || true
+  log "Enabling ${service_name}.service"
+  run_root systemctl daemon-reload
+  run_root systemctl enable "${service_name}.service"
+
+  if run_root systemctl is-active --quiet "${service_name}.service"; then
+    log "Restarting ${service_name}.service to apply updates"
+    run_root systemctl restart "${service_name}.service"
+  else
+    log "Starting ${service_name}.service"
+    run_root systemctl start "${service_name}.service"
+  fi
+
+  if ! run_root systemctl is-active --quiet "${service_name}.service"; then
+    run_root systemctl --no-pager --full status "${service_name}.service" || true
     die "Service failed to start"
   fi
+}
+
+start_service() {
+  log "Ensuring NetworkManager is active"
+  run_root systemctl enable --now NetworkManager.service
+  restart_service_unit "${NETWORK_SERVICE_NAME}"
+  restart_service_unit "${SERVICE_NAME}"
 }
 
 print_success() {
@@ -226,6 +275,7 @@ print_success() {
   log "Install complete"
   log "App directory: ${INSTALL_DIR}"
   log "Storage root: ${STORAGE_ROOT}"
+  log "Network service: ${NETWORK_SERVICE_NAME}.service"
   log "Service name: ${SERVICE_NAME}.service"
   log "Copy your media into ${STORAGE_ROOT}/media and then use the Device page to rescan."
 
@@ -250,6 +300,7 @@ install_packages
 prepare_repo
 seed_storage
 install_python_deps
+write_network_service
 write_service
 start_service
 print_success

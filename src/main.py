@@ -4,6 +4,7 @@ import json
 import mimetypes
 import os
 import socket
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -20,6 +21,8 @@ DEFAULT_DEVICE_NAME = "Nomad Screen"
 DEFAULT_MDNS_HOST = "nomadscreen"
 DEFAULT_ACCESS_POINT_SSID = "NomadScreen"
 DEFAULT_ACCESS_POINT_PASSWORD = "backpackingmedia"
+DEFAULT_WIFI_INTERFACE = "wlan0"
+DEFAULT_KNOWN_WIFI_TIMEOUT_SECONDS = 20
 DEFAULT_APP_PATH = "/app"
 DEFAULT_MEDIA_ROOT = "/media"
 DEFAULT_METADATA_ROOT = "/media/.nomadscreen"
@@ -37,6 +40,14 @@ SECTION_ORDER = {
     "music": 2,
     "audiobooks": 3,
     "documents": 4,
+}
+
+UPLOAD_SECTION_CONFIG = {
+    "movies": {"label": "Movies", "base_path": "/media/movies", "media_types": {"video"}},
+    "tv": {"label": "TV Shows", "base_path": "/media/tv", "media_types": {"video"}},
+    "music": {"label": "Music", "base_path": "/media/music", "media_types": {"audio"}},
+    "audiobooks": {"label": "Audiobooks", "base_path": "/media/audiobooks", "media_types": {"audio"}},
+    "documents": {"label": "Documents", "base_path": "/media/documents", "media_types": {"document", "image"}},
 }
 
 
@@ -241,12 +252,71 @@ def env_bool(name: str, default: bool) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def config_bool(value: object, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    lowered = str(value).strip().lower()
+    if not lowered:
+        return default
+    if lowered in {"1", "true", "yes", "on"}:
+        return True
+    if lowered in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 def safe_int(value: object, default: int, minimum: int = 0) -> int:
     try:
         parsed = int(value)
     except (TypeError, ValueError):
         return default
     return parsed if parsed >= minimum else default
+
+
+def sanitize_upload_filename(raw_filename: str) -> str:
+    file_name = Path(str(raw_filename or "").replace("\\", "/")).name.strip().replace("\x00", "")
+    if not file_name or file_name in {".", ".."} or file_name.startswith("."):
+        return ""
+    return file_name
+
+
+def sanitize_relative_segments(raw_path: str) -> list[str]:
+    segments = []
+    for piece in str(raw_path or "").replace("\\", "/").split("/"):
+        cleaned = " ".join(piece.split()).strip()
+        if not cleaned or cleaned in {".", ".."}:
+            continue
+        segments.append(cleaned)
+    return segments
+
+
+def build_upload_virtual_path(section: str, folder: str, file_name: str) -> str:
+    section_config = UPLOAD_SECTION_CONFIG.get(section)
+    if section_config is None:
+        return ""
+
+    pieces = split_path(str(section_config["base_path"])) + sanitize_relative_segments(folder) + [file_name]
+    virtual_path = normalize_virtual_path("/" + "/".join(pieces))
+    expected_prefix = normalize_virtual_path(str(section_config["base_path"]))
+    if not virtual_path.startswith(expected_prefix):
+        return ""
+    return virtual_path
+
+
+def ensure_unique_path(target_path: Path) -> Path:
+    if not target_path.exists():
+        return target_path
+
+    stem = target_path.stem
+    suffix = target_path.suffix
+    counter = 2
+    while True:
+        candidate = target_path.with_name(f"{stem} ({counter}){suffix}")
+        if not candidate.exists():
+            return candidate
+        counter += 1
 
 
 def load_settings() -> dict[str, object]:
@@ -285,6 +355,26 @@ def load_settings() -> dict[str, object]:
         DEFAULT_HTTP_PORT,
         1,
     )
+    wifi_interface = (
+        os.environ.get("NOMADSCREEN_WIFI_INTERFACE", "").strip()
+        or str(
+            raw_config.get("wifiInterface")
+            or ((raw_config.get("wifi") or {}).get("interface") if isinstance(raw_config.get("wifi"), dict) else "")
+            or DEFAULT_WIFI_INTERFACE
+        ).strip()
+    )
+    known_wifi_timeout_seconds = safe_int(
+        raw_config.get("knownWifiTimeoutSeconds") or raw_config.get("wifiConnectTimeoutSeconds"),
+        DEFAULT_KNOWN_WIFI_TIMEOUT_SECONDS,
+        5,
+    )
+    fallback_ap_enabled = env_bool(
+        "NOMADSCREEN_FALLBACK_AP",
+        config_bool(
+            raw_config.get("fallbackAccessPointEnabled", raw_config.get("accessPointEnabled")),
+            True,
+        ),
+    )
     mdns_host = sanitize_mdns_host(str(raw_config.get("mdnsHost") or "")) or derived_mdns_host(device_name)
 
     return {
@@ -294,6 +384,9 @@ def load_settings() -> dict[str, object]:
         "device_name": device_name,
         "ssid": derived_access_point_ssid(device_name),
         "wifi_password": wifi_password,
+        "wifi_interface": wifi_interface or DEFAULT_WIFI_INTERFACE,
+        "known_wifi_timeout_seconds": known_wifi_timeout_seconds,
+        "fallback_ap_enabled": fallback_ap_enabled,
         "mdns_host": mdns_host,
         "mdns_enabled": env_bool("NOMADSCREEN_MDNS", bool(raw_config.get("mdnsEnabled", False))),
         "bind_address": bind_address,
@@ -319,6 +412,7 @@ class AppState:
         self.metadata_available = False
         self.metadata_generated_at = ""
         self.metadata_generator = ""
+        self.metadata_index_stale = False
         self.last_played_title = ""
         self.last_played_type = ""
         self.last_played_at = 0.0
@@ -377,6 +471,68 @@ class AppState:
         except OSError:
             pass
         return "127.0.0.1"
+
+    def nmcli_value(self, fields: str, *args: str) -> list[str]:
+        try:
+            completed = subprocess.run(
+                ["nmcli", "-t", "-g", fields, *args],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=1.5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return []
+        if completed.returncode != 0:
+            return []
+        return [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+
+    def network_snapshot(self) -> dict[str, object]:
+        wifi_interface = str(self.settings.get("wifi_interface") or DEFAULT_WIFI_INTERFACE).strip() or DEFAULT_WIFI_INTERFACE
+        hotspot_name = str(self.settings["ssid"])
+        hotspot_password = str(self.settings["wifi_password"])
+        snapshot = {
+            "mode": "unknown",
+            "current_name": "",
+            "current_password": "",
+            "hotspot_name": hotspot_name,
+            "hotspot_password": hotspot_password,
+            "interface": wifi_interface,
+        }
+
+        for line in self.nmcli_value("DEVICE,TYPE,STATE,CONNECTION", "device", "status"):
+            if not line.startswith(f"{wifi_interface}:"):
+                continue
+
+            parts = line.split(":", 3)
+            if len(parts) < 4:
+                return snapshot
+
+            _device, device_type, device_state, connection_name = parts
+            if device_type != "wifi":
+                snapshot["mode"] = "offline"
+                return snapshot
+
+            if device_state != "connected" or not connection_name or connection_name == "--":
+                snapshot["mode"] = "offline"
+                return snapshot
+
+            mode_lines = self.nmcli_value("802-11-wireless.mode", "connection", "show", connection_name)
+            ssid_lines = self.nmcli_value("802-11-wireless.ssid", "connection", "show", connection_name)
+            connection_mode = mode_lines[0].lower() if mode_lines else ""
+            current_name = ssid_lines[0] if ssid_lines else connection_name
+
+            if connection_mode == "ap":
+                snapshot["mode"] = "hotspot"
+                snapshot["current_name"] = current_name or hotspot_name
+                snapshot["current_password"] = hotspot_password
+                return snapshot
+
+            snapshot["mode"] = "client"
+            snapshot["current_name"] = current_name or connection_name
+            return snapshot
+
+        return snapshot
 
     def compose_url(self, host: str, port: int, suffix: str = "") -> str:
         safe_host = str(host or "").strip() or "127.0.0.1"
@@ -625,6 +781,10 @@ class AppState:
             )
         )
 
+        metadata_paths = {normalize_virtual_path(str(entry.get("path") or "")) for entry in item_entries}
+        scanned_paths = {normalize_virtual_path(str(item.get("path") or "")) for item in scanned_items}
+        metadata_index_stale = bool(metadata_paths) and metadata_paths != scanned_paths
+
         with self.lock:
             self.media_library = scanned_items
             self.item_metadata = item_entries
@@ -632,6 +792,7 @@ class AppState:
             self.metadata_generated_at = generated_at
             self.metadata_generator = generator
             self.metadata_available = bool(item_entries or show_entries)
+            self.metadata_index_stale = metadata_index_stale
             self.storage_ready = storage_ready
 
     def count_section(self, section: str) -> int:
@@ -768,10 +929,20 @@ class AppState:
         mdns_host = f"{self.settings['mdns_host']}.local"
         ip_app_url = self.compose_url(local_ip, port, DEFAULT_APP_PATH)
         mdns_url = self.compose_url(mdns_host, port, DEFAULT_APP_PATH)
+        network = self.network_snapshot()
+        current_name = str(network["current_name"])
+        reported_ssid = current_name if current_name else str(network["hotspot_name"])
         return {
             "device": self.settings["device_name"],
-            "ssid": self.settings["ssid"],
-            "password": self.settings["wifi_password"],
+            "ssid": reported_ssid,
+            "password": str(network["current_password"]),
+            "networkMode": network["mode"],
+            "networkName": current_name,
+            "hotspotSsid": network["hotspot_name"],
+            "hotspotPassword": network["hotspot_password"],
+            "wifiInterface": network["interface"],
+            "fallbackApEnabled": self.settings["fallback_ap_enabled"],
+            "knownWifiTimeoutSeconds": self.settings["known_wifi_timeout_seconds"],
             "ip": local_ip,
             "appUrl": mdns_url if self.settings["mdns_enabled"] else ip_app_url,
             "ipAppUrl": ip_app_url,
@@ -795,6 +966,7 @@ class AppState:
             "metadataGenerator": self.metadata_generator,
             "metadataItemCount": len(self.item_metadata),
             "metadataShowCount": len(self.show_metadata),
+            "preferServerLibrary": self.metadata_index_stale,
             "platform": "raspberry-pi-zero-w",
         }
 
@@ -936,6 +1108,78 @@ def api_asset() -> Response:
     if not state.storage_ready:
         return plain_text_response("Media storage unavailable", 503)
     return serve_storage_file(track_playback=False)
+
+
+@app.post("/api/upload")
+def api_upload() -> Response:
+    section = lowercase_copy(str(request.form.get("section") or ""))
+    section_config = UPLOAD_SECTION_CONFIG.get(section)
+    if section_config is None:
+        return no_store_json({"error": "Invalid upload section"}, 400)
+
+    files = [uploaded for uploaded in request.files.getlist("files") if str(uploaded.filename or "").strip()]
+    if not files:
+        return no_store_json({"error": "Choose at least one file to upload"}, 400)
+
+    folder = str(request.form.get("folder") or "")
+    normalized_folder = "/".join(sanitize_relative_segments(folder))
+    uploaded_items: list[dict[str, object]] = []
+    warnings: list[str] = []
+
+    for uploaded in files:
+        file_name = sanitize_upload_filename(str(uploaded.filename or ""))
+        if not file_name:
+            warnings.append("Skipped a file with an invalid name.")
+            continue
+
+        virtual_path = build_upload_virtual_path(section, normalized_folder, file_name)
+        if not virtual_path:
+            warnings.append(f"Skipped {file_name}: invalid destination.")
+            continue
+
+        media_type = classify_media_type(virtual_path)
+        allowed_types = set(section_config["media_types"])
+        if media_type not in allowed_types:
+            warnings.append(f"Skipped {file_name}: unsupported file type for {section}.")
+            continue
+
+        actual_path = state.resolve_virtual_path(virtual_path)
+        if actual_path is None:
+            warnings.append(f"Skipped {file_name}: destination could not be resolved.")
+            continue
+
+        try:
+            actual_path.parent.mkdir(parents=True, exist_ok=True)
+            final_path = ensure_unique_path(actual_path)
+            uploaded.save(final_path)
+            final_virtual_path = "/" + final_path.relative_to(Path(state.settings["storage_root"])).as_posix()
+            uploaded_items.append(
+                {
+                    "name": final_path.name,
+                    "path": normalize_virtual_path(final_virtual_path),
+                    "bytes": final_path.stat().st_size,
+                    "section": section,
+                    "type": media_type,
+                }
+            )
+        except OSError:
+            warnings.append(f"Failed to save {file_name}.")
+
+    if not uploaded_items:
+        return no_store_json({"error": "No files were uploaded", "warnings": warnings}, 400)
+
+    state.scan_library()
+    return no_store_json(
+        {
+            "ok": True,
+            "section": section,
+            "folder": normalized_folder,
+            "count": len(uploaded_items),
+            "uploaded": uploaded_items,
+            "warnings": warnings,
+        },
+        201,
+    )
 
 
 @app.post("/api/rescan")

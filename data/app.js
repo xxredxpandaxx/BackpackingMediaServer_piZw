@@ -9,6 +9,13 @@ const state = {
   watchedOverrides: {},
   pendingResume: null,
   lastProgressSaveAt: 0,
+  uploadDraft: {
+    section: "movies",
+    folder: "",
+  },
+  uploadFeedback: "",
+  uploadFeedbackTone: "",
+  preferServerLibrary: false,
 };
 
 const NOMAD_STORAGE_PREFIX = "nomadscreen-";
@@ -16,6 +23,43 @@ const PLAYBACK_STORAGE_KEY = "nomadscreen-playback-v1";
 const WATCHED_STORAGE_KEY = "nomadscreen-watched-v1";
 const PROGRESS_SAVE_INTERVAL_MS = 5000;
 const RESUME_MIN_SECONDS = 30;
+const UPLOAD_SECTIONS = [
+  {
+    value: "movies",
+    label: "Movies",
+    root: "/media/movies",
+    placeholder: "Optional folder, e.g. Favorites",
+    help: "Upload standalone video files here.",
+  },
+  {
+    value: "tv",
+    label: "TV Shows",
+    root: "/media/tv",
+    placeholder: "Show Name/Season 1",
+    help: "Use show and season folders so episodes stay grouped correctly.",
+  },
+  {
+    value: "music",
+    label: "Music",
+    root: "/media/music",
+    placeholder: "Artist/Album",
+    help: "Use folders like Artist/Album for cleaner browsing.",
+  },
+  {
+    value: "audiobooks",
+    label: "Audiobooks",
+    root: "/media/audiobooks",
+    placeholder: "Author/Series",
+    help: "Use folders to keep books and series organized.",
+  },
+  {
+    value: "documents",
+    label: "Documents",
+    root: "/media/documents",
+    placeholder: "Maps/Trip Name",
+    help: "Great for PDFs, images, maps, permits, and checklists.",
+  },
+];
 
 const els = {
   brandMark: document.getElementById("brand-mark"),
@@ -211,7 +255,60 @@ function appDisplayName() {
 }
 
 function appNetworkName() {
-  return (state.status && state.status.ssid) || appDisplayName();
+  return (state.status && (state.status.hotspotSsid || state.status.ssid)) || appDisplayName();
+}
+
+function uploadSectionConfig(section) {
+  return UPLOAD_SECTIONS.find((entry) => entry.value === section) || UPLOAD_SECTIONS[0];
+}
+
+function uploadDestinationPreview(section, folder) {
+  const config = uploadSectionConfig(section);
+  const cleanFolder = String(folder || "")
+    .replace(/\\/g, "/")
+    .split("/")
+    .map((piece) => piece.trim())
+    .filter((piece) => piece && piece !== "." && piece !== "..")
+    .join("/");
+  return cleanFolder ? `${config.root}/${cleanFolder}` : config.root;
+}
+
+function activeNetworkName(status) {
+  return (status && (status.networkName || status.ssid)) || "";
+}
+
+function hotspotNetworkName(status) {
+  return (status && (status.hotspotSsid || (status.networkMode === "hotspot" ? status.ssid : ""))) || appNetworkName();
+}
+
+function networkModeLabel(status) {
+  const mode = String((status && status.networkMode) || "").toLowerCase();
+  if (mode === "client") return "Joined known Wi-Fi";
+  if (mode === "hotspot") return "Fallback hotspot active";
+  if (mode === "offline") return "Offline";
+  return "Status unavailable";
+}
+
+function deviceNetworkSubtitle(status, preferredUrl) {
+  const mode = String((status && status.networkMode) || "").toLowerCase();
+  const currentName = activeNetworkName(status);
+  const hotspotName = hotspotNetworkName(status);
+
+  if (mode === "client") {
+    return `The Pi joined ${currentName || "a known Wi-Fi network"}. Clients on that network can open ${preferredUrl}.`;
+  }
+
+  if (mode === "hotspot") {
+    return `No known Wi-Fi was available, so the Pi started ${hotspotName}. Join it and open ${preferredUrl}.`;
+  }
+
+  if (mode === "offline") {
+    return status && status.fallbackApEnabled
+      ? `The Pi is offline right now. It will try known Wi-Fi first and fall back to ${hotspotName} when needed.`
+      : "The Pi is offline right now and fallback hotspot mode is disabled.";
+  }
+
+  return `Open ${preferredUrl} once the Pi joins a known network or starts ${hotspotName}.`;
 }
 
 function appBrandMark() {
@@ -2303,6 +2400,7 @@ function createEmptyState(message) {
 
 async function rescanLibrary() {
   els.pageSubtitle.textContent = "Rescanning the media library and refreshing metadata...";
+  state.preferServerLibrary = true;
   await fetch("/api/rescan", { method: "POST" });
   await refreshAll();
 }
@@ -2310,6 +2408,33 @@ async function rescanLibrary() {
 async function refreshDeviceData() {
   els.pageSubtitle.textContent = "Refreshing device status and library information...";
   await refreshAll();
+}
+
+async function uploadLibraryFiles(section, folder, files) {
+  const formData = new FormData();
+  formData.append("section", section);
+  formData.append("folder", folder);
+  for (const file of files) {
+    formData.append("files", file, file.name);
+  }
+
+  const response = await fetch("/api/upload", {
+    method: "POST",
+    body: formData,
+  });
+
+  let payload = {};
+  try {
+    payload = await response.json();
+  } catch (_error) {
+    payload = {};
+  }
+
+  if (!response.ok) {
+    throw new Error(payload.error || `Upload failed with HTTP ${response.status}`);
+  }
+
+  return payload;
 }
 
 function createInfoCard(config) {
@@ -2368,6 +2493,170 @@ function createInfoCard(config) {
     card.appendChild(actions);
   }
 
+  return card;
+}
+
+function createUploadCard() {
+  const draft = state.uploadDraft || {};
+  const config = uploadSectionConfig(draft.section);
+  const card = document.createElement("article");
+  card.className = "info-card info-card--upload";
+
+  const eyebrow = document.createElement("p");
+  eyebrow.className = "eyebrow";
+  eyebrow.textContent = "Upload";
+
+  const title = document.createElement("h3");
+  title.textContent = "Add Media Over Wi-Fi";
+
+  const copy = document.createElement("p");
+  copy.className = "info-copy";
+  copy.textContent =
+    "Pick a library section, choose files from this device, and send them straight to the Pi. The library rescans automatically after upload.";
+
+  const form = document.createElement("form");
+  form.className = "upload-form";
+
+  const fields = document.createElement("div");
+  fields.className = "upload-grid";
+
+  const sectionField = document.createElement("label");
+  sectionField.className = "upload-field";
+  const sectionLabel = document.createElement("span");
+  sectionLabel.className = "upload-label";
+  sectionLabel.textContent = "Library section";
+  const sectionSelect = document.createElement("select");
+  sectionSelect.className = "upload-select";
+  sectionSelect.name = "upload-section";
+  for (const section of UPLOAD_SECTIONS) {
+    const option = document.createElement("option");
+    option.value = section.value;
+    option.textContent = section.label;
+    option.selected = section.value === config.value;
+    sectionSelect.appendChild(option);
+  }
+  sectionField.appendChild(sectionLabel);
+  sectionField.appendChild(sectionSelect);
+
+  const folderField = document.createElement("label");
+  folderField.className = "upload-field";
+  const folderLabel = document.createElement("span");
+  folderLabel.className = "upload-label";
+  folderLabel.textContent = "Folder inside that section";
+  const folderInput = document.createElement("input");
+  folderInput.className = "upload-text";
+  folderInput.type = "text";
+  folderInput.name = "upload-folder";
+  folderInput.value = draft.folder || "";
+  folderInput.placeholder = config.placeholder;
+  folderField.appendChild(folderLabel);
+  folderField.appendChild(folderInput);
+
+  const fileField = document.createElement("label");
+  fileField.className = "upload-field upload-field--full";
+  const fileLabel = document.createElement("span");
+  fileLabel.className = "upload-label";
+  fileLabel.textContent = "Files";
+  const fileInput = document.createElement("input");
+  fileInput.className = "upload-file";
+  fileInput.type = "file";
+  fileInput.name = "upload-files";
+  fileInput.multiple = true;
+  fileField.appendChild(fileLabel);
+  fileField.appendChild(fileInput);
+
+  const note = document.createElement("p");
+  note.className = "upload-note";
+
+  const feedback = document.createElement("p");
+  feedback.className = "upload-status";
+
+  const actions = document.createElement("div");
+  actions.className = "upload-actions";
+  const submit = document.createElement("button");
+  submit.type = "submit";
+  submit.className = "primary-button";
+  submit.textContent = "Upload And Rescan";
+  actions.appendChild(submit);
+
+  fields.appendChild(sectionField);
+  fields.appendChild(folderField);
+  fields.appendChild(fileField);
+  form.appendChild(fields);
+  form.appendChild(note);
+  form.appendChild(feedback);
+  form.appendChild(actions);
+
+  const applyUploadState = (message, tone) => {
+    feedback.textContent = message || "";
+    feedback.className = "upload-status";
+    if (tone) {
+      feedback.classList.add(`upload-status--${tone}`);
+    }
+  };
+
+  const syncHints = () => {
+    const activeConfig = uploadSectionConfig(sectionSelect.value);
+    const destination = uploadDestinationPreview(sectionSelect.value, folderInput.value);
+    folderInput.placeholder = activeConfig.placeholder;
+    note.textContent = `${activeConfig.help} Destination: ${destination}`;
+    state.uploadDraft.section = sectionSelect.value;
+    state.uploadDraft.folder = folderInput.value.trim();
+  };
+
+  sectionSelect.addEventListener("change", syncHints);
+  folderInput.addEventListener("input", syncHints);
+  syncHints();
+  applyUploadState(state.uploadFeedback, state.uploadFeedbackTone);
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+
+    const files = Array.from(fileInput.files || []);
+    if (!files.length) {
+      state.uploadFeedback = "Choose at least one file to upload.";
+      state.uploadFeedbackTone = "error";
+      applyUploadState(state.uploadFeedback, state.uploadFeedbackTone);
+      return;
+    }
+
+    const section = sectionSelect.value;
+    const folder = folderInput.value.trim();
+    const destination = uploadDestinationPreview(section, folder);
+    state.uploadDraft.section = section;
+    state.uploadDraft.folder = folder;
+
+    form.querySelectorAll("input, select, button").forEach((element) => {
+      element.disabled = true;
+    });
+    applyUploadState(`Uploading ${files.length} file${files.length === 1 ? "" : "s"} to ${destination}...`, "pending");
+    els.pageSubtitle.textContent = `Uploading files to ${destination}...`;
+
+    try {
+      const payload = await uploadLibraryFiles(section, folder, files);
+      const warningText =
+        Array.isArray(payload.warnings) && payload.warnings.length ? ` ${payload.warnings.join(" ")}` : "";
+      state.uploadFeedback = `Uploaded ${payload.count} file${payload.count === 1 ? "" : "s"} to ${destination}. The library has been rescanned.${warningText}`;
+      state.uploadFeedbackTone = Array.isArray(payload.warnings) && payload.warnings.length ? "pending" : "success";
+      state.preferServerLibrary = true;
+      fileInput.value = "";
+      els.pageSubtitle.textContent = state.uploadFeedback;
+      await refreshAll();
+    } catch (error) {
+      state.uploadFeedback = error.message || "Upload failed.";
+      state.uploadFeedbackTone = "error";
+      els.pageSubtitle.textContent = `Upload failed: ${state.uploadFeedback}`;
+      applyUploadState(state.uploadFeedback, state.uploadFeedbackTone);
+      form.querySelectorAll("input, select, button").forEach((element) => {
+        element.disabled = false;
+      });
+    }
+  });
+
+  card.appendChild(eyebrow);
+  card.appendChild(title);
+  card.appendChild(copy);
+  card.appendChild(form);
   return card;
 }
 
@@ -2932,10 +3221,11 @@ function renderHero(show, movie, season, documentBrowser) {
     }
   } else if (state.route.name === "device") {
     const status = state.status || {};
+    const preferredUrl = status.mdnsReady ? status.mdnsUrl : status.ipAppUrl || status.appUrl || "/app";
     eyebrow.textContent = "Device Control";
     title.textContent = status.device || appDisplayName();
     subtitle.textContent = status.sdMounted
-      ? `Connected clients can join ${status.ssid || appNetworkName()} and open ${status.mdnsReady ? status.mdnsUrl : status.ipAppUrl || status.appUrl || "/app"}.`
+      ? deviceNetworkSubtitle(status, preferredUrl)
       : "The admin page shows network details, storage health, and library maintenance controls.";
     gradientKey = "device";
     actionRow.appendChild(
@@ -3410,6 +3700,9 @@ function renderDevicePage(container) {
   const metadata = library.metadata || {};
   const preferredUrl = status.mdnsReady ? status.mdnsUrl : status.ipAppUrl || status.appUrl;
   const lastPlayed = joinBits([status.lastPlayed, status.lastPlayedType]);
+  const currentNetworkName = activeNetworkName(status);
+  const hotspotName = hotspotNetworkName(status);
+  const hotspotPassword = status.hotspotPassword || (status.networkMode === "hotspot" ? status.password : "");
   const posterDebug = posterDebugDetails();
   const indexUrl = libraryIndexUrl();
   const librarySourceLabel =
@@ -3472,17 +3765,26 @@ function renderDevicePage(container) {
       searchText: "admin controls rescan refresh cache clear watch history wipe everything local data metadata",
     },
     {
+      eyebrow: "Upload",
+      title: "Add Media Over Wi-Fi",
+      copy: "Send files to the Pi from this browser.",
+      renderCard: () => createUploadCard(),
+      searchText: "upload media files wifi device panel add media over wifi browse choose files rescan",
+    },
+    {
       eyebrow: "Network",
       title: "Hotspot / Network",
       rows: [
         { label: "Device", value: status.device || appDisplayName() },
-        { label: "Wi-Fi name", value: status.ssid || appNetworkName() },
-        { label: "Wi-Fi password", value: status.password || "Unavailable" },
+        { label: "Connection mode", value: networkModeLabel(status) },
+        { label: "Current network", value: currentNetworkName || "Unavailable" },
+        { label: "Fallback hotspot", value: hotspotName || "Unavailable" },
+        { label: "Hotspot password", value: hotspotPassword || "Unavailable" },
         { label: "Preferred URL", value: preferredUrl || "Unavailable" },
         { label: "Fallback URL", value: status.ipAppUrl || "Unavailable" },
         { label: "mDNS", value: status.mdnsReady ? status.mdnsHost || "Ready" : "Unavailable" },
       ],
-      searchText: `${status.device || ""} ${status.ssid || ""} ${status.password || ""} ${preferredUrl || ""} ${status.ipAppUrl || ""} ${status.mdnsHost || ""}`,
+      searchText: `${status.device || ""} ${status.networkMode || ""} ${currentNetworkName || ""} ${hotspotName || ""} ${hotspotPassword || ""} ${preferredUrl || ""} ${status.ipAppUrl || ""} ${status.mdnsHost || ""}`,
     },
     {
       eyebrow: "Status",
@@ -3627,7 +3929,7 @@ function renderDevicePage(container) {
     grid.appendChild(createEmptyState("No device details match this search yet."));
   } else {
     for (const card of visibleCards) {
-      grid.appendChild(createInfoCard(card));
+      grid.appendChild(card.renderCard ? card.renderCard() : createInfoCard(card));
     }
   }
 
@@ -3700,6 +4002,7 @@ function render() {
 async function loadStatus() {
   const response = await fetch("/api/status");
   state.status = await response.json();
+  state.preferServerLibrary = Boolean(state.status && state.status.preferServerLibrary);
 }
 
 async function loadLibraryFromIndex() {
@@ -3716,11 +4019,17 @@ async function loadLibraryFromIndex() {
 }
 
 async function loadLibrary() {
-  try {
-    state.library = await loadLibraryFromIndex();
-    state.librarySource = "sd-index";
-  } catch (error) {
-    console.warn("Falling back to server library API", error);
+  if (!state.preferServerLibrary) {
+    try {
+      state.library = await loadLibraryFromIndex();
+      state.librarySource = "sd-index";
+    } catch (error) {
+      console.warn("Falling back to server library API", error);
+      const response = await fetch("/api/library", { cache: "no-store" });
+      state.library = await response.json();
+      state.librarySource = "server-api";
+    }
+  } else {
     const response = await fetch("/api/library", { cache: "no-store" });
     state.library = await response.json();
     state.librarySource = "server-api";

@@ -1,7 +1,7 @@
 [Unit]
 Description=Nomad Screen media server
-After=network-online.target
-Wants=network-online.target
+After=network.target nomadscreen-network.service
+Wants=nomadscreen-network.service
 
 [Service]
 Type=simple

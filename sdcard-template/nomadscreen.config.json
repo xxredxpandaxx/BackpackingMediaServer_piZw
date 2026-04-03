@@ -1,6 +1,9 @@
 {
   "deviceName": "Nomad Screen",
   "wifiPassword": "backpackingmedia",
+  "fallbackAccessPointEnabled": true,
+  "knownWifiTimeoutSeconds": 20,
+  "wifiInterface": "wlan0",
   "httpPort": 80,
   "bindAddress": "0.0.0.0",
   "mdnsEnabled": false,
