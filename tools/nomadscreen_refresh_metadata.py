@@ -161,6 +161,30 @@ def clean_lookup_title(filename: str) -> str:
     return name.lower()
 
 
+def strip_year_from_lookup_title(title: str, year: int | None) -> str:
+    cleaned = str(title or "").strip().lower()
+    if year:
+        cleaned = re.sub(rf"(?<!\d)[\(\[]?\s*{year}\s*[\)\]]?(?!\d)", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b(19\d{2}|20\d{2})\b", " ", cleaned)
+    cleaned = re.sub(r"[\(\)\[\]]", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def tmdb_search_queries(title: str, year: int | None) -> list[str]:
+    queries: list[str] = []
+    seen: set[str] = set()
+    for candidate in (
+        strip_year_from_lookup_title(title, year),
+        str(title or "").strip().lower(),
+    ):
+        normalized = re.sub(r"\s+", " ", str(candidate or "")).strip()
+        if normalized and normalized not in seen:
+            queries.append(normalized)
+            seen.add(normalized)
+    return queries
+
+
 def get_runtime_minutes(file_path: Path) -> float:
     try:
         completed = subprocess.run(
@@ -253,19 +277,33 @@ class TmdbClient:
     def search_movie(self, title: str, year: int | None) -> list[dict[str, object]]:
         if not title:
             return []
-        params: dict[str, object] = {"query": title}
-        if year:
-            params["year"] = year
-        payload = self.request("search/movie", params=params)
-        results = payload.get("results")
-        if isinstance(results, list) and results:
-            return [entry for entry in results if isinstance(entry, dict)]
-        if year:
-            payload = self.request("search/movie", params={"query": title})
-            results = payload.get("results")
-            if isinstance(results, list):
-                return [entry for entry in results if isinstance(entry, dict)]
-        return []
+        collected: list[dict[str, object]] = []
+        seen_ids: set[int] = set()
+        for query_title in tmdb_search_queries(title, year):
+            query_plans = [(query_title, year)] if year else []
+            query_plans.append((query_title, None))
+            for safe_query, safe_year in query_plans:
+                params: dict[str, object] = {"query": safe_query}
+                if safe_year:
+                    params["year"] = safe_year
+                payload = self.request("search/movie", params=params)
+                results = payload.get("results")
+                if not isinstance(results, list):
+                    continue
+                for entry in results:
+                    if not isinstance(entry, dict):
+                        continue
+                    movie_id = int(entry.get("id") or 0)
+                    if movie_id > 0 and movie_id in seen_ids:
+                        continue
+                    if movie_id > 0:
+                        seen_ids.add(movie_id)
+                    collected.append(entry)
+                if collected:
+                    break
+            if collected:
+                break
+        return collected
 
     def movie_details(self, movie_id: int) -> dict[str, object]:
         return self.request(
@@ -470,10 +508,16 @@ def compute_movie_score(
 ) -> float:
     tmdb_title = str(details.get("title") or "")
     tmdb_original_title = str(details.get("original_title") or "")
-    title_similarity = max(
-        fuzz.token_sort_ratio(local_title, tmdb_title.lower()) / 100.0 if tmdb_title else 0.0,
-        fuzz.token_sort_ratio(local_title, tmdb_original_title.lower()) / 100.0 if tmdb_original_title else 0.0,
-    )
+    local_title_candidates = tmdb_search_queries(local_title, local_year)
+    if not local_title_candidates:
+        local_title_candidates = [str(local_title or "").strip().lower()]
+    title_similarity = 0.0
+    for local_candidate in local_title_candidates:
+        title_similarity = max(
+            title_similarity,
+            fuzz.token_sort_ratio(local_candidate, tmdb_title.lower()) / 100.0 if tmdb_title else 0.0,
+            fuzz.token_sort_ratio(local_candidate, tmdb_original_title.lower()) / 100.0 if tmdb_original_title else 0.0,
+        )
     score = 0.0
     if title_similarity >= 0.9:
         score += 0.5
@@ -544,6 +588,9 @@ def enrich_movie_item(
                 "path": item["path"],
                 "section": item["section"],
                 "query": local_title,
+                "searchQueries": tmdb_search_queries(local_title, local_year),
+                "year": local_year,
+                "runtimeMinutes": local_runtime,
                 "candidates": close_candidates,
             }
         )
