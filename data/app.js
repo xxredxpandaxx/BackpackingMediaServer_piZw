@@ -2093,6 +2093,29 @@ function formatTmdbRating(value) {
   return `${number.toFixed(1)}/10`;
 }
 
+function createRatingChip(value, options = {}) {
+  const rating = formatTmdbRating(value);
+  if (!rating) {
+    return null;
+  }
+
+  const chip = document.createElement(options.tagName || "span");
+  chip.className = ["rating-chip", options.className].filter(Boolean).join(" ");
+
+  const label = document.createElement("span");
+  label.className = "rating-chip-label";
+  label.textContent = options.label || "TMDb";
+
+  const score = document.createElement("strong");
+  score.className = "rating-chip-value";
+  score.textContent = rating;
+
+  chip.appendChild(label);
+  chip.appendChild(score);
+  chip.setAttribute("aria-label", `${options.label || "TMDb"} rating ${rating}`);
+  return chip;
+}
+
 function countLabel(count, singular, plural) {
   return `${count} ${count === 1 ? singular : plural || `${singular}s`}`;
 }
@@ -3012,6 +3035,14 @@ function createCard(kind, config) {
     artImage.removeAttribute("src");
     artImage.alt = "";
   }
+
+  if (config.rating) {
+    const ratingChip = createRatingChip(config.rating, { className: "rating-chip--overlay" });
+    if (ratingChip) {
+      art.appendChild(ratingChip);
+    }
+  }
+
   badge.textContent = config.badge;
   meta.textContent = config.meta;
   meta.hidden = !config.meta;
@@ -3099,6 +3130,7 @@ function createMediaCard(item, options = {}) {
     gradientKey: `${item.section}-${item.title}-${item.path}`,
     imageUrl: item.posterUrl || item.backdropUrl,
     cardClassName: options.cardClassName || "",
+    rating: item.section === "movies" ? item.tmdbRating : 0,
     watchState: movieOrEpisodeWatchState(item),
     onPrimary: opensMovieDetail ? () => openMoviePage(item) : () => playItem(item),
     onAction: opensMovieDetail ? () => openMoviePage(item, { autoplay: true }) : () => playItem(item),
@@ -3199,6 +3231,7 @@ function createShowCard(show, options = {}) {
     gradientKey: `show-${show.slug}`,
     imageUrl: posterLayout ? show.posterUrl || show.backdropUrl : show.backdropUrl || show.posterUrl,
     cardClassName: options.cardClassName || "",
+    rating: show.tmdbRating,
     watchState: showWatchState(show),
     onPrimary: () => openRoute(show.detailUrl || buildRoutePath({ name: "show", slug: show.slug })),
   });
@@ -5028,7 +5061,7 @@ function renderHero(show, movie, season, documentBrowser) {
     subtitle.textContent = movie
       ? truncateText(movie.overview, 220) ||
         truncateText(movie.tagline, 220) ||
-        "Movie description, ratings, and file details are grouped below this spotlight."
+        "Movie description and file details are grouped below this spotlight."
       : state.catalogMovieLoaded
         ? "Rescan the library or head back to the movies page to pick another title."
         : "Loading movie details from the library...";
@@ -5386,6 +5419,14 @@ function renderMovieDetailPage(container, movie) {
   title.className = "movie-detail-title";
   title.textContent = titleWithYear(movie.title, movie.year);
 
+  const titleRow = document.createElement("div");
+  titleRow.className = "detail-title-row";
+  titleRow.appendChild(title);
+  const movieRatingChip = createRatingChip(movie.tmdbRating, { className: "rating-chip--hero" });
+  if (movieRatingChip) {
+    titleRow.appendChild(movieRatingChip);
+  }
+
   const actions = document.createElement("div");
   actions.className = "movie-detail-actions";
   actions.appendChild(createButton("Play Now", "primary-button", () => playItem(movie)));
@@ -5400,7 +5441,7 @@ function renderMovieDetailPage(container, movie) {
 
   intro.appendChild(topBar);
   intro.appendChild(posterFrame);
-  intro.appendChild(title);
+  intro.appendChild(titleRow);
   intro.appendChild(actions);
   intro.appendChild(summary);
   container.appendChild(intro);
@@ -5408,15 +5449,14 @@ function renderMovieDetailPage(container, movie) {
   const cards = [
     {
       eyebrow: "Metadata",
-      title: "Ratings And Info",
+      title: "Release And Details",
       rows: [
         { label: "Release date", value: formatDate(movie.releaseDate) || movie.year || "Unknown" },
         { label: "Content rating", value: movie.contentRating || "Unknown" },
-        { label: "TMDb rating", value: formatTmdbRating(movie.tmdbRating) || "" },
         { label: "Genres", value: movie.genres || "Unknown" },
         { label: "Runtime", value: formatRuntime(movie.runtimeMinutes) || "Unknown" },
       ],
-      searchText: `${movie.releaseDate || ""} ${movie.year || ""} ${movie.contentRating || ""} ${movie.tmdbRating || ""} ${movie.genres || ""}`,
+      searchText: `${movie.releaseDate || ""} ${movie.year || ""} ${movie.contentRating || ""} ${movie.genres || ""}`,
     },
     {
       eyebrow: "File",
@@ -5547,6 +5587,14 @@ function renderShowPage(container, show) {
   title.className = "show-detail-title";
   title.textContent = titleWithYear(show.title, show.year);
 
+  const titleRow = document.createElement("div");
+  titleRow.className = "detail-title-row";
+  titleRow.appendChild(title);
+  const showRatingChip = createRatingChip(show.tmdbRating, { className: "rating-chip--hero" });
+  if (showRatingChip) {
+    titleRow.appendChild(showRatingChip);
+  }
+
   const summary = document.createElement("p");
   summary.className = "show-detail-copy";
   summary.textContent =
@@ -5554,7 +5602,7 @@ function renderShowPage(container, show) {
     "No show description is available for this title yet.";
 
   intro.appendChild(topBar);
-  intro.appendChild(title);
+  intro.appendChild(titleRow);
   intro.appendChild(summary);
   container.appendChild(intro);
 

@@ -425,6 +425,21 @@ button {
   margin: 2px 0 0;
 }
 
+.detail-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.movie-detail-header .detail-title-row {
+  justify-content: center;
+}
+
+.show-detail-header .detail-title-row {
+  justify-content: flex-start;
+}
+
 .movie-detail-actions {
   display: flex;
   justify-content: center;
@@ -1056,6 +1071,46 @@ button {
   aspect-ratio: 16 / 10;
 }
 
+.rating-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 7px 12px;
+  border: 1px solid rgba(196, 221, 255, 0.2);
+  border-radius: 999px;
+  background: rgba(4, 10, 18, 0.84);
+  color: var(--text);
+  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(10px);
+}
+
+.rating-chip-label {
+  color: var(--muted);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+}
+
+.rating-chip-value {
+  color: var(--accent-strong);
+  font-size: 0.84rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.rating-chip--overlay {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.rating-chip--hero {
+  align-self: center;
+}
+
 .file-card .card-art--show {
   aspect-ratio: 16 / 7;
 }
@@ -1484,6 +1539,15 @@ button {
 
   .device-grid {
     grid-template-columns: 1fr;
+  }
+
+  .detail-title-row {
+    gap: 10px;
+  }
+
+  .rating-chip {
+    min-height: 32px;
+    padding: 6px 10px;
   }
 
   .info-card--upload {
