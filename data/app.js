@@ -6128,23 +6128,10 @@ function renderDevicePage(container) {
         : "Unknown";
   const cards = [
     {
-      eyebrow: "Admin",
-      title: "Library Controls",
-      copy: "Use these controls after swapping storage, adding files, or refreshing metadata.",
-      rows: [
-        { label: "Current library", value: `${summary.total} indexed title${summary.total === 1 ? "" : "s"}` },
-        { label: "Metadata mode", value: status.metadataAvailable ? "Metadata loaded" : "Local names only" },
-      ],
+      eyebrow: "This Device",
+      title: "Reset Browser Data",
+      copy: "Use these only if this browser gets out of sync or you want to clear this device profile's watch history.",
       actions: [
-        {
-          label: "Refresh Device Data",
-          className: "ghost-button",
-          onClick: () => {
-            refreshDeviceData().catch((error) => {
-              els.pageSubtitle.textContent = `Refresh failed: ${error.message}`;
-            });
-          },
-        },
         {
           label: "Clear Cache Keep History",
           className: "ghost-button",
@@ -6155,7 +6142,7 @@ function renderDevicePage(container) {
           },
         },
         {
-          label: "Wipe Everything",
+          label: "Wipe This Device",
           className: "ghost-button",
           onClick: () => {
             clearClientAppData({
@@ -6168,7 +6155,7 @@ function renderDevicePage(container) {
           },
         },
       ],
-      searchText: "admin controls rescan refresh cache clear watch history wipe everything local data metadata",
+      searchText: "this device browser data reset cache clear watch history wipe local app data profile",
     },
     {
       eyebrow: "Metadata",
