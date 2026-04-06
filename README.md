@@ -13,7 +13,7 @@ A Raspberry Pi Zero W portable media server that keeps the existing Nomad Screen
   - `/api/stream`
   - `/api/asset`
   - `/api/rescan`
-- The storage layout from `sdcard-template/` still applies, so existing metadata tooling and `library.json` files stay compatible.
+- The storage layout from `sdcard-template/` still applies, so existing metadata tooling and `library.json` files stay compatible while the Pi also builds a SQLite catalog for paged browsing.
 
 ## Project layout
 
@@ -32,8 +32,13 @@ The server expects a storage root that contains:
 - `nomadscreen.config.json`
 - `media/`
 - `media/.nomadscreen/library.json` when metadata has been generated
+- `media/.nomadscreen/library.db` after the Pi scans the library
 
 By default, the repo uses `sdcard-template/` as the storage root so the project can run immediately in-place. On the Pi, `NOMADSCREEN_STORAGE_ROOT` holds config/runtime files such as `nomadscreen.config.json`, while `NOMADSCREEN_MEDIA_ROOT` can point at the real media library path. The installer now defaults that media path to `~/media`. Large web uploads are staged under `/var/tmp/nomadscreen-upload` so they do not fill the Pi Zero W's small `/tmp` RAM disk.
+
+The web UI now uses the SQLite catalog for the Home, Movies, TV, Movie Detail, and Show Detail routes so the browser does not need to download the entire library at once. Posters are lazy-loaded and the movie/show grids keep requesting more entries as you scroll.
+
+Watch history now lives in the SQLite database on the Pi instead of only in browser storage. The server groups playback history by the client's local network address, so different browsers on the same phone, tablet, or laptop usually share the same resume history while connected to the Pi. That is the closest reliable device-level identifier the web app can use without direct hardware access such as a MAC address.
 
 ## Local run
 
@@ -207,8 +212,9 @@ Nothing about the metadata format changed, but the default Pi-side metadata refr
   /opt/nomadscreen/.venv/bin/python /opt/nomadscreen/tools/nomadscreen_refresh_metadata.py --storage-root /srv/nomadscreen --media-root /home/pi/media
   ```
 
-- The Pi backend reads `media/.nomadscreen/library.json` when present
-- If that file is missing, the backend falls back to a direct filesystem scan and still builds `/api/library`
+- The Pi backend still reads `media/.nomadscreen/library.json` when present for metadata compatibility
+- Each rescan also rebuilds `media/.nomadscreen/library.db`, which powers the paged movie/show catalog APIs used by the web UI
+- If the JSON file is missing, the backend falls back to a direct filesystem scan and still rebuilds the live library plus the SQLite catalog
 
 ## Notes
 

@@ -603,8 +603,16 @@ button {
 .info-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 12px;
   margin-top: 20px;
+}
+
+.catalog-load-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.5;
 }
 
 .info-card--upload {

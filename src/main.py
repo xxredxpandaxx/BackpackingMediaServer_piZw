@@ -5,6 +5,7 @@ import mimetypes
 import os
 import queue
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -31,6 +32,7 @@ DEFAULT_APP_PATH = "/app"
 DEFAULT_MEDIA_ROOT = "/media"
 DEFAULT_METADATA_ROOT = "/media/.nomadscreen"
 DEFAULT_METADATA_INDEX_PATH = "/media/.nomadscreen/library.json"
+DEFAULT_CATALOG_DB_PATH = "/media/.nomadscreen/library.db"
 DEFAULT_RUNTIME_CONFIG_PATH = "/nomadscreen.config.json"
 DEFAULT_METADATA_REFRESH_SCRIPT = APP_ROOT / "tools" / "nomadscreen_refresh_metadata.py"
 DEFAULT_BIND_ADDRESS = "0.0.0.0"
@@ -43,6 +45,15 @@ MAX_DEVICE_NAME_LENGTH = 80
 MAX_HOTSPOT_SSID_LENGTH = 32
 MIN_HOTSPOT_PASSWORD_LENGTH = 8
 MAX_HOTSPOT_PASSWORD_LENGTH = 63
+DEFAULT_CATALOG_PAGE_SIZE = 40
+MAX_CATALOG_PAGE_SIZE = 80
+DEFAULT_HOME_MOVIE_LIMIT = 8
+DEFAULT_HOME_SHOW_LIMIT = 8
+DEFAULT_HOME_MUSIC_LIMIT = 6
+DEFAULT_HOME_AUDIOBOOK_LIMIT = 6
+DEFAULT_HOME_DOCUMENT_LIMIT = 6
+DEFAULT_SEARCH_RESULT_LIMIT = 60
+MAX_CATALOG_LOOKUP_PATHS = 200
 
 SECTION_ORDER = {
     "movies": 0,
@@ -326,6 +337,14 @@ def safe_int(value: object, default: int, minimum: int = 0) -> int:
     return parsed if parsed >= minimum else default
 
 
+def safe_float(value: object, default: float, minimum: float = 0.0) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= minimum else default
+
+
 def default_upload_temp_directory() -> Path:
     if os.name == "posix":
         return Path("/var/tmp/nomadscreen-upload")
@@ -441,6 +460,16 @@ def iso_timestamp_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def playback_client_key(remote_address: str | None) -> str:
+    safe_address = str(remote_address or "").strip()
+    return f"device-ip:{safe_address}" if safe_address else "device-ip:unknown"
+
+
+def normalize_iso_timestamp(value: object) -> str:
+    safe_value = str(value or "").strip()
+    return safe_value if safe_value else iso_timestamp_now()
+
+
 def normalize_upload_id(raw_value: object) -> str:
     output = []
     previous_dash = False
@@ -460,6 +489,35 @@ def normalize_upload_id(raw_value: object) -> str:
 def sanitize_status_line(raw_value: object, max_chars: int = 320) -> str:
     value = " ".join(str(raw_value or "").replace("\x00", "").split()).strip()
     return value[:max_chars]
+
+
+def catalog_search_text(parts: list[object]) -> str:
+    return " ".join(str(part or "").strip() for part in parts if str(part or "").strip())
+
+
+def normalize_catalog_query(raw_value: object) -> str:
+    return " ".join(str(raw_value or "").split()).strip()
+
+
+def normalize_catalog_limit(raw_value: object, default: int = DEFAULT_CATALOG_PAGE_SIZE) -> int:
+    try:
+        parsed = int(raw_value)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(MAX_CATALOG_PAGE_SIZE, parsed))
+
+
+def normalize_catalog_offset(raw_value: object) -> int:
+    try:
+        parsed = int(raw_value)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, parsed)
+
+
+def catalog_like_pattern(raw_query: object) -> str:
+    normalized = normalize_catalog_query(raw_query).lower()
+    return f"%{normalized}%" if normalized else "%"
 
 
 def load_settings() -> dict[str, object]:
@@ -603,6 +661,7 @@ class AppState:
         self.active_streams = 0
         self.recent_clients: dict[str, float] = {}
         self.storage_ready = False
+        self.show_count = 0
         self.upload_status = self.default_upload_status()
         self.metadata_refresh_status = self.default_metadata_refresh_status()
         self.scan_library()
@@ -1586,6 +1645,12 @@ class AppState:
         metadata_paths = {normalize_virtual_path(str(entry.get("path") or "")) for entry in item_entries}
         scanned_paths = {normalize_virtual_path(str(item.get("path") or "")) for item in scanned_items}
         metadata_index_stale = bool(metadata_paths) and metadata_paths != scanned_paths
+        show_records = self.group_show_records(scanned_items)
+
+        try:
+            self.rebuild_catalog_database(scanned_items, show_records)
+        except sqlite3.Error:
+            pass
 
         with self.lock:
             self.media_library = scanned_items
@@ -1596,6 +1661,7 @@ class AppState:
             self.metadata_available = bool(item_entries or show_entries)
             self.metadata_index_stale = metadata_index_stale
             self.storage_ready = storage_ready
+            self.show_count = len(show_records)
 
     def count_section(self, section: str) -> int:
         return sum(1 for item in self.media_library if item["section"] == section)
@@ -1615,9 +1681,9 @@ class AppState:
         payload["backdropUrl"] = self.asset_url_for_path(str(item.get("backdropPath") or ""))
         return payload
 
-    def build_show_library(self) -> list[dict[str, object]]:
+    def group_show_records(self, items: list[dict[str, object]] | None = None) -> list[dict[str, object]]:
         shows: dict[str, dict[str, object]] = {}
-        for item in self.media_library:
+        for item in items if items is not None else self.media_library:
             if item["section"] != "tv":
                 continue
 
@@ -1664,15 +1730,12 @@ class AppState:
                 }
                 show["_seasonMap"][season_key] = season
                 show["seasons"].append(season)
-            season["episodes"].append(item)
+            season["episodes"].append(dict(item))
 
         ordered_shows = list(shows.values())
         ordered_shows.sort(key=lambda show: lowercase_copy(str(show["title"])))
 
         for show in ordered_shows:
-            show["posterUrl"] = self.asset_url_for_path(str(show["posterPath"]))
-            show["backdropUrl"] = self.asset_url_for_path(str(show["backdropPath"]))
-            show["detailUrl"] = f"{DEFAULT_APP_PATH}/tv/{show['slug']}"
             show["seasons"].sort(key=lambda season: (int(season["number"]), lowercase_copy(str(season["label"]))))
             episode_total = 0
             for season in show["seasons"]:
@@ -1683,13 +1746,846 @@ class AppState:
                     )
                 )
                 season["episodeCount"] = len(season["episodes"])
-                season["episodes"] = [self.serialize_media_item(episode) for episode in season["episodes"]]
                 episode_total += int(season["episodeCount"])
             show["seasonCount"] = len(show["seasons"])
             show["episodeCount"] = episode_total
-            show.pop("_seasonMap", None)
 
         return ordered_shows
+
+    def serialize_show_summary(self, show: dict[str, object]) -> dict[str, object]:
+        return {
+            "title": str(show.get("title") or "Unknown Show"),
+            "slug": str(show.get("slug") or ""),
+            "year": str(show.get("year") or ""),
+            "overview": str(show.get("overview") or ""),
+            "genres": str(show.get("genres") or ""),
+            "contentRating": str(show.get("contentRating") or ""),
+            "posterPath": normalize_virtual_path(str(show.get("posterPath") or "")),
+            "backdropPath": normalize_virtual_path(str(show.get("backdropPath") or "")),
+            "posterUrl": self.asset_url_for_path(str(show.get("posterPath") or "")),
+            "backdropUrl": self.asset_url_for_path(str(show.get("backdropPath") or "")),
+            "metadataSource": str(show.get("metadataSource") or ""),
+            "tmdbRating": float(show.get("tmdbRating") or 0.0),
+            "matchConfidence": float(show.get("matchConfidence") or 0.0),
+            "seasonCount": int(show.get("seasonCount") or 0),
+            "episodeCount": int(show.get("episodeCount") or 0),
+            "detailUrl": f"{DEFAULT_APP_PATH}/tv/{show.get('slug') or ''}",
+        }
+
+    def serialize_show_detail(self, show: dict[str, object]) -> dict[str, object]:
+        payload = self.serialize_show_summary(show)
+        payload["seasons"] = []
+        for season in show.get("seasons", []):
+            payload["seasons"].append(
+                {
+                    "key": str(season.get("key") or ""),
+                    "label": str(season.get("label") or ""),
+                    "number": int(season.get("number") or 0),
+                    "episodeCount": int(season.get("episodeCount") or 0),
+                    "episodes": [self.serialize_media_item(episode) for episode in season.get("episodes", [])],
+                }
+            )
+        return payload
+
+    def build_show_library(self) -> list[dict[str, object]]:
+        return [self.serialize_show_detail(show) for show in self.group_show_records()]
+
+    def catalog_db_path(self) -> Path:
+        resolved = self.resolve_virtual_path(DEFAULT_CATALOG_DB_PATH)
+        if resolved is not None:
+            return resolved
+        return (self.media_root_path() / ".nomadscreen" / "library.db").resolve(strict=False)
+
+    def catalog_item_search_text(self, item: dict[str, object]) -> str:
+        return catalog_search_text(
+            [
+                item.get("title"),
+                item.get("sortTitle"),
+                item.get("overview"),
+                item.get("tagline"),
+                item.get("year"),
+                item.get("releaseDate"),
+                item.get("genres"),
+                item.get("contentRating"),
+                item.get("artist"),
+                item.get("album"),
+                item.get("showTitle"),
+                item.get("seasonLabel"),
+                item.get("path"),
+                item.get("section"),
+                item.get("extension"),
+            ]
+        ).lower()
+
+    def catalog_show_search_text(self, show: dict[str, object]) -> str:
+        season_labels = " ".join(str(season.get("label") or "") for season in show.get("seasons", []))
+        return catalog_search_text(
+            [
+                show.get("title"),
+                show.get("year"),
+                show.get("overview"),
+                show.get("genres"),
+                show.get("contentRating"),
+                season_labels,
+            ]
+        ).lower()
+
+    def rebuild_catalog_database(
+        self,
+        items: list[dict[str, object]],
+        shows: list[dict[str, object]],
+    ) -> None:
+        db_path = self.catalog_db_path()
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+
+        item_rows = [
+            (
+                str(item.get("path") or ""),
+                str(item.get("title") or ""),
+                str(item.get("sortTitle") or ""),
+                lowercase_copy(str(item.get("sortTitle") or item.get("title") or "")),
+                str(item.get("overview") or ""),
+                str(item.get("tagline") or ""),
+                str(item.get("year") or ""),
+                str(item.get("releaseDate") or ""),
+                str(item.get("genres") or ""),
+                str(item.get("contentRating") or ""),
+                str(item.get("artist") or ""),
+                str(item.get("album") or ""),
+                normalize_virtual_path(str(item.get("posterPath") or "")),
+                normalize_virtual_path(str(item.get("backdropPath") or "")),
+                str(item.get("metadataSource") or ""),
+                float(item.get("tmdbRating") or 0.0),
+                float(item.get("runtimeMinutes") or 0.0),
+                float(item.get("matchConfidence") or 0.0),
+                str(item.get("showTitle") or ""),
+                str(item.get("showSlug") or ""),
+                str(item.get("seasonLabel") or ""),
+                int(item.get("seasonNumber") or 0),
+                int(item.get("episodeNumber") or 0),
+                1 if bool(item.get("hasMetadata")) else 0,
+                int(item.get("bytes") or 0),
+                str(item.get("section") or ""),
+                str(item.get("type") or ""),
+                str(item.get("extension") or ""),
+                self.catalog_item_search_text(item),
+            )
+            for item in items
+        ]
+        show_rows = [
+            (
+                str(show.get("slug") or ""),
+                str(show.get("title") or ""),
+                lowercase_copy(str(show.get("title") or "")),
+                str(show.get("overview") or ""),
+                str(show.get("year") or ""),
+                str(show.get("genres") or ""),
+                str(show.get("contentRating") or ""),
+                normalize_virtual_path(str(show.get("posterPath") or "")),
+                normalize_virtual_path(str(show.get("backdropPath") or "")),
+                str(show.get("metadataSource") or ""),
+                float(show.get("tmdbRating") or 0.0),
+                float(show.get("matchConfidence") or 0.0),
+                int(show.get("seasonCount") or 0),
+                int(show.get("episodeCount") or 0),
+                self.catalog_show_search_text(show),
+            )
+            for show in shows
+        ]
+
+        with sqlite3.connect(db_path) as connection:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS items (
+                    path TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    sort_title TEXT NOT NULL,
+                    sort_key TEXT NOT NULL,
+                    overview TEXT NOT NULL,
+                    tagline TEXT NOT NULL,
+                    year TEXT NOT NULL,
+                    release_date TEXT NOT NULL,
+                    genres TEXT NOT NULL,
+                    content_rating TEXT NOT NULL,
+                    artist TEXT NOT NULL,
+                    album TEXT NOT NULL,
+                    poster_path TEXT NOT NULL,
+                    backdrop_path TEXT NOT NULL,
+                    metadata_source TEXT NOT NULL,
+                    tmdb_rating REAL NOT NULL,
+                    runtime_minutes REAL NOT NULL,
+                    match_confidence REAL NOT NULL,
+                    show_title TEXT NOT NULL,
+                    show_slug TEXT NOT NULL,
+                    season_label TEXT NOT NULL,
+                    season_number INTEGER NOT NULL,
+                    episode_number INTEGER NOT NULL,
+                    has_metadata INTEGER NOT NULL,
+                    bytes INTEGER NOT NULL,
+                    section TEXT NOT NULL,
+                    type TEXT NOT NULL,
+                    extension TEXT NOT NULL,
+                    search_text TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS shows (
+                    slug TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    sort_key TEXT NOT NULL,
+                    overview TEXT NOT NULL,
+                    year TEXT NOT NULL,
+                    genres TEXT NOT NULL,
+                    content_rating TEXT NOT NULL,
+                    poster_path TEXT NOT NULL,
+                    backdrop_path TEXT NOT NULL,
+                    metadata_source TEXT NOT NULL,
+                    tmdb_rating REAL NOT NULL,
+                    match_confidence REAL NOT NULL,
+                    season_count INTEGER NOT NULL,
+                    episode_count INTEGER NOT NULL,
+                    search_text TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_items_section_sort ON items(section, sort_key, path)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_items_show_slug ON items(show_slug, season_number, episode_number)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_items_search_text ON items(search_text)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_shows_sort ON shows(sort_key, slug)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_shows_search_text ON shows(search_text)")
+            self.ensure_playback_tables(connection)
+            connection.execute("DELETE FROM items")
+            connection.execute("DELETE FROM shows")
+            connection.executemany(
+                """
+                INSERT INTO items (
+                    path, title, sort_title, sort_key, overview, tagline, year, release_date,
+                    genres, content_rating, artist, album, poster_path, backdrop_path,
+                    metadata_source, tmdb_rating, runtime_minutes, match_confidence,
+                    show_title, show_slug, season_label, season_number, episode_number,
+                    has_metadata, bytes, section, type, extension, search_text
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                item_rows,
+            )
+            connection.executemany(
+                """
+                INSERT INTO shows (
+                    slug, title, sort_key, overview, year, genres, content_rating,
+                    poster_path, backdrop_path, metadata_source, tmdb_rating,
+                    match_confidence, season_count, episode_count, search_text
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                show_rows,
+            )
+            connection.commit()
+
+    def catalog_connection(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.catalog_db_path())
+        connection.row_factory = sqlite3.Row
+        return connection
+
+    def ensure_playback_tables(self, connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS playback_state (
+                client_key TEXT NOT NULL,
+                remote_addr TEXT NOT NULL,
+                path TEXT NOT NULL,
+                section TEXT NOT NULL,
+                show_slug TEXT NOT NULL,
+                current_time REAL NOT NULL,
+                duration REAL NOT NULL,
+                completed INTEGER NOT NULL,
+                watched_override INTEGER,
+                last_played_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (client_key, path)
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_playback_state_client_recent ON playback_state(client_key, last_played_at DESC)"
+        )
+
+    def normalize_playback_entry_payload(self, payload: object) -> dict[str, object] | None:
+        if not isinstance(payload, dict):
+            return None
+
+        safe_path = normalize_virtual_path(str(payload.get("path") or ""))
+        if not safe_path:
+            return None
+
+        library_item = self.find_library_item(safe_path)
+        safe_section = lowercase_copy(str(payload.get("section") or (library_item or {}).get("section") or "")).strip()
+        if safe_section not in {"movies", "tv"}:
+            return None
+
+        safe_show_slug = slugify(
+            str(payload.get("showSlug") or (library_item or {}).get("showSlug") or "")
+        ) if safe_section == "tv" else ""
+
+        return {
+            "path": safe_path,
+            "section": safe_section,
+            "showSlug": safe_show_slug,
+            "currentTime": safe_float(payload.get("currentTime"), 0.0, 0.0),
+            "duration": safe_float(payload.get("duration"), 0.0, 0.0),
+            "completed": config_bool(payload.get("completed"), False),
+            "lastPlayedAt": normalize_iso_timestamp(payload.get("lastPlayedAt")),
+        }
+
+    def playback_entry_from_row(self, row: sqlite3.Row) -> dict[str, object]:
+        return {
+            "path": normalize_virtual_path(str(row["path"] or "")),
+            "section": str(row["section"] or ""),
+            "showSlug": str(row["show_slug"] or ""),
+            "currentTime": float(row["current_time"] or 0.0),
+            "duration": float(row["duration"] or 0.0),
+            "completed": bool(row["completed"]),
+            "lastPlayedAt": str(row["last_played_at"] or ""),
+        }
+
+    def playback_state_payload(self, remote_address: str | None) -> dict[str, object]:
+        client_key = playback_client_key(remote_address)
+        with self.catalog_connection() as connection:
+            self.ensure_playback_tables(connection)
+            rows = connection.execute(
+                """
+                SELECT path, section, show_slug, current_time, duration, completed, watched_override, last_played_at
+                FROM playback_state
+                WHERE client_key = ?
+                ORDER BY last_played_at DESC, path
+                """,
+                (client_key,),
+            ).fetchall()
+
+        playback: dict[str, dict[str, object]] = {}
+        watched: dict[str, bool] = {}
+        for row in rows:
+            entry = self.playback_entry_from_row(row)
+            safe_path = str(entry["path"])
+            if safe_path:
+                playback[safe_path] = entry
+                if row["watched_override"] is not None:
+                    watched[safe_path] = bool(row["watched_override"])
+
+        return {
+            "profile": {
+                "source": "device-ip",
+                "sharedAcrossBrowsers": True,
+            },
+            "count": len(playback),
+            "watchedCount": len(watched),
+            "playback": playback,
+            "watched": watched,
+        }
+
+    def save_playback_state(
+        self,
+        remote_address: str | None,
+        playback_entries: object,
+        watched_updates: object,
+        clear_watched_paths: object,
+    ) -> dict[str, object]:
+        client_key = playback_client_key(remote_address)
+        safe_remote_address = str(remote_address or "").strip()
+        safe_entries: list[dict[str, object]] = []
+        safe_watched_updates: dict[str, bool] = {}
+        safe_clear_paths: list[str] = []
+
+        if isinstance(playback_entries, list):
+            for raw_entry in playback_entries:
+                safe_entry = self.normalize_playback_entry_payload(raw_entry)
+                if safe_entry is not None:
+                    safe_entries.append(safe_entry)
+
+        if isinstance(watched_updates, dict):
+            for raw_path, raw_value in watched_updates.items():
+                safe_path = normalize_virtual_path(str(raw_path or ""))
+                if safe_path:
+                    safe_watched_updates[safe_path] = config_bool(raw_value, False)
+
+        if isinstance(clear_watched_paths, list):
+            for raw_path in clear_watched_paths:
+                safe_path = normalize_virtual_path(str(raw_path or ""))
+                if safe_path and safe_path not in safe_clear_paths:
+                    safe_clear_paths.append(safe_path)
+
+        updated_count = 0
+        with self.lock:
+            with self.catalog_connection() as connection:
+                self.ensure_playback_tables(connection)
+                updated_at = iso_timestamp_now()
+
+                for entry in safe_entries:
+                    connection.execute(
+                        """
+                        INSERT INTO playback_state (
+                            client_key, remote_addr, path, section, show_slug,
+                            current_time, duration, completed, watched_override,
+                            last_played_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+                        ON CONFLICT(client_key, path) DO UPDATE SET
+                            remote_addr = excluded.remote_addr,
+                            section = excluded.section,
+                            show_slug = excluded.show_slug,
+                            current_time = excluded.current_time,
+                            duration = excluded.duration,
+                            completed = excluded.completed,
+                            last_played_at = excluded.last_played_at,
+                            updated_at = excluded.updated_at
+                        """,
+                        (
+                            client_key,
+                            safe_remote_address,
+                            str(entry["path"]),
+                            str(entry["section"]),
+                            str(entry["showSlug"]),
+                            float(entry["currentTime"]),
+                            float(entry["duration"]),
+                            1 if bool(entry["completed"]) else 0,
+                            str(entry["lastPlayedAt"]),
+                            updated_at,
+                        ),
+                    )
+                    updated_count += 1
+
+                for safe_path, watched in safe_watched_updates.items():
+                    existing_row = connection.execute(
+                        """
+                        SELECT section, show_slug, current_time, duration, completed, last_played_at
+                        FROM playback_state
+                        WHERE client_key = ? AND path = ?
+                        LIMIT 1
+                        """,
+                        (client_key, safe_path),
+                    ).fetchone()
+                    library_item = self.find_library_item(safe_path)
+                    safe_section = str(
+                        (library_item or {}).get("section")
+                        or (existing_row["section"] if existing_row is not None else "")
+                        or ""
+                    )
+                    if safe_section not in {"movies", "tv"}:
+                        continue
+                    safe_show_slug = str(
+                        (library_item or {}).get("showSlug")
+                        or (existing_row["show_slug"] if existing_row is not None else "")
+                        or ""
+                    )
+                    safe_last_played_at = str(
+                        (existing_row["last_played_at"] if existing_row is not None else "") or updated_at
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO playback_state (
+                            client_key, remote_addr, path, section, show_slug,
+                            current_time, duration, completed, watched_override,
+                            last_played_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(client_key, path) DO UPDATE SET
+                            remote_addr = excluded.remote_addr,
+                            section = excluded.section,
+                            show_slug = excluded.show_slug,
+                            watched_override = excluded.watched_override,
+                            updated_at = excluded.updated_at
+                        """,
+                        (
+                            client_key,
+                            safe_remote_address,
+                            safe_path,
+                            safe_section,
+                            safe_show_slug,
+                            float(existing_row["current_time"] if existing_row is not None else 0.0),
+                            float(existing_row["duration"] if existing_row is not None else 0.0),
+                            1 if (existing_row is not None and bool(existing_row["completed"])) else 0,
+                            1 if watched else 0,
+                            safe_last_played_at,
+                            updated_at,
+                        ),
+                    )
+                    updated_count += 1
+
+                for safe_path in safe_clear_paths:
+                    connection.execute(
+                        """
+                        UPDATE playback_state
+                        SET watched_override = NULL, updated_at = ?
+                        WHERE client_key = ? AND path = ?
+                        """,
+                        (updated_at, client_key, safe_path),
+                    )
+                    connection.execute(
+                        """
+                        DELETE FROM playback_state
+                        WHERE client_key = ? AND path = ?
+                          AND watched_override IS NULL
+                          AND completed = 0
+                          AND current_time <= 0
+                          AND duration <= 0
+                        """,
+                        (client_key, safe_path),
+                    )
+                    updated_count += 1
+
+                connection.commit()
+
+        return {
+            "ok": True,
+            "updated": updated_count,
+            "profile": {
+                "source": "device-ip",
+                "sharedAcrossBrowsers": True,
+            },
+        }
+
+    def clear_playback_state(self, remote_address: str | None) -> dict[str, object]:
+        client_key = playback_client_key(remote_address)
+        with self.lock:
+            with self.catalog_connection() as connection:
+                self.ensure_playback_tables(connection)
+                deleted = connection.execute(
+                    "DELETE FROM playback_state WHERE client_key = ?",
+                    (client_key,),
+                ).rowcount
+                connection.commit()
+
+        return {
+            "ok": True,
+            "deleted": int(deleted or 0),
+            "profile": {
+                "source": "device-ip",
+                "sharedAcrossBrowsers": True,
+            },
+        }
+
+    def catalog_item_from_row(self, row: sqlite3.Row) -> dict[str, object]:
+        return {
+            "path": normalize_virtual_path(str(row["path"])),
+            "title": str(row["title"] or ""),
+            "sortTitle": str(row["sort_title"] or ""),
+            "overview": str(row["overview"] or ""),
+            "tagline": str(row["tagline"] or ""),
+            "year": str(row["year"] or ""),
+            "releaseDate": str(row["release_date"] or ""),
+            "genres": str(row["genres"] or ""),
+            "contentRating": str(row["content_rating"] or ""),
+            "artist": str(row["artist"] or ""),
+            "album": str(row["album"] or ""),
+            "posterPath": normalize_virtual_path(str(row["poster_path"] or "")),
+            "backdropPath": normalize_virtual_path(str(row["backdrop_path"] or "")),
+            "metadataSource": str(row["metadata_source"] or ""),
+            "tmdbRating": float(row["tmdb_rating"] or 0.0),
+            "runtimeMinutes": float(row["runtime_minutes"] or 0.0),
+            "matchConfidence": float(row["match_confidence"] or 0.0),
+            "showTitle": str(row["show_title"] or ""),
+            "showSlug": str(row["show_slug"] or ""),
+            "seasonLabel": str(row["season_label"] or ""),
+            "seasonNumber": int(row["season_number"] or 0),
+            "episodeNumber": int(row["episode_number"] or 0),
+            "hasMetadata": bool(row["has_metadata"]),
+            "bytes": int(row["bytes"] or 0),
+            "section": str(row["section"] or ""),
+            "type": str(row["type"] or ""),
+            "extension": str(row["extension"] or ""),
+        }
+
+    def serialize_catalog_item_row(self, row: sqlite3.Row) -> dict[str, object]:
+        return self.serialize_media_item(self.catalog_item_from_row(row))
+
+    def serialize_catalog_show_row(self, row: sqlite3.Row) -> dict[str, object]:
+        return {
+            "title": str(row["title"] or "Unknown Show"),
+            "slug": str(row["slug"] or ""),
+            "year": str(row["year"] or ""),
+            "overview": str(row["overview"] or ""),
+            "genres": str(row["genres"] or ""),
+            "contentRating": str(row["content_rating"] or ""),
+            "posterPath": normalize_virtual_path(str(row["poster_path"] or "")),
+            "backdropPath": normalize_virtual_path(str(row["backdrop_path"] or "")),
+            "posterUrl": self.asset_url_for_path(str(row["poster_path"] or "")),
+            "backdropUrl": self.asset_url_for_path(str(row["backdrop_path"] or "")),
+            "metadataSource": str(row["metadata_source"] or ""),
+            "tmdbRating": float(row["tmdb_rating"] or 0.0),
+            "matchConfidence": float(row["match_confidence"] or 0.0),
+            "seasonCount": int(row["season_count"] or 0),
+            "episodeCount": int(row["episode_count"] or 0),
+            "detailUrl": f"{DEFAULT_APP_PATH}/tv/{row['slug']}",
+        }
+
+    def catalog_counts_payload(self) -> dict[str, int]:
+        return {
+            "total": len(self.media_library),
+            "movies": self.count_section("movies"),
+            "shows": int(self.show_count),
+            "episodes": self.count_section("tv"),
+            "music": self.count_section("music"),
+            "audiobooks": self.count_section("audiobooks"),
+            "documents": self.count_section("documents"),
+        }
+
+    def catalog_metadata_payload(self) -> dict[str, object]:
+        return {
+            "available": self.metadata_available,
+            "generatedAt": self.metadata_generated_at,
+            "generator": self.metadata_generator,
+            "itemCount": len(self.item_metadata),
+            "showCount": len(self.show_metadata),
+        }
+
+    def catalog_summary_payload(self) -> dict[str, object]:
+        return {
+            "counts": self.catalog_counts_payload(),
+            "metadata": self.catalog_metadata_payload(),
+        }
+
+    def catalog_home_payload(self) -> dict[str, object]:
+        grouped_shows = [self.serialize_show_summary(show) for show in self.group_show_records()]
+        sections = {
+            "movies": [
+                self.serialize_media_item(item)
+                for item in self.media_library
+                if item["section"] == "movies"
+            ][:DEFAULT_HOME_MOVIE_LIMIT],
+            "tv": grouped_shows[:DEFAULT_HOME_SHOW_LIMIT],
+            "music": [
+                self.serialize_media_item(item)
+                for item in self.media_library
+                if item["section"] == "music"
+            ][:DEFAULT_HOME_MUSIC_LIMIT],
+            "audiobooks": [
+                self.serialize_media_item(item)
+                for item in self.media_library
+                if item["section"] == "audiobooks"
+            ][:DEFAULT_HOME_AUDIOBOOK_LIMIT],
+            "documents": [
+                self.serialize_media_item(item)
+                for item in self.media_library
+                if item["section"] == "documents"
+            ][:DEFAULT_HOME_DOCUMENT_LIMIT],
+        }
+        return {
+            "counts": self.catalog_counts_payload(),
+            "metadata": self.catalog_metadata_payload(),
+            "sections": sections,
+        }
+
+    def catalog_search_payload(self, query: object, limit: object) -> dict[str, object]:
+        safe_query = normalize_catalog_query(query)
+        safe_limit = normalize_catalog_limit(limit, DEFAULT_SEARCH_RESULT_LIMIT)
+        if not safe_query:
+            return {"query": "", "count": 0, "items": []}
+        with self.catalog_connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM items
+                WHERE search_text LIKE ?
+                ORDER BY
+                    CASE section
+                        WHEN 'movies' THEN 0
+                        WHEN 'tv' THEN 1
+                        WHEN 'music' THEN 2
+                        WHEN 'audiobooks' THEN 3
+                        WHEN 'documents' THEN 4
+                        ELSE 99
+                    END,
+                    sort_key,
+                    path
+                LIMIT ?
+                """,
+                (catalog_like_pattern(safe_query), safe_limit),
+            ).fetchall()
+        return {
+            "query": safe_query,
+            "count": len(rows),
+            "items": [self.serialize_catalog_item_row(row) for row in rows],
+        }
+
+    def catalog_movies_payload(self, offset: object, limit: object, query: object) -> dict[str, object]:
+        safe_offset = normalize_catalog_offset(offset)
+        safe_limit = normalize_catalog_limit(limit)
+        safe_query = normalize_catalog_query(query)
+        params: list[object] = ["movies"]
+        where = "WHERE section = ?"
+        if safe_query:
+            where += " AND search_text LIKE ?"
+            params.append(catalog_like_pattern(safe_query))
+        with self.catalog_connection() as connection:
+            total = int(connection.execute(f"SELECT COUNT(*) FROM items {where}", params).fetchone()[0])
+            rows = connection.execute(
+                f"""
+                SELECT *
+                FROM items
+                {where}
+                ORDER BY sort_key, path
+                LIMIT ? OFFSET ?
+                """,
+                [*params, safe_limit, safe_offset],
+            ).fetchall()
+        return {
+            "query": safe_query,
+            "offset": safe_offset,
+            "limit": safe_limit,
+            "total": total,
+            "count": len(rows),
+            "hasMore": safe_offset + len(rows) < total,
+            "items": [self.serialize_catalog_item_row(row) for row in rows],
+        }
+
+    def catalog_movie_payload(self, path: object) -> dict[str, object] | None:
+        safe_path = normalize_virtual_path(str(path or ""))
+        if not safe_path:
+            return None
+        with self.catalog_connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM items WHERE path = ? AND section = 'movies' LIMIT 1",
+                (safe_path,),
+            ).fetchone()
+        return self.serialize_catalog_item_row(row) if row is not None else None
+
+    def catalog_shows_payload(self, offset: object, limit: object, query: object) -> dict[str, object]:
+        safe_offset = normalize_catalog_offset(offset)
+        safe_limit = normalize_catalog_limit(limit)
+        safe_query = normalize_catalog_query(query)
+        params: list[object] = []
+        where = ""
+        if safe_query:
+            where = "WHERE search_text LIKE ?"
+            params.append(catalog_like_pattern(safe_query))
+        with self.catalog_connection() as connection:
+            total = int(connection.execute(f"SELECT COUNT(*) FROM shows {where}", params).fetchone()[0])
+            rows = connection.execute(
+                f"""
+                SELECT *
+                FROM shows
+                {where}
+                ORDER BY sort_key, slug
+                LIMIT ? OFFSET ?
+                """,
+                [*params, safe_limit, safe_offset],
+            ).fetchall()
+        return {
+            "query": safe_query,
+            "offset": safe_offset,
+            "limit": safe_limit,
+            "total": total,
+            "count": len(rows),
+            "hasMore": safe_offset + len(rows) < total,
+            "items": [self.serialize_catalog_show_row(row) for row in rows],
+        }
+
+    def catalog_show_payload(self, slug: object) -> dict[str, object] | None:
+        safe_slug = slugify(str(slug or ""))
+        if not safe_slug:
+            return None
+        with self.catalog_connection() as connection:
+            show_row = connection.execute(
+                "SELECT * FROM shows WHERE slug = ? LIMIT 1",
+                (safe_slug,),
+            ).fetchone()
+            if show_row is None:
+                return None
+            episode_rows = connection.execute(
+                """
+                SELECT *
+                FROM items
+                WHERE section = 'tv' AND show_slug = ?
+                ORDER BY season_number, lower(season_label), episode_number, sort_key, path
+                """,
+                (safe_slug,),
+            ).fetchall()
+
+        show = self.serialize_catalog_show_row(show_row)
+        seasons: list[dict[str, object]] = []
+        season_map: dict[str, dict[str, object]] = {}
+        for row in episode_rows:
+            item = self.serialize_catalog_item_row(row)
+            season_label = str(item.get("seasonLabel") or "")
+            if not season_label:
+                season_number = int(item.get("seasonNumber") or 1)
+                season_label = "Specials" if season_number == 0 else f"Season {season_number}"
+                item["seasonLabel"] = season_label
+            season_key = f"{int(item.get('seasonNumber') or 0)}|{lowercase_copy(season_label)}"
+            season = season_map.get(season_key)
+            if season is None:
+                season = {
+                    "key": season_key,
+                    "label": season_label,
+                    "number": int(item.get("seasonNumber") or 0),
+                    "episodeCount": 0,
+                    "episodes": [],
+                }
+                season_map[season_key] = season
+                seasons.append(season)
+            season["episodes"].append(item)
+            season["episodeCount"] += 1
+        show["seasons"] = seasons
+        return show
+
+    def catalog_random_item_payload(self, section: object) -> dict[str, object] | None:
+        safe_section = lowercase_copy(str(section or "")).strip()
+        params: list[object] = []
+        where = ""
+        if safe_section and safe_section not in {"all", "any"}:
+            where = "WHERE section = ?"
+            params.append(safe_section)
+        with self.catalog_connection() as connection:
+            row = connection.execute(
+                f"SELECT * FROM items {where} ORDER BY RANDOM() LIMIT 1",
+                params,
+            ).fetchone()
+        return self.serialize_catalog_item_row(row) if row is not None else None
+
+    def catalog_lookup_payload(self, paths: object) -> dict[str, object]:
+        safe_paths: list[str] = []
+        seen_paths: set[str] = set()
+        if isinstance(paths, list):
+            for raw_path in paths[:MAX_CATALOG_LOOKUP_PATHS]:
+                safe_path = normalize_virtual_path(str(raw_path or ""))
+                if safe_path and safe_path not in seen_paths:
+                    safe_paths.append(safe_path)
+                    seen_paths.add(safe_path)
+
+        if not safe_paths:
+            return {
+                "count": 0,
+                "showCount": 0,
+                "items": [],
+                "shows": [],
+            }
+
+        placeholders = ", ".join("?" for _ in safe_paths)
+        with self.catalog_connection() as connection:
+            item_rows = connection.execute(
+                f"SELECT * FROM items WHERE path IN ({placeholders})",
+                safe_paths,
+            ).fetchall()
+
+        item_by_path = {
+            normalize_virtual_path(str(row["path"] or "")): self.serialize_catalog_item_row(row)
+            for row in item_rows
+        }
+        ordered_items = [item_by_path[path] for path in safe_paths if path in item_by_path]
+
+        show_slugs: list[str] = []
+        seen_slugs: set[str] = set()
+        for item in ordered_items:
+            safe_slug = slugify(str(item.get("showSlug") or ""))
+            if item.get("section") == "tv" and safe_slug and safe_slug not in seen_slugs:
+                show_slugs.append(safe_slug)
+                seen_slugs.add(safe_slug)
+
+        shows = [show for slug in show_slugs if (show := self.catalog_show_payload(slug)) is not None]
+        return {
+            "count": len(ordered_items),
+            "showCount": len(shows),
+            "items": ordered_items,
+            "shows": shows,
+        }
 
     def library_payload(self) -> dict[str, object]:
         shows = self.build_show_library()
@@ -1707,21 +2603,10 @@ class AppState:
         return {
             "count": len(self.media_library),
             "counts": {
-                "total": len(self.media_library),
-                "movies": self.count_section("movies"),
+                **self.catalog_counts_payload(),
                 "shows": len(shows),
-                "episodes": self.count_section("tv"),
-                "music": self.count_section("music"),
-                "audiobooks": self.count_section("audiobooks"),
-                "documents": self.count_section("documents"),
             },
-            "metadata": {
-                "available": self.metadata_available,
-                "generatedAt": self.metadata_generated_at,
-                "generator": self.metadata_generator,
-                "itemCount": len(self.item_metadata),
-                "showCount": len(self.show_metadata),
-            },
+            "metadata": self.catalog_metadata_payload(),
             "sections": sections,
         }
 
@@ -2015,6 +2900,39 @@ def api_device_config() -> Response:
     return no_store_json(result)
 
 
+@app.get("/api/playback-state")
+def api_playback_state_get() -> Response:
+    try:
+        payload = state.playback_state_payload(request.remote_addr)
+    except sqlite3.Error:
+        return no_store_json({"error": "Playback history is unavailable right now."}, 500)
+    return no_store_json({"ok": True, **payload})
+
+
+@app.post("/api/playback-state")
+def api_playback_state_post() -> Response:
+    payload = request.get_json(silent=True) or {}
+    try:
+        result = state.save_playback_state(
+            request.remote_addr,
+            payload.get("playback"),
+            payload.get("watched"),
+            payload.get("clearWatched"),
+        )
+    except sqlite3.Error:
+        return no_store_json({"error": "Playback history could not be saved right now."}, 500)
+    return no_store_json(result, 202)
+
+
+@app.delete("/api/playback-state")
+def api_playback_state_delete() -> Response:
+    try:
+        result = state.clear_playback_state(request.remote_addr)
+    except sqlite3.Error:
+        return no_store_json({"error": "Playback history could not be cleared right now."}, 500)
+    return no_store_json(result)
+
+
 @app.post("/api/upload-progress")
 def api_upload_progress() -> Response:
     payload = request.get_json(silent=True) or {}
@@ -2042,6 +2960,97 @@ def api_upload_progress() -> Response:
 @app.get("/api/library")
 def api_library() -> Response:
     return no_store_json(state.library_payload())
+
+
+@app.get("/api/catalog/summary")
+def api_catalog_summary() -> Response:
+    return no_store_json({"ok": True, **state.catalog_summary_payload()})
+
+
+@app.get("/api/catalog/home")
+def api_catalog_home() -> Response:
+    return no_store_json({"ok": True, **state.catalog_home_payload()})
+
+
+@app.get("/api/catalog/search")
+def api_catalog_search() -> Response:
+    try:
+        payload = state.catalog_search_payload(
+            request.args.get("q"),
+            request.args.get("limit"),
+        )
+    except sqlite3.Error:
+        return no_store_json({"error": "Catalog search is unavailable right now."}, 500)
+    return no_store_json({"ok": True, **payload})
+
+
+@app.get("/api/catalog/movies")
+def api_catalog_movies() -> Response:
+    try:
+        payload = state.catalog_movies_payload(
+            request.args.get("offset"),
+            request.args.get("limit"),
+            request.args.get("q"),
+        )
+    except sqlite3.Error:
+        return no_store_json({"error": "Movie catalog is unavailable right now."}, 500)
+    return no_store_json({"ok": True, **payload})
+
+
+@app.get("/api/catalog/movie")
+def api_catalog_movie() -> Response:
+    try:
+        movie = state.catalog_movie_payload(request.args.get("path"))
+    except sqlite3.Error:
+        return no_store_json({"error": "Movie details are unavailable right now."}, 500)
+    if movie is None:
+        return no_store_json({"error": "Movie not found"}, 404)
+    return no_store_json({"ok": True, "item": movie})
+
+
+@app.get("/api/catalog/shows")
+def api_catalog_shows() -> Response:
+    try:
+        payload = state.catalog_shows_payload(
+            request.args.get("offset"),
+            request.args.get("limit"),
+            request.args.get("q"),
+        )
+    except sqlite3.Error:
+        return no_store_json({"error": "Show catalog is unavailable right now."}, 500)
+    return no_store_json({"ok": True, **payload})
+
+
+@app.get("/api/catalog/show")
+def api_catalog_show() -> Response:
+    try:
+        show = state.catalog_show_payload(request.args.get("slug"))
+    except sqlite3.Error:
+        return no_store_json({"error": "Show details are unavailable right now."}, 500)
+    if show is None:
+        return no_store_json({"error": "Show not found"}, 404)
+    return no_store_json({"ok": True, "show": show})
+
+
+@app.get("/api/catalog/random")
+def api_catalog_random() -> Response:
+    try:
+        item = state.catalog_random_item_payload(request.args.get("section"))
+    except sqlite3.Error:
+        return no_store_json({"error": "Random playback is unavailable right now."}, 500)
+    if item is None:
+        return no_store_json({"error": "No matching media found"}, 404)
+    return no_store_json({"ok": True, "item": item})
+
+
+@app.post("/api/catalog/lookup")
+def api_catalog_lookup() -> Response:
+    payload = request.get_json(silent=True) or {}
+    try:
+        result = state.catalog_lookup_payload(payload.get("paths"))
+    except sqlite3.Error:
+        return no_store_json({"error": "Catalog lookup is unavailable right now."}, 500)
+    return no_store_json({"ok": True, **result})
 
 
 @app.get("/api/upload-destinations")

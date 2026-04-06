@@ -4,6 +4,8 @@ const state = {
   status: null,
   library: null,
   librarySource: "",
+  playbackLoaded: false,
+  playbackProfile: null,
   playingItem: null,
   playbackProgress: {},
   watchedOverrides: {},
@@ -21,6 +23,47 @@ const state = {
     wifiPassword: "",
     tmdbApiKey: "",
   },
+  catalogSummary: null,
+  catalogHome: null,
+  catalogProgress: {
+    count: 0,
+    showCount: 0,
+    items: [],
+    shows: [],
+    loaded: false,
+  },
+  catalogSearch: {
+    query: "",
+    count: 0,
+    items: [],
+    loaded: false,
+  },
+  catalogMovies: {
+    query: "",
+    total: 0,
+    offset: 0,
+    limit: 40,
+    count: 0,
+    hasMore: false,
+    items: [],
+    loaded: false,
+    loadingMore: false,
+  },
+  catalogShows: {
+    query: "",
+    total: 0,
+    offset: 0,
+    limit: 40,
+    count: 0,
+    hasMore: false,
+    items: [],
+    loaded: false,
+    loadingMore: false,
+  },
+  catalogMovie: null,
+  catalogMovieLoaded: false,
+  catalogShow: null,
+  catalogShowLoaded: false,
   deviceConfigFeedback: "",
   deviceConfigFeedbackTone: "",
   deviceConfigLoaded: false,
@@ -31,10 +74,10 @@ const state = {
 };
 
 const NOMAD_STORAGE_PREFIX = "nomadscreen-";
-const PLAYBACK_STORAGE_KEY = "nomadscreen-playback-v1";
-const WATCHED_STORAGE_KEY = "nomadscreen-watched-v1";
 const PROGRESS_SAVE_INTERVAL_MS = 5000;
 const RESUME_MIN_SECONDS = 30;
+const CATALOG_PAGE_SIZE = 40;
+const CATALOG_SEARCH_LIMIT = 60;
 const UPLOAD_ROOTS = [
   {
     value: "movies",
@@ -108,6 +151,10 @@ let uploadDestinationsRequest = null;
 let deviceConfigRequest = null;
 let liveUploadActivityTargets = new Set();
 let liveMetadataActivityTargets = new Set();
+let routeQueryRefreshTimer = 0;
+let catalogAutoLoadObserver = null;
+let playbackStateRequest = null;
+let playbackSyncQueue = Promise.resolve();
 
 function parseRoute(pathname) {
   const cleanPath = pathname.replace(/\/+$/, "") || "/";
@@ -1262,50 +1309,133 @@ function buildLibraryFromIndex(raw) {
   };
 }
 
-function loadPlaybackProgress() {
-  try {
-    const raw = window.localStorage.getItem(PLAYBACK_STORAGE_KEY);
-    if (!raw) {
-      return {};
+async function loadServerPlaybackState() {
+  const response = await fetch("/api/playback-state", { cache: "no-store" });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || `Playback state returned HTTP ${response.status}`);
+  }
+
+  state.playbackProgress = payload.playback && typeof payload.playback === "object" ? payload.playback : {};
+  state.watchedOverrides = payload.watched && typeof payload.watched === "object" ? payload.watched : {};
+  state.playbackProfile = payload.profile || null;
+  state.playbackLoaded = true;
+  return payload;
+}
+
+function serializePlaybackEntryForServer(entry) {
+  if (!entry || !entry.path || (entry.section !== "movies" && entry.section !== "tv")) {
+    return null;
+  }
+  return {
+    path: String(entry.path || ""),
+    section: String(entry.section || ""),
+    showSlug: String(entry.showSlug || ""),
+    currentTime: Math.max(0, Number(entry.currentTime || 0)),
+    duration: Math.max(0, Number(entry.duration || 0)),
+    completed: Boolean(entry.completed),
+    lastPlayedAt: String(entry.lastPlayedAt || ""),
+  };
+}
+
+function postPlaybackStateUpdate(payload, options = {}) {
+  const safePayload = {};
+  if (Array.isArray(payload && payload.playback)) {
+    const playback = payload.playback
+      .map(serializePlaybackEntryForServer)
+      .filter(Boolean);
+    if (playback.length) {
+      safePayload.playback = playback;
     }
-
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch (error) {
-    console.warn("Could not load playback progress", error);
-    return {};
   }
-}
-
-function loadWatchedOverrides() {
-  try {
-    const raw = window.localStorage.getItem(WATCHED_STORAGE_KEY);
-    if (!raw) {
-      return {};
+  if (payload && payload.watched && typeof payload.watched === "object") {
+    const watched = {};
+    for (const [path, value] of Object.entries(payload.watched)) {
+      const safePath = String(path || "").trim();
+      if (!safePath) {
+        continue;
+      }
+      watched[safePath] = Boolean(value);
     }
-
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch (error) {
-    console.warn("Could not load watched overrides", error);
-    return {};
+    if (Object.keys(watched).length) {
+      safePayload.watched = watched;
+    }
   }
+  if (Array.isArray(payload && payload.clearWatched)) {
+    const clearWatched = payload.clearWatched
+      .map((path) => String(path || "").trim())
+      .filter(Boolean);
+    if (clearWatched.length) {
+      safePayload.clearWatched = clearWatched;
+    }
+  }
+  if (!Object.keys(safePayload).length) {
+    return Promise.resolve(null);
+  }
+
+  const body = JSON.stringify(safePayload);
+  if (options.keepalive && navigator.sendBeacon) {
+    try {
+      const blob = new Blob([body], { type: "application/json" });
+      if (navigator.sendBeacon("/api/playback-state", blob)) {
+        return Promise.resolve(null);
+      }
+    } catch (error) {
+      console.warn("Could not queue playback sync with sendBeacon", error);
+    }
+  }
+
+  return fetch("/api/playback-state", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    cache: "no-store",
+    keepalive: Boolean(options.keepalive),
+    body,
+  }).then(async (response) => {
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.error || `Playback state returned HTTP ${response.status}`);
+    }
+    return data;
+  });
 }
 
-function savePlaybackProgress() {
-  try {
-    window.localStorage.setItem(PLAYBACK_STORAGE_KEY, JSON.stringify(state.playbackProgress));
-  } catch (error) {
-    console.warn("Could not save playback progress", error);
+function enqueuePlaybackStateUpdate(payload, options = {}) {
+  if (options.keepalive) {
+    return postPlaybackStateUpdate(payload, options).catch((error) => {
+      console.warn("Could not sync playback state", error);
+      if (!options.silent && els.pageSubtitle) {
+        els.pageSubtitle.textContent = `Playback sync failed: ${error.message}`;
+      }
+      return null;
+    });
   }
+
+  playbackSyncQueue = playbackSyncQueue
+    .catch(() => null)
+    .then(() => postPlaybackStateUpdate(payload, options))
+    .catch((error) => {
+      console.warn("Could not sync playback state", error);
+      if (!options.silent && els.pageSubtitle) {
+        els.pageSubtitle.textContent = `Playback sync failed: ${error.message}`;
+      }
+      return null;
+    });
+  return playbackSyncQueue;
 }
 
-function saveWatchedOverrides() {
-  try {
-    window.localStorage.setItem(WATCHED_STORAGE_KEY, JSON.stringify(state.watchedOverrides));
-  } catch (error) {
-    console.warn("Could not save watched overrides", error);
+async function wipeServerPlaybackState() {
+  const response = await fetch("/api/playback-state", {
+    method: "DELETE",
+    cache: "no-store",
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || `Playback wipe returned HTTP ${response.status}`);
   }
+  return payload;
 }
 
 function clearNomadStorageBucket(storage, preservedKeys = []) {
@@ -1364,10 +1494,8 @@ async function clearClientAppData(options = {}) {
 
   persistActivePlaybackProgress(true, false, false);
   els.pageSubtitle.textContent = keepWatchHistory
-    ? "Clearing local app caches while keeping watch history..."
-    : "Wiping local app data on this device...";
-
-  const preservedKeys = keepWatchHistory ? [PLAYBACK_STORAGE_KEY, WATCHED_STORAGE_KEY] : [];
+    ? "Clearing local app caches while keeping server watch history..."
+    : "Wiping local app data and this device history profile...";
 
   try {
     await clearBrowserCaches();
@@ -1376,7 +1504,7 @@ async function clearClientAppData(options = {}) {
   }
 
   try {
-    clearNomadStorageBucket(window.localStorage, preservedKeys);
+    clearNomadStorageBucket(window.localStorage);
   } catch (error) {
     console.warn("Could not clear localStorage data", error);
   }
@@ -1385,6 +1513,15 @@ async function clearClientAppData(options = {}) {
     clearNomadStorageBucket(window.sessionStorage);
   } catch (error) {
     console.warn("Could not clear sessionStorage data", error);
+  }
+
+  if (!keepWatchHistory) {
+    try {
+      await wipeServerPlaybackState();
+    } catch (error) {
+      console.warn("Could not wipe server playback state", error);
+      throw error;
+    }
   }
 
   resetLocalState(keepWatchHistory);
@@ -1534,21 +1671,31 @@ function setWatchedStateForItems(items, watched) {
     return;
   }
 
+  const playbackUpdates = [];
+  const watchedUpdates = {};
   if (watched) {
     const baseTime = Date.now();
     for (let index = 0; index < targets.length; index += 1) {
       const item = targets[index];
       markPlaybackEntryWatched(item, new Date(baseTime + index).toISOString());
       state.watchedOverrides[item.path] = true;
+      watchedUpdates[item.path] = true;
+      playbackUpdates.push(state.playbackProgress[item.path]);
     }
-    savePlaybackProgress();
   } else {
     for (const item of targets) {
       state.watchedOverrides[item.path] = false;
+      watchedUpdates[item.path] = false;
     }
   }
 
-  saveWatchedOverrides();
+  enqueuePlaybackStateUpdate(
+    {
+      playback: playbackUpdates,
+      watched: watchedUpdates,
+    },
+    { silent: false },
+  );
   render();
 }
 
@@ -1638,7 +1785,7 @@ function nextEpisodeForShow(show, path) {
 }
 
 function continueWatchingEntries() {
-  const sections = librarySections();
+  const shows = detailedCatalogShows();
   const resumes = [];
   const nextUps = [];
   const resumePaths = new Set();
@@ -1664,7 +1811,7 @@ function continueWatchingEntries() {
 
   resumes.sort((left, right) => right.sortTime - left.sortTime);
 
-  for (const show of sections.tv) {
+  for (const show of shows) {
     let latest = null;
 
     for (const season of show.seasons || []) {
@@ -1752,15 +1899,26 @@ function recordPlaybackProgress(item, currentTime, duration, options = {}) {
   }
 
   state.playbackProgress[item.path] = entry;
-  savePlaybackProgress();
+  const clearWatched = [];
 
   if (entry.completed && watchedOverrideForPath(item.path) === false) {
     delete state.watchedOverrides[item.path];
-    saveWatchedOverrides();
+    clearWatched.push(item.path);
   }
+
+  enqueuePlaybackStateUpdate(
+    {
+      playback: [entry],
+      clearWatched,
+    },
+    {
+      keepalive: Boolean(options.keepalive),
+      silent: true,
+    },
+  );
 }
 
-function persistActivePlaybackProgress(force, completed, refreshHome) {
+function persistActivePlaybackProgress(force, completed, refreshHome, keepalive = false) {
   const item = state.playingItem;
   if (!item || item.type !== "video" || !els.video.currentSrc) {
     return;
@@ -1776,7 +1934,7 @@ function persistActivePlaybackProgress(force, completed, refreshHome) {
   }
 
   state.lastProgressSaveAt = now;
-  recordPlaybackProgress(item, els.video.currentTime, els.video.duration, { completed });
+  recordPlaybackProgress(item, els.video.currentTime, els.video.duration, { completed, keepalive });
 
   if (refreshHome && state.route.name === "home" && !state.query) {
     render();
@@ -1954,6 +2112,52 @@ function matchesQuery(text) {
   return !state.query || text.toLowerCase().includes(state.query.toLowerCase());
 }
 
+function routeUsesCatalogSummary() {
+  return ["home", "movies", "movie", "tv", "show", "season"].includes(state.route.name);
+}
+
+function routeUsesServerSearch() {
+  return ["home", "movies", "tv"].includes(state.route.name);
+}
+
+function homeSections() {
+  if (state.catalogHome && state.catalogHome.sections) {
+    return {
+      movies: state.catalogHome.sections.movies || [],
+      tv: state.catalogHome.sections.tv || [],
+      music: state.catalogHome.sections.music || [],
+      audiobooks: state.catalogHome.sections.audiobooks || [],
+      documents: state.catalogHome.sections.documents || [],
+    };
+  }
+  return {
+    movies: [],
+    tv: [],
+    music: [],
+    audiobooks: [],
+    documents: [],
+  };
+}
+
+function detailedCatalogShows() {
+  const known = new Map();
+  const addShow = (show) => {
+    if (!show || !show.slug || known.has(show.slug) || !Array.isArray(show.seasons)) {
+      return;
+    }
+    known.set(show.slug, show);
+  };
+
+  addShow(state.catalogShow);
+  for (const show of (state.catalogProgress && state.catalogProgress.shows) || []) {
+    addShow(show);
+  }
+  for (const show of librarySections().tv || []) {
+    addShow(show);
+  }
+  return Array.from(known.values());
+}
+
 function librarySections() {
   if (!state.library || !state.library.sections) {
     return {
@@ -1975,26 +2179,87 @@ function librarySections() {
 }
 
 function allMediaItems() {
-  const sections = librarySections();
-  const tvEpisodes = [];
-
-  for (const show of sections.tv) {
-    for (const season of show.seasons || []) {
+  const known = new Map();
+  const addItem = (item) => {
+    if (!item || !item.path || known.has(item.path)) {
+      return;
+    }
+    known.set(item.path, item);
+  };
+  const addShowEpisodes = (show) => {
+    for (const season of (show && show.seasons) || []) {
       for (const episode of season.episodes || []) {
-        tvEpisodes.push(episode);
+        addItem(episode);
       }
     }
+  };
+
+  if (state.catalogMovie) {
+    addItem(state.catalogMovie);
+  }
+  for (const item of (state.catalogProgress && state.catalogProgress.items) || []) {
+    addItem(item);
+  }
+  for (const item of state.catalogMovies.items || []) {
+    addItem(item);
+  }
+  for (const item of state.catalogSearch.items || []) {
+    addItem(item);
+  }
+  const home = homeSections();
+  for (const item of home.movies || []) {
+    addItem(item);
+  }
+  for (const item of home.music || []) {
+    addItem(item);
+  }
+  for (const item of home.audiobooks || []) {
+    addItem(item);
+  }
+  for (const item of home.documents || []) {
+    addItem(item);
+  }
+  addShowEpisodes(state.catalogShow);
+  for (const show of (state.catalogProgress && state.catalogProgress.shows) || []) {
+    addShowEpisodes(show);
   }
 
-  return []
-    .concat(sections.movies)
-    .concat(tvEpisodes)
-    .concat(sections.music)
-    .concat(sections.audiobooks)
-    .concat(sections.documents);
+  const sections = librarySections();
+  for (const item of sections.movies || []) {
+    addItem(item);
+  }
+  for (const item of sections.music || []) {
+    addItem(item);
+  }
+  for (const item of sections.audiobooks || []) {
+    addItem(item);
+  }
+  for (const item of sections.documents || []) {
+    addItem(item);
+  }
+  for (const show of sections.tv || []) {
+    addShowEpisodes(show);
+  }
+
+  return Array.from(known.values());
 }
 
 function findShow(slug) {
+  if (state.catalogShow && state.catalogShow.slug === slug) {
+    return state.catalogShow;
+  }
+  const progressShow = ((state.catalogProgress && state.catalogProgress.shows) || []).find((show) => show.slug === slug);
+  if (progressShow) {
+    return progressShow;
+  }
+  const pagedShow = (state.catalogShows.items || []).find((show) => show.slug === slug);
+  if (pagedShow) {
+    return pagedShow;
+  }
+  const homeShow = (homeSections().tv || []).find((show) => show.slug === slug);
+  if (homeShow) {
+    return homeShow;
+  }
   const sections = librarySections();
   return sections.tv.find((show) => show.slug === slug) || null;
 }
@@ -2016,6 +2281,32 @@ function firstSeason(show) {
 
 function firstEpisodeInSeason(season) {
   return season && season.episodes && season.episodes.length ? season.episodes[0] : null;
+}
+
+function playbackCatalogPaths() {
+  const known = new Set();
+  const paths = [];
+  const addPath = (value) => {
+    const path = String(value || "").trim();
+    if (!path || known.has(path)) {
+      return;
+    }
+    known.add(path);
+    paths.push(path);
+  };
+
+  for (const path of Object.keys(state.playbackProgress || {})) {
+    addPath(path);
+  }
+  for (const [path, watched] of Object.entries(state.watchedOverrides || {})) {
+    if (watched) {
+      addPath(path);
+    }
+  }
+  if (state.playingItem && state.playingItem.path) {
+    addPath(state.playingItem.path);
+  }
+  return paths;
 }
 
 function seasonRoute(show, season) {
@@ -2395,6 +2686,10 @@ function clearSearch() {
 function openRoute(route, replace) {
   const path = typeof route === "string" ? route : buildRoutePath(route);
   const isNewPath = path !== window.location.pathname;
+  if (routeQueryRefreshTimer) {
+    window.clearTimeout(routeQueryRefreshTimer);
+    routeQueryRefreshTimer = 0;
+  }
 
   if (path !== window.location.pathname) {
     const method = replace ? "replaceState" : "pushState";
@@ -2406,7 +2701,11 @@ function openRoute(route, replace) {
   }
 
   state.route = parseRoute(window.location.pathname);
+  prepareRouteDataForLoading();
   render();
+  refreshAll().catch((error) => {
+    els.pageSubtitle.textContent = `Unable to reach the server: ${error.message}`;
+  });
 }
 
 function openMoviePage(item, options = {}) {
@@ -2689,7 +2988,7 @@ function createCard(kind, config) {
   art.classList.add(isShow ? "card-art--show" : "card-art--poster");
   art.style.background = coverGradient(config.gradientKey, variant);
   art.classList.remove("card-art--loaded");
-  artImage.loading = "eager";
+  artImage.loading = "lazy";
   artImage.decoding = "async";
   const markArtLoaded = () => {
     if (artImage.currentSrc || artImage.getAttribute("src")) {
@@ -3063,6 +3362,378 @@ async function loadDeviceConfig() {
     throw new Error(payload.error || `Device config returned HTTP ${response.status}`);
   }
   return payload.config || {};
+}
+
+function createEmptyCatalogPageState(limit = CATALOG_PAGE_SIZE) {
+  return {
+    query: "",
+    total: 0,
+    offset: 0,
+    limit,
+    count: 0,
+    hasMore: false,
+    items: [],
+    loaded: false,
+    loadingMore: false,
+  };
+}
+
+function createEmptyCatalogProgressState() {
+  return {
+    count: 0,
+    showCount: 0,
+    items: [],
+    shows: [],
+    loaded: false,
+  };
+}
+
+function prepareRouteDataForLoading() {
+  if (routeUsesCatalogSummary()) {
+    state.catalogSummary = null;
+  }
+  if (state.route.name === "home") {
+    state.catalogHome = null;
+    state.catalogProgress = state.query
+      ? {
+          ...createEmptyCatalogProgressState(),
+          loaded: true,
+        }
+      : createEmptyCatalogProgressState();
+    state.catalogSearch = {
+      query: state.query,
+      count: 0,
+      items: [],
+      loaded: false,
+    };
+    state.library = null;
+    return;
+  }
+  if (state.route.name === "movies") {
+    state.catalogMovies = createEmptyCatalogPageState();
+    state.catalogMovies.query = state.query;
+    state.library = null;
+    return;
+  }
+  if (state.route.name === "movie") {
+    state.catalogMovie = null;
+    state.catalogMovieLoaded = false;
+    state.library = null;
+    return;
+  }
+  if (state.route.name === "tv") {
+    state.catalogShows = createEmptyCatalogPageState();
+    state.catalogShows.query = state.query;
+    state.library = null;
+    return;
+  }
+  if (state.route.name === "show" || state.route.name === "season") {
+    state.catalogShow = null;
+    state.catalogShowLoaded = false;
+    state.library = null;
+  }
+}
+
+async function fetchCatalogJson(url, label) {
+  const response = await fetch(url, { cache: "no-store" });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || `${label} returned HTTP ${response.status}`);
+  }
+  return payload;
+}
+
+async function loadCatalogSummary() {
+  const payload = await fetchCatalogJson("/api/catalog/summary", "Catalog summary");
+  state.catalogSummary = {
+    counts: payload.counts || null,
+    metadata: payload.metadata || null,
+  };
+}
+
+async function loadCatalogHome() {
+  const payload = await fetchCatalogJson("/api/catalog/home", "Catalog home");
+  state.catalogHome = {
+    counts: payload.counts || null,
+    metadata: payload.metadata || null,
+    sections: payload.sections || {},
+  };
+}
+
+async function loadCatalogProgressLookup() {
+  const paths = playbackCatalogPaths();
+  if (!paths.length) {
+    state.catalogProgress = {
+      ...createEmptyCatalogProgressState(),
+      loaded: true,
+    };
+    return;
+  }
+
+  const response = await fetch("/api/catalog/lookup", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    cache: "no-store",
+    body: JSON.stringify({ paths }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || `Catalog lookup returned HTTP ${response.status}`);
+  }
+
+  state.catalogProgress = {
+    count: Number(payload.count || 0),
+    showCount: Number(payload.showCount || 0),
+    items: Array.isArray(payload.items) ? payload.items : [],
+    shows: Array.isArray(payload.shows) ? payload.shows : [],
+    loaded: true,
+  };
+}
+
+async function loadCatalogSearch(query = state.query) {
+  const safeQuery = String(query || "").trim();
+  if (!safeQuery) {
+    state.catalogSearch = {
+      query: "",
+      count: 0,
+      items: [],
+      loaded: true,
+    };
+    return;
+  }
+  const payload = await fetchCatalogJson(
+    `/api/catalog/search?q=${encodeURIComponent(safeQuery)}&limit=${CATALOG_SEARCH_LIMIT}`,
+    "Catalog search",
+  );
+  state.catalogSearch = {
+    query: safeQuery,
+    count: Number(payload.count || 0),
+    items: Array.isArray(payload.items) ? payload.items : [],
+    loaded: true,
+  };
+}
+
+async function loadCatalogMovies(options = {}) {
+  const append = Boolean(options.append);
+  const safeQuery = String(options.query != null ? options.query : state.query).trim();
+  const existing = state.catalogMovies || createEmptyCatalogPageState();
+  const limit = Number(options.limit || existing.limit || CATALOG_PAGE_SIZE) || CATALOG_PAGE_SIZE;
+  const offset = append ? Number(existing.offset || 0) : Number(options.offset || 0);
+  if (!append) {
+    state.catalogMovies = {
+      ...createEmptyCatalogPageState(limit),
+      query: safeQuery,
+    };
+  } else {
+    state.catalogMovies = {
+      ...existing,
+      loadingMore: true,
+    };
+  }
+  const payload = await fetchCatalogJson(
+    `/api/catalog/movies?offset=${offset}&limit=${limit}&q=${encodeURIComponent(safeQuery)}`,
+    "Movies",
+  );
+  state.catalogMovies = {
+    query: safeQuery,
+    total: Number(payload.total || 0),
+    offset: Number(payload.offset || 0) + Number(payload.count || 0),
+    limit: Number(payload.limit || limit),
+    count: Number(payload.count || 0),
+    hasMore: Boolean(payload.hasMore),
+    items: append ? [...(existing.items || []), ...(payload.items || [])] : Array.isArray(payload.items) ? payload.items : [],
+    loaded: true,
+    loadingMore: false,
+  };
+}
+
+async function loadCatalogShows(options = {}) {
+  const append = Boolean(options.append);
+  const safeQuery = String(options.query != null ? options.query : state.query).trim();
+  const existing = state.catalogShows || createEmptyCatalogPageState();
+  const limit = Number(options.limit || existing.limit || CATALOG_PAGE_SIZE) || CATALOG_PAGE_SIZE;
+  const offset = append ? Number(existing.offset || 0) : Number(options.offset || 0);
+  if (!append) {
+    state.catalogShows = {
+      ...createEmptyCatalogPageState(limit),
+      query: safeQuery,
+    };
+  } else {
+    state.catalogShows = {
+      ...existing,
+      loadingMore: true,
+    };
+  }
+  const payload = await fetchCatalogJson(
+    `/api/catalog/shows?offset=${offset}&limit=${limit}&q=${encodeURIComponent(safeQuery)}`,
+    "Shows",
+  );
+  state.catalogShows = {
+    query: safeQuery,
+    total: Number(payload.total || 0),
+    offset: Number(payload.offset || 0) + Number(payload.count || 0),
+    limit: Number(payload.limit || limit),
+    count: Number(payload.count || 0),
+    hasMore: Boolean(payload.hasMore),
+    items: append ? [...(existing.items || []), ...(payload.items || [])] : Array.isArray(payload.items) ? payload.items : [],
+    loaded: true,
+    loadingMore: false,
+  };
+}
+
+async function loadCatalogMovie(path) {
+  const safePath = String(path || "").trim();
+  state.catalogMovie = null;
+  state.catalogMovieLoaded = false;
+  if (!safePath) {
+    state.catalogMovieLoaded = true;
+    return;
+  }
+  const response = await fetch(`/api/catalog/movie?path=${encodeURIComponent(safePath)}`, { cache: "no-store" });
+  const payload = await response.json().catch(() => ({}));
+  if (response.status === 404) {
+    state.catalogMovie = null;
+    state.catalogMovieLoaded = true;
+    return;
+  }
+  if (!response.ok) {
+    throw new Error(payload.error || `Movie detail returned HTTP ${response.status}`);
+  }
+  state.catalogMovie = payload.item || null;
+  state.catalogMovieLoaded = true;
+}
+
+async function loadCatalogShow(slug) {
+  const safeSlug = String(slug || "").trim();
+  state.catalogShow = null;
+  state.catalogShowLoaded = false;
+  if (!safeSlug) {
+    state.catalogShowLoaded = true;
+    return;
+  }
+  const response = await fetch(`/api/catalog/show?slug=${encodeURIComponent(safeSlug)}`, { cache: "no-store" });
+  const payload = await response.json().catch(() => ({}));
+  if (response.status === 404) {
+    state.catalogShow = null;
+    state.catalogShowLoaded = true;
+    return;
+  }
+  if (!response.ok) {
+    throw new Error(payload.error || `Show detail returned HTTP ${response.status}`);
+  }
+  state.catalogShow = payload.show || null;
+  state.catalogShowLoaded = true;
+}
+
+async function loadRandomCatalogItem(section = "") {
+  const suffix = section ? `?section=${encodeURIComponent(section)}` : "";
+  const payload = await fetchCatalogJson(`/api/catalog/random${suffix}`, "Random media");
+  return payload.item || null;
+}
+
+async function loadRouteData() {
+  if (state.route.name === "home") {
+    if (state.query) {
+      await Promise.all([loadCatalogSummary(), loadCatalogSearch(state.query)]);
+      state.catalogHome = null;
+      state.catalogProgress = {
+        ...createEmptyCatalogProgressState(),
+        loaded: true,
+      };
+    } else {
+      await Promise.all([loadCatalogSummary(), loadCatalogHome(), loadCatalogProgressLookup()]);
+      state.catalogSearch = {
+        query: "",
+        count: 0,
+        items: [],
+        loaded: true,
+      };
+    }
+    return;
+  }
+  if (state.route.name === "movies") {
+    await Promise.all([loadCatalogSummary(), loadCatalogMovies({ query: state.query })]);
+    return;
+  }
+  if (state.route.name === "movie") {
+    await Promise.all([loadCatalogSummary(), loadCatalogMovie(state.route.path)]);
+    return;
+  }
+  if (state.route.name === "tv") {
+    await Promise.all([loadCatalogSummary(), loadCatalogShows({ query: state.query })]);
+    return;
+  }
+  if (state.route.name === "show" || state.route.name === "season") {
+    await Promise.all([loadCatalogSummary(), loadCatalogShow(state.route.slug)]);
+    return;
+  }
+  await loadLibrary();
+}
+
+function scheduleRouteQueryRefresh() {
+  if (routeQueryRefreshTimer) {
+    window.clearTimeout(routeQueryRefreshTimer);
+    routeQueryRefreshTimer = 0;
+  }
+  routeQueryRefreshTimer = window.setTimeout(() => {
+    routeQueryRefreshTimer = 0;
+    prepareRouteDataForLoading();
+    render();
+    refreshAll().catch((error) => {
+      els.pageSubtitle.textContent = `Refresh failed: ${error.message}`;
+    });
+  }, 220);
+}
+
+async function loadMoreCatalogMovies() {
+  if (!state.catalogMovies.loaded || !state.catalogMovies.hasMore || state.catalogMovies.loadingMore) {
+    return;
+  }
+  await loadCatalogMovies({ append: true, query: state.catalogMovies.query || state.query });
+  render();
+}
+
+async function loadMoreCatalogShows() {
+  if (!state.catalogShows.loaded || !state.catalogShows.hasMore || state.catalogShows.loadingMore) {
+    return;
+  }
+  await loadCatalogShows({ append: true, query: state.catalogShows.query || state.query });
+  render();
+}
+
+function disconnectCatalogAutoLoadObserver() {
+  if (catalogAutoLoadObserver) {
+    catalogAutoLoadObserver.disconnect();
+    catalogAutoLoadObserver = null;
+  }
+}
+
+function observeCatalogAutoLoad(target, loadMore) {
+  disconnectCatalogAutoLoadObserver();
+  if (!target || typeof loadMore !== "function" || typeof window.IntersectionObserver !== "function") {
+    return;
+  }
+
+  catalogAutoLoadObserver = new window.IntersectionObserver(
+    (entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) {
+        return;
+      }
+      disconnectCatalogAutoLoadObserver();
+      Promise.resolve(loadMore()).catch((error) => {
+        if (els.pageSubtitle) {
+          els.pageSubtitle.textContent = `Could not load more items: ${error.message}`;
+        }
+      });
+    },
+    {
+      rootMargin: "240px 0px",
+      threshold: 0.1,
+    },
+  );
+  catalogAutoLoadObserver.observe(target);
 }
 
 function createUploadId() {
@@ -4008,7 +4679,7 @@ function renderBreadcrumbs(show, movie, season, documentBrowser) {
 }
 
 function counts() {
-  return (state.library && state.library.counts) || {
+  return (state.catalogSummary && state.catalogSummary.counts) || (state.library && state.library.counts) || {
     total: 0,
     movies: 0,
     shows: 0,
@@ -4048,8 +4719,8 @@ function updatePageHeader(show, movie, season, documentBrowser) {
         }
       : {
           eyebrow: "Movie Detail",
-          title: state.library ? "Movie not found" : titleFromPath(state.route.path || "") || "Loading movie",
-          subtitle: state.library
+          title: state.catalogMovieLoaded ? "Movie not found" : titleFromPath(state.route.path || "") || "Loading movie",
+          subtitle: state.catalogMovieLoaded
             ? "This movie is not in the current media scan."
             : "Loading movie details from the library...",
           searchPlaceholder: "Search movie details",
@@ -4073,8 +4744,8 @@ function updatePageHeader(show, movie, season, documentBrowser) {
         }
       : {
           eyebrow: "Show Detail",
-          title: state.library ? "Show not found" : "Loading show",
-          subtitle: state.library
+          title: state.catalogShowLoaded ? "Show not found" : "Loading show",
+          subtitle: state.catalogShowLoaded
             ? "This show is not in the current media scan."
             : "Loading show details from the media library...",
           searchPlaceholder: "Search seasons",
@@ -4089,8 +4760,8 @@ function updatePageHeader(show, movie, season, documentBrowser) {
         }
       : {
           eyebrow: "Season Detail",
-          title: state.library ? "Season not found" : "Loading season",
-          subtitle: state.library
+          title: state.catalogShowLoaded ? "Season not found" : "Loading season",
+          subtitle: state.catalogShowLoaded
             ? "This season is not in the current media scan."
             : "Loading season details from the media library...",
           searchPlaceholder: "Search episodes",
@@ -4163,12 +4834,15 @@ function updatePageActions(show, movie, season, documentBrowser) {
   if (state.route.name === "home") {
     els.actions.appendChild(
       createButton("Play Something", "primary-button", () => {
-        const items = filterMediaItems(allMediaItems());
-        if (!items.length) {
-          return;
-        }
-        const item = items[Math.floor(Math.random() * items.length)];
-        playItem(item);
+        loadRandomCatalogItem()
+          .then((item) => {
+            if (item) {
+              playItem(item);
+            }
+          })
+          .catch((error) => {
+            els.pageSubtitle.textContent = `Random playback failed: ${error.message}`;
+          });
       }),
     );
     els.actions.appendChild(
@@ -4180,12 +4854,15 @@ function updatePageActions(show, movie, season, documentBrowser) {
   if (state.route.name === "movies") {
     els.actions.appendChild(
       createButton("Shuffle Movie", "primary-button", () => {
-        const items = filterMediaItems(librarySections().movies);
-        if (!items.length) {
-          return;
-        }
-        const item = items[Math.floor(Math.random() * items.length)];
-        playItem(item);
+        loadRandomCatalogItem("movies")
+          .then((item) => {
+            if (item) {
+              playItem(item);
+            }
+          })
+          .catch((error) => {
+            els.pageSubtitle.textContent = `Movie shuffle failed: ${error.message}`;
+          });
       }),
     );
     return;
@@ -4327,7 +5004,7 @@ function renderHero(show, movie, season, documentBrowser) {
   let gradientKey = "nomad-screen";
 
   if (state.route.name === "movies") {
-    const featured = filterMediaItems(sections.movies)[0];
+    const featured = (state.catalogMovies.items || [])[0] || null;
     eyebrow.textContent = "Movie Shelf";
     title.textContent = featured ? titleWithYear(featured.title, featured.year) : "Movie library";
     subtitle.textContent = featured
@@ -4352,7 +5029,7 @@ function renderHero(show, movie, season, documentBrowser) {
       ? truncateText(movie.overview, 220) ||
         truncateText(movie.tagline, 220) ||
         "Movie description, ratings, and file details are grouped below this spotlight."
-      : state.library
+      : state.catalogMovieLoaded
         ? "Rescan the library or head back to the movies page to pick another title."
         : "Loading movie details from the library...";
     artUrl = movie ? movie.backdropUrl || movie.posterUrl : "";
@@ -4366,7 +5043,7 @@ function renderHero(show, movie, season, documentBrowser) {
       createButton("Back To Movies", "ghost-button", () => openRoute({ name: "movies" })),
     );
   } else if (state.route.name === "tv") {
-    const featured = filterShows(sections.tv)[0];
+    const featured = (state.catalogShows.items || [])[0] || null;
     eyebrow.textContent = "Series Shelf";
     title.textContent = featured ? featured.title : "TV library";
     subtitle.textContent = featured
@@ -4399,7 +5076,7 @@ function renderHero(show, movie, season, documentBrowser) {
     title.textContent = show && season ? `${show.title} | ${season.label}` : "Missing season";
     subtitle.textContent = season
       ? `${season.episodeCount || (season.episodes || []).length} episode${(season.episodeCount || (season.episodes || []).length) === 1 ? "" : "s"} ready to play in the same card layout as the rest of the library.`
-      : state.library
+      : state.catalogShowLoaded
         ? "Rescan the library or head back to the show page to pick another season."
         : "Loading season details from the media library...";
     artUrl = show ? show.backdropUrl || show.posterUrl : "";
@@ -4525,15 +5202,24 @@ function renderHero(show, movie, season, documentBrowser) {
 }
 
 function renderHomePage(container) {
-  const sections = librarySections();
-  const results = filterMediaItems(allMediaItems());
+  const sections = homeSections();
+  const results = state.query ? state.catalogSearch.items || [] : [];
   const continueEntries = continueWatchingEntries();
+
+  if (state.query && !state.catalogSearch.loaded) {
+    container.appendChild(createEmptyState("Searching the library on the Pi..."));
+    return;
+  }
+  if (!state.query && !state.catalogHome) {
+    container.appendChild(createEmptyState("Loading a lighter home shelf from the Pi..."));
+    return;
+  }
 
   if (state.query) {
     appendGridSection(container, {
       eyebrow: "Search",
       title: "Matching media",
-      subtitle: `${results.length} result${results.length === 1 ? "" : "s"} across your whole library.`,
+      subtitle: `${results.length} result${results.length === 1 ? "" : "s"} from the server-side catalog search.`,
       items: results,
       renderItem: createMediaCard,
       emptyMessage: "No titles match this search yet.",
@@ -4602,25 +5288,74 @@ function renderHomePage(container) {
 }
 
 function renderMoviePage(container) {
-  const items = filterMediaItems(librarySections().movies);
-  appendGridSection(container, {
-    eyebrow: "Movies",
-    title: "All Movies",
-    subtitle: `${items.length} movie${items.length === 1 ? "" : "s"} in this page view.`,
-    items,
-    renderItem: (item) =>
-      createMediaCard(item, {
-        compact: true,
-        includeYearInTitle: true,
-        cardClassName: "movie-page-card",
-      }),
-    emptyMessage: "No movies match this page yet.",
-  });
+  const page = state.catalogMovies;
+  if (!page.loaded) {
+    container.appendChild(createEmptyState("Loading a page of movies from the Pi..."));
+    return;
+  }
+
+  const section = document.createElement("section");
+  section.className = "content-section";
+  const subtitle = page.total
+    ? `Showing ${page.items.length} of ${page.total} movie${page.total === 1 ? "" : "s"}${page.query ? ` matching "${page.query}"` : ""}.`
+    : page.query
+      ? `No movies matched "${page.query}" yet.`
+      : "No movies are in the catalog yet.";
+  section.appendChild(createSectionHeading("Movies", "All Movies", subtitle));
+
+  const grid = document.createElement("div");
+  grid.className = "poster-grid";
+  if (!page.items.length) {
+    grid.appendChild(createEmptyState(page.query ? "No movies match this page yet." : "No movies are available yet."));
+  } else {
+    for (const item of page.items) {
+      grid.appendChild(
+        createMediaCard(item, {
+          compact: true,
+          includeYearInTitle: true,
+          cardClassName: "movie-page-card",
+        }),
+      );
+    }
+  }
+  section.appendChild(grid);
+
+  if (page.hasMore || page.loadingMore) {
+    const actions = document.createElement("div");
+    actions.className = "info-actions";
+    const button = createButton(
+      page.loadingMore ? "Loading More..." : "Load More Movies",
+      page.loadingMore ? "ghost-button" : "primary-button",
+      () => {
+        loadMoreCatalogMovies().catch((error) => {
+          els.pageSubtitle.textContent = `Could not load more movies: ${error.message}`;
+        });
+      },
+    );
+    button.disabled = page.loadingMore;
+    actions.appendChild(button);
+    if (page.hasMore && !page.loadingMore) {
+      const hint = document.createElement("p");
+      hint.className = "catalog-load-hint";
+      hint.textContent = "More posters will load as you scroll, or you can tap here.";
+      actions.appendChild(hint);
+      observeCatalogAutoLoad(button, () => loadMoreCatalogMovies());
+    }
+    section.appendChild(actions);
+  }
+
+  container.appendChild(section);
 }
 
 function renderMovieDetailPage(container, movie) {
   if (!movie) {
-    container.appendChild(createEmptyState("That movie is not available in the current library scan."));
+    container.appendChild(
+      createEmptyState(
+        state.catalogMovieLoaded
+          ? "That movie is not available in the current media scan."
+          : "Loading movie details from the Pi...",
+      ),
+    );
     return;
   }
 
@@ -4727,26 +5462,75 @@ function renderMovieDetailPage(container, movie) {
 }
 
 function renderTvPage(container) {
-  const shows = filterShows(librarySections().tv);
-  appendGridSection(container, {
-    eyebrow: "TV Shows",
-    title: "All Shows",
-    subtitle: `${shows.length} show${shows.length === 1 ? "" : "s"} ready to open.`,
-    items: shows,
-    renderItem: (show) =>
-      createShowCard(show, {
-        compact: true,
-        includeYearInTitle: true,
-        posterLayout: true,
-        cardClassName: "movie-page-card",
-      }),
-    emptyMessage: "No shows match this page yet.",
-  });
+  const page = state.catalogShows;
+  if (!page.loaded) {
+    container.appendChild(createEmptyState("Loading a page of shows from the Pi..."));
+    return;
+  }
+
+  const section = document.createElement("section");
+  section.className = "content-section";
+  const subtitle = page.total
+    ? `Showing ${page.items.length} of ${page.total} show${page.total === 1 ? "" : "s"}${page.query ? ` matching "${page.query}"` : ""}.`
+    : page.query
+      ? `No shows matched "${page.query}" yet.`
+      : "No shows are in the catalog yet.";
+  section.appendChild(createSectionHeading("TV Shows", "All Shows", subtitle));
+
+  const grid = document.createElement("div");
+  grid.className = "poster-grid";
+  if (!page.items.length) {
+    grid.appendChild(createEmptyState(page.query ? "No shows match this page yet." : "No shows are available yet."));
+  } else {
+    for (const show of page.items) {
+      grid.appendChild(
+        createShowCard(show, {
+          compact: true,
+          includeYearInTitle: true,
+          posterLayout: true,
+          cardClassName: "movie-page-card",
+        }),
+      );
+    }
+  }
+  section.appendChild(grid);
+
+  if (page.hasMore || page.loadingMore) {
+    const actions = document.createElement("div");
+    actions.className = "info-actions";
+    const button = createButton(
+      page.loadingMore ? "Loading More..." : "Load More Shows",
+      page.loadingMore ? "ghost-button" : "primary-button",
+      () => {
+        loadMoreCatalogShows().catch((error) => {
+          els.pageSubtitle.textContent = `Could not load more shows: ${error.message}`;
+        });
+      },
+    );
+    button.disabled = page.loadingMore;
+    actions.appendChild(button);
+    if (page.hasMore && !page.loadingMore) {
+      const hint = document.createElement("p");
+      hint.className = "catalog-load-hint";
+      hint.textContent = "More shows will load as you scroll, or you can tap here.";
+      actions.appendChild(hint);
+      observeCatalogAutoLoad(button, () => loadMoreCatalogShows());
+    }
+    section.appendChild(actions);
+  }
+
+  container.appendChild(section);
 }
 
 function renderShowPage(container, show) {
   if (!show) {
-    container.appendChild(createEmptyState("That show is not available in the current library scan."));
+    container.appendChild(
+      createEmptyState(
+        state.catalogShowLoaded
+          ? "That show is not available in the current library scan."
+          : "Loading show details from the Pi...",
+      ),
+    );
     return;
   }
 
@@ -4799,7 +5583,13 @@ function renderShowPage(container, show) {
 
 function renderSeasonPage(container, show, season) {
   if (!show || !season) {
-    container.appendChild(createEmptyState("That season is not available in the current library scan."));
+    container.appendChild(
+      createEmptyState(
+        state.catalogShowLoaded
+          ? "That season is not available in the current library scan."
+          : "Loading season details from the Pi...",
+      ),
+    );
     return;
   }
 
@@ -5024,7 +5814,7 @@ function renderDevicePage(container) {
           className: "ghost-button",
           onClick: () => {
             clearClientAppData({ keepWatchHistory: true }).catch((error) => {
-              els.pageSubtitle.textContent = `Local reset failed: ${error.message}`;
+              els.pageSubtitle.textContent = `Cache reset failed: ${error.message}`;
             });
           },
         },
@@ -5035,9 +5825,9 @@ function renderDevicePage(container) {
             clearClientAppData({
               keepWatchHistory: false,
               confirmMessage:
-                `Wipe all ${appDisplayName()} data stored in this browser on this device? This will not delete anything from the server or storage library. It will clear watch history too.`,
+                `Wipe the local ${appDisplayName()} app data and this device profile's watch history on the Pi? This will not delete any media from the library.`,
             }).catch((error) => {
-              els.pageSubtitle.textContent = `Local wipe failed: ${error.message}`;
+              els.pageSubtitle.textContent = `Device wipe failed: ${error.message}`;
             });
           },
         },
@@ -5390,9 +6180,11 @@ function render() {
   updatePageActions(show, movie, season, documentBrowser);
   renderHero(show, movie, season, documentBrowser);
 
+  disconnectCatalogAutoLoadObserver();
   els.content.innerHTML = "";
 
-  if (!state.library) {
+  const requiresFullLibrary = ["music", "audiobooks", "documents", "device"].includes(state.route.name);
+  if (requiresFullLibrary && !state.library) {
     els.content.appendChild(createEmptyState("Loading library from the storage index..."));
     return;
   }
@@ -5511,7 +6303,20 @@ async function loadLibrary() {
 
 async function refreshAll() {
   await loadStatus();
-  await loadLibrary();
+  if (!state.playbackLoaded) {
+    try {
+      await (playbackStateRequest || (playbackStateRequest = loadServerPlaybackState()));
+    } catch (error) {
+      console.warn("Could not load server playback state", error);
+      state.playbackProgress = {};
+      state.watchedOverrides = {};
+      state.playbackProfile = null;
+      state.playbackLoaded = true;
+    } finally {
+      playbackStateRequest = null;
+    }
+  }
+  await loadRouteData();
   if (state.route.name === "device") {
     await (uploadDestinationsRequest || loadUploadDestinations());
     const config = await (deviceConfigRequest || loadDeviceConfig());
@@ -5524,6 +6329,7 @@ async function refreshAll() {
     state.deviceConfigLoaded = true;
   }
   lastCompletedUploadRefreshKey = uploadCompletionRefreshKey(uploadStatusSnapshot());
+  render();
 }
 
 async function refreshAllWithRetry(options = {}) {
@@ -5557,15 +6363,23 @@ document.addEventListener("click", (event) => {
 });
 
 window.addEventListener("popstate", () => {
+  if (routeQueryRefreshTimer) {
+    window.clearTimeout(routeQueryRefreshTimer);
+    routeQueryRefreshTimer = 0;
+  }
   clearSearch();
   state.route = parseRoute(window.location.pathname);
+  prepareRouteDataForLoading();
   render();
+  refreshAll().catch((error) => {
+    els.pageSubtitle.textContent = `Unable to reach the server: ${error.message}`;
+  });
 });
 
-window.addEventListener("beforeunload", () => persistActivePlaybackProgress(true, false, false));
+window.addEventListener("beforeunload", () => persistActivePlaybackProgress(true, false, false, true));
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
-    persistActivePlaybackProgress(true, false, false);
+    persistActivePlaybackProgress(true, false, false, true);
     stopDeviceStatusPolling();
   } else {
     syncDeviceStatusPolling();
@@ -5574,15 +6388,22 @@ document.addEventListener("visibilitychange", () => {
 
 els.search.addEventListener("input", (event) => {
   state.query = event.target.value.trim();
+  if (routeUsesServerSearch()) {
+    prepareRouteDataForLoading();
+    render();
+    scheduleRouteQueryRefresh();
+    return;
+  }
   render();
 });
 
-state.playbackProgress = loadPlaybackProgress();
-state.watchedOverrides = loadWatchedOverrides();
+state.playbackProgress = {};
+state.watchedOverrides = {};
 resetPlayers();
 renderPlayerDetails(null);
 attachPlayerDiagnostics();
 render();
+prepareRouteDataForLoading();
 refreshAll().catch((error) => {
   els.pageSubtitle.textContent = `Unable to reach the server: ${error.message}`;
   els.content.innerHTML = "";
