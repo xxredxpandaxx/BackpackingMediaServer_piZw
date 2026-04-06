@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import re
+import sqlite3
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -269,7 +270,7 @@ class TmdbClient:
     def movie_details(self, movie_id: int) -> dict[str, object]:
         return self.request(
             f"movie/{movie_id}",
-            params={"append_to_response": "release_dates"},
+            params={"append_to_response": "credits,videos,keywords,release_dates"},
         )
 
 
@@ -303,6 +304,82 @@ def safe_image_extension(remote_path: str) -> str:
     if suffix in {".jpg", ".jpeg", ".png", ".webp"}:
         return suffix
     return ".jpg"
+
+
+def comma_join(values: list[str]) -> str:
+    return ", ".join(value for value in values if str(value or "").strip())
+
+
+def names_from_entries(entries: object, key: str = "name", limit: int = 0) -> list[str]:
+    if not isinstance(entries, list):
+        return []
+    values: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        value = str(entry.get(key) or "").strip()
+        if value:
+            values.append(value)
+        if limit > 0 and len(values) >= limit:
+            break
+    return values
+
+
+def extract_keywords(details: dict[str, object]) -> str:
+    keywords_block = details.get("keywords")
+    if not isinstance(keywords_block, dict):
+        return ""
+    values = keywords_block.get("keywords")
+    if not isinstance(values, list):
+        values = keywords_block.get("results")
+    return comma_join(names_from_entries(values))
+
+
+def extract_director(details: dict[str, object]) -> str:
+    credits = details.get("credits")
+    if not isinstance(credits, dict):
+        return ""
+    crew = credits.get("crew")
+    if not isinstance(crew, list):
+        return ""
+    return comma_join(
+        [
+            str(entry.get("name") or "").strip()
+            for entry in crew
+            if isinstance(entry, dict) and str(entry.get("job") or "").strip().lower() == "director"
+        ]
+    )
+
+
+def extract_cast(details: dict[str, object], limit: int = 5) -> str:
+    credits = details.get("credits")
+    if not isinstance(credits, dict):
+        return ""
+    return comma_join(names_from_entries(credits.get("cast"), limit=limit))
+
+
+def extract_video_urls(details: dict[str, object]) -> str:
+    videos = details.get("videos")
+    if not isinstance(videos, dict):
+        return ""
+    results = videos.get("results")
+    if not isinstance(results, list):
+        return ""
+    urls: list[str] = []
+    for entry in results:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("site") or "").strip().lower() != "youtube":
+            continue
+        video_key = str(entry.get("key") or "").strip()
+        if video_key:
+            urls.append(f"https://www.youtube.com/watch?v={video_key}")
+    return comma_join(urls)
+
+
+def detect_resolution_label(filename: str) -> str:
+    match = re.search(r"(2160p|1080p|720p|480p)", str(filename or ""), flags=re.IGNORECASE)
+    return str(match.group(1) or "").upper() if match else ""
 
 
 def save_tmdb_image(
@@ -473,23 +550,54 @@ def enrich_movie_item(
         return
 
     release_date = str(best_details.get("release_date") or "")
+    genres_text = comma_join(
+        names_from_entries(best_details.get("genres"))
+    )
+    original_title = str(best_details.get("original_title") or "").strip()
+    imdb_id = str(best_details.get("imdb_id") or "").strip()
+    status = str(best_details.get("status") or "").strip()
+    original_language = str(best_details.get("original_language") or "").strip()
+    keywords = extract_keywords(best_details)
+    production_companies = comma_join(names_from_entries(best_details.get("production_companies")))
+    production_countries = comma_join(names_from_entries(best_details.get("production_countries")))
+    spoken_languages = comma_join(names_from_entries(best_details.get("spoken_languages"), key="english_name"))
+    if not spoken_languages:
+        spoken_languages = comma_join(names_from_entries(best_details.get("spoken_languages"), key="name"))
+    cast_members = extract_cast(best_details, limit=5)
+    director = extract_director(best_details)
+    videos = extract_video_urls(best_details)
+    resolution = detect_resolution_label(file_path.name)
+
     item["title"] = str(best_details.get("title") or item["title"])
     item["sortTitle"] = item["title"]
     item["overview"] = str(best_details.get("overview") or "")
     item["tagline"] = str(best_details.get("tagline") or "")
     item["year"] = release_date[:4] if len(release_date) >= 4 else str(item.get("year") or "")
     item["releaseDate"] = release_date
-    item["genres"] = ", ".join(
-        str(entry.get("name") or "").strip()
-        for entry in best_details.get("genres", [])
-        if isinstance(entry, dict) and str(entry.get("name") or "").strip()
-    )
+    item["genres"] = genres_text
     item["contentRating"] = extract_certification(best_details, client.country)
     item["source"] = "tmdb"
     item["tmdbRating"] = round(float(best_details.get("vote_average") or 0.0), 1)
     if not item["runtimeMinutes"] and float(best_details.get("runtime") or 0.0) > 0:
         item["runtimeMinutes"] = round(float(best_details.get("runtime") or 0.0), 1)
     item["matchConfidence"] = best_score
+    item["tmdbId"] = int(best_details.get("id") or 0)
+    item["imdbId"] = imdb_id
+    item["originalTitle"] = original_title
+    item["status"] = status
+    item["originalLanguage"] = original_language
+    item["keywords"] = keywords
+    item["productionCompanies"] = production_companies
+    item["productionCountries"] = production_countries
+    item["spokenLanguages"] = spoken_languages
+    item["cast"] = cast_members
+    item["director"] = director
+    item["videos"] = videos
+    item["budget"] = int(best_details.get("budget") or 0)
+    item["revenue"] = int(best_details.get("revenue") or 0)
+    item["popularity"] = round(float(best_details.get("popularity") or 0.0), 3)
+    item["voteCount"] = int(best_details.get("vote_count") or 0)
+    item["resolution"] = resolution
 
     movie_id = int(best_details.get("id") or 0)
     if movie_id > 0:
@@ -558,6 +666,113 @@ def build_show_records(items: list[dict[str, object]]) -> list[dict[str, object]
     return sorted(show_map.values(), key=lambda entry: str(entry.get("title") or "").lower())
 
 
+def write_movie_metadata_database(metadata_root: Path, items: list[dict[str, object]]) -> Path:
+    db_path = metadata_root / "library.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    rows = [
+        (
+            str(item.get("path") or ""),
+            int(item.get("tmdbId") or 0),
+            str(item.get("imdbId") or ""),
+            str(item.get("title") or ""),
+            str(item.get("originalTitle") or ""),
+            str(item.get("tagline") or ""),
+            str(item.get("overview") or ""),
+            str(item.get("year") or ""),
+            str(item.get("releaseDate") or ""),
+            float(item.get("runtimeMinutes") or 0.0),
+            str(item.get("status") or ""),
+            str(item.get("originalLanguage") or ""),
+            str(item.get("genres") or ""),
+            str(item.get("keywords") or ""),
+            str(item.get("productionCompanies") or ""),
+            str(item.get("productionCountries") or ""),
+            str(item.get("spokenLanguages") or ""),
+            str(item.get("cast") or ""),
+            str(item.get("director") or ""),
+            str(item.get("videos") or ""),
+            int(item.get("budget") or 0),
+            int(item.get("revenue") or 0),
+            float(item.get("popularity") or 0.0),
+            float(item.get("tmdbRating") or 0.0),
+            int(item.get("voteCount") or 0),
+            str(item.get("contentRating") or ""),
+            str(item.get("resolution") or ""),
+            float(item.get("matchConfidence") or 0.0),
+            str(item.get("posterPath") or ""),
+            str(item.get("backdropPath") or ""),
+            str(item.get("source") or ""),
+            isoformat_now(),
+        )
+        for item in items
+        if str(item.get("section") or "") == "movies"
+    ]
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS movie_metadata (
+                path TEXT PRIMARY KEY,
+                tmdb_id INTEGER NOT NULL,
+                imdb_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                original_title TEXT NOT NULL,
+                tagline TEXT NOT NULL,
+                overview TEXT NOT NULL,
+                year TEXT NOT NULL,
+                release_date TEXT NOT NULL,
+                runtime_minutes REAL NOT NULL,
+                status TEXT NOT NULL,
+                original_language TEXT NOT NULL,
+                genres TEXT NOT NULL,
+                keywords TEXT NOT NULL,
+                production_companies TEXT NOT NULL,
+                production_countries TEXT NOT NULL,
+                spoken_languages TEXT NOT NULL,
+                cast TEXT NOT NULL,
+                director TEXT NOT NULL,
+                videos TEXT NOT NULL,
+                budget INTEGER NOT NULL,
+                revenue INTEGER NOT NULL,
+                popularity REAL NOT NULL,
+                vote_average REAL NOT NULL,
+                vote_count INTEGER NOT NULL,
+                certification TEXT NOT NULL,
+                resolution TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                poster_path TEXT NOT NULL,
+                backdrop_path TEXT NOT NULL,
+                source TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_movie_metadata_tmdb_id ON movie_metadata(tmdb_id)")
+        connection.execute("DELETE FROM movie_metadata")
+        if rows:
+            connection.executemany(
+                """
+                INSERT INTO movie_metadata (
+                    path, tmdb_id, imdb_id, title, original_title, tagline, overview,
+                    year, release_date, runtime_minutes, status, original_language, genres,
+                    keywords, production_companies, production_countries, spoken_languages,
+                    cast, director, videos, budget, revenue, popularity, vote_average,
+                    vote_count, certification, resolution, confidence, poster_path,
+                    backdrop_path, source, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+        connection.commit()
+
+    return db_path
+
+
+def isoformat_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def build_library(storage_root: Path, media_root: Path, verbose: bool) -> dict[str, object]:
     config = read_runtime_config(storage_root / "nomadscreen.config.json")
     client = TmdbClient(config)
@@ -589,9 +804,10 @@ def build_library(storage_root: Path, media_root: Path, verbose: bool) -> dict[s
 
     items.sort(key=lambda entry: str(entry.get("path") or "").lower())
     shows = build_show_records(items)
+    metadata_db_path = write_movie_metadata_database(metadata_root, items)
     library = {
         "version": 1,
-        "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "generatedAt": isoformat_now(),
         "generator": GENERATOR_NAME,
         "shows": shows,
         "items": items,
@@ -602,6 +818,7 @@ def build_library(storage_root: Path, media_root: Path, verbose: bool) -> dict[s
         "library": library,
         "unmatched": unmatched,
         "tmdbEnabled": client.enabled,
+        "metadataDbPath": metadata_db_path,
     }
 
 
@@ -630,6 +847,7 @@ def main() -> int:
     library = result["library"]
     unmatched = result["unmatched"]
     log(f"Metadata written to {media_root / '.nomadscreen' / 'library.json'}")
+    log(f"Movie metadata written to {result['metadataDbPath']}")
     log(f"Indexed {len(library['items'])} item(s) and {len(library['shows'])} show record(s).")
     if unmatched:
         log(f"{len(unmatched)} movie item(s) need review. See {media_root / '.nomadscreen' / 'unmatched.json'}.")
