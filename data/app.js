@@ -20,7 +20,6 @@ const state = {
     hotspotSsid: "",
     wifiPassword: "",
     tmdbApiKey: "",
-    tmdbBearerToken: "",
   },
   deviceConfigFeedback: "",
   deviceConfigFeedbackTone: "",
@@ -108,6 +107,7 @@ let lastCompletedUploadRefreshKey = "";
 let uploadDestinationsRequest = null;
 let deviceConfigRequest = null;
 let liveUploadActivityTargets = new Set();
+let liveMetadataActivityTargets = new Set();
 
 function parseRoute(pathname) {
   const cleanPath = pathname.replace(/\/+$/, "") || "/";
@@ -580,6 +580,190 @@ function uploadCompletionRefreshKey(upload) {
   return `${upload.id}|${upload.completedAt || upload.updatedAt || ""}`;
 }
 
+function metadataRefreshSnapshot() {
+  return (state.status && state.status.metadataRefresh) || null;
+}
+
+function metadataRefreshPhase(refresh) {
+  return String((refresh && refresh.phase) || "idle").toLowerCase();
+}
+
+function metadataRefreshHasActivity(refresh) {
+  const phase = metadataRefreshPhase(refresh);
+  return Boolean(
+    refresh &&
+      (refresh.active ||
+        refresh.id ||
+        refresh.startedAt ||
+        phase === "skipped" ||
+        phase === "completed" ||
+        phase === "error" ||
+        Number((refresh && refresh.outputLineCount) || 0) > 0),
+  );
+}
+
+function metadataRefreshIsActive(refresh) {
+  const phase = metadataRefreshPhase(refresh);
+  return Boolean(refresh && (refresh.active || phase === "preparing" || phase === "running"));
+}
+
+function metadataRefreshPhaseLabel(refresh) {
+  const phase = metadataRefreshPhase(refresh);
+  if (phase === "preparing") return "Preparing";
+  if (phase === "running") return "Running";
+  if (phase === "completed") return "Complete";
+  if (phase === "skipped") return "Skipped";
+  if (phase === "error") return "Needs attention";
+  return "Standing by";
+}
+
+function metadataRefreshPhaseTone(refresh) {
+  const phase = metadataRefreshPhase(refresh);
+  if (phase === "completed") return "success";
+  if (phase === "error") return "error";
+  if (phase === "preparing" || phase === "running") return "pending";
+  return "";
+}
+
+function metadataRefreshCopy(refresh) {
+  const phase = metadataRefreshPhase(refresh);
+  if (!metadataRefreshHasActivity(refresh)) {
+    return "Run an online library rescan to watch TMDb metadata output here.";
+  }
+  if (phase === "error") {
+    return refresh.error || refresh.message || "Metadata refresh stopped before it finished.";
+  }
+  if (phase === "skipped") {
+    return refresh.message || "Metadata refresh was skipped this time.";
+  }
+  if (phase === "completed") {
+    return refresh.message || "Metadata refresh finished.";
+  }
+  if (refresh && refresh.message) {
+    return refresh.message;
+  }
+  if (phase === "preparing") {
+    return "Checking connectivity and getting the metadata command ready.";
+  }
+  if (phase === "running") {
+    return "Reading live metadata output from the Pi.";
+  }
+  return "Ready for the next metadata refresh.";
+}
+
+function metadataRefreshOutputLines(refresh) {
+  if (!refresh) {
+    return [];
+  }
+  const recentLines = Array.isArray(refresh.recentLines)
+    ? refresh.recentLines.map((line) => String(line || "").trim()).filter(Boolean)
+    : [];
+  if (recentLines.length) {
+    return recentLines;
+  }
+  return String(refresh.detail || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-8);
+}
+
+function metadataRefreshConnectivityLabel(refresh) {
+  if (!refresh) {
+    return "Unavailable";
+  }
+  if (refresh.online) {
+    return "Online";
+  }
+  if (metadataRefreshPhase(refresh) === "skipped" && refresh.reason === "offline") {
+    return "Offline";
+  }
+  if (refresh.configured === false) {
+    return "TMDb API key needed";
+  }
+  return "Waiting";
+}
+
+function renderMetadataRefreshActivity(target, refresh) {
+  target.innerHTML = "";
+  target.className = "upload-activity metadata-activity";
+
+  const header = document.createElement("div");
+  header.className = "upload-activity-header";
+
+  const heading = document.createElement("p");
+  heading.className = "upload-activity-title";
+  heading.textContent = "Metadata Refresh Status";
+
+  const badge = document.createElement("span");
+  badge.className = "upload-phase-badge";
+  const tone = metadataRefreshPhaseTone(refresh);
+  if (tone) {
+    badge.classList.add(`upload-phase-badge--${tone}`);
+  }
+  badge.textContent = metadataRefreshPhaseLabel(refresh);
+
+  header.appendChild(heading);
+  header.appendChild(badge);
+  target.appendChild(header);
+
+  const copy = document.createElement("p");
+  copy.className = "upload-activity-copy";
+  copy.textContent = metadataRefreshCopy(refresh);
+  target.appendChild(copy);
+
+  const metrics = document.createElement("div");
+  metrics.className = "upload-activity-metrics";
+  const outputCount = Number((refresh && refresh.outputLineCount) || 0);
+  const rows = [
+    { label: "Connectivity", value: metadataRefreshConnectivityLabel(refresh) },
+    {
+      label: "Output",
+      value: outputCount ? `${outputCount} line${outputCount === 1 ? "" : "s"}` : "Waiting",
+    },
+    { label: "Started", value: formatTimestamp((refresh && refresh.startedAt) || "") || "Not started" },
+    {
+      label: "Updated",
+      value: formatTimestamp((refresh && (refresh.completedAt || refresh.updatedAt)) || "") || "Waiting",
+    },
+  ];
+
+  for (const row of rows) {
+    const metric = document.createElement("div");
+    metric.className = "upload-metric";
+    const metricLabel = document.createElement("span");
+    metricLabel.className = "upload-metric-label";
+    metricLabel.textContent = row.label;
+    const metricValue = document.createElement("strong");
+    metricValue.className = "upload-metric-value";
+    metricValue.textContent = row.value;
+    metric.appendChild(metricLabel);
+    metric.appendChild(metricValue);
+    metrics.appendChild(metric);
+  }
+  target.appendChild(metrics);
+
+  const lines = metadataRefreshOutputLines(refresh);
+  if (lines.length) {
+    const log = document.createElement("div");
+    log.className = "metadata-activity-log";
+    for (const line of lines) {
+      const row = document.createElement("p");
+      row.className = "metadata-activity-line";
+      row.textContent = line;
+      log.appendChild(row);
+    }
+    target.appendChild(log);
+  }
+
+  if (refresh && refresh.error && metadataRefreshPhase(refresh) !== "error") {
+    const warning = document.createElement("p");
+    warning.className = "upload-activity-warning";
+    warning.textContent = refresh.error;
+    target.appendChild(warning);
+  }
+}
+
 function renderUploadActivity(target, upload) {
   target.innerHTML = "";
   target.className = "upload-activity";
@@ -678,6 +862,29 @@ function refreshLiveUploadActivity(upload = uploadStatusSnapshot()) {
   pruneLiveUploadActivityTargets();
   for (const target of liveUploadActivityTargets) {
     renderUploadActivity(target, upload);
+  }
+}
+
+function pruneLiveMetadataActivityTargets() {
+  for (const target of Array.from(liveMetadataActivityTargets)) {
+    if (!target || !target.isConnected) {
+      liveMetadataActivityTargets.delete(target);
+    }
+  }
+}
+
+function registerLiveMetadataActivityTarget(target) {
+  pruneLiveMetadataActivityTargets();
+  if (target) {
+    liveMetadataActivityTargets.add(target);
+  }
+  return target;
+}
+
+function refreshLiveMetadataActivity(refresh = metadataRefreshSnapshot()) {
+  pruneLiveMetadataActivityTargets();
+  for (const target of liveMetadataActivityTargets) {
+    renderMetadataRefreshActivity(target, refresh);
   }
 }
 
@@ -2815,6 +3022,7 @@ function delay(ms) {
 async function rescanLibrary() {
   els.pageSubtitle.textContent = "Rescanning the media library and refreshing metadata...";
   state.preferServerLibrary = true;
+  scheduleDeviceStatusPolling(250);
   const response = await fetch("/api/rescan", { method: "POST", cache: "no-store" });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -3139,7 +3347,6 @@ function createDeviceConfigCard() {
   const initialHotspotSsid = String(storedDraft.hotspotSsid || status.hotspotSsid || hotspotNetworkName(status) || appNetworkName()).trim();
   const initialWifiPassword = String(storedDraft.wifiPassword || status.hotspotPassword || "").trim();
   const initialTmdbApiKey = String(storedDraft.tmdbApiKey || "").trim();
-  const initialTmdbBearerToken = String(storedDraft.tmdbBearerToken || "").trim();
   const card = document.createElement("article");
   card.className = "info-card info-card--config";
 
@@ -3153,7 +3360,7 @@ function createDeviceConfigCard() {
   const copy = document.createElement("p");
   copy.className = "info-copy";
   copy.textContent =
-    "Choose the name shown in the web app, the fallback Wi-Fi details the Pi will use when it cannot join a known network, and the TMDb credentials used for online metadata refreshes.";
+    "Choose the name shown in the web app, the fallback Wi-Fi details the Pi will use when it cannot join a known network, and the TMDb API key used for online metadata refreshes.";
 
   const form = document.createElement("form");
   form.className = "upload-form";
@@ -3219,24 +3426,10 @@ function createDeviceConfigCard() {
   tmdbApiKeyField.appendChild(tmdbApiKeyLabel);
   tmdbApiKeyField.appendChild(tmdbApiKeyInput);
 
-  const tmdbBearerField = document.createElement("label");
-  tmdbBearerField.className = "upload-field upload-field--full";
-  const tmdbBearerLabel = document.createElement("span");
-  tmdbBearerLabel.className = "upload-label";
-  tmdbBearerLabel.textContent = "TMDb bearer token";
-  const tmdbBearerInput = document.createElement("input");
-  tmdbBearerInput.className = "upload-text";
-  tmdbBearerInput.type = "password";
-  tmdbBearerInput.name = "tmdb-bearer-token";
-  tmdbBearerInput.autocomplete = "off";
-  tmdbBearerInput.value = initialTmdbBearerToken;
-  tmdbBearerField.appendChild(tmdbBearerLabel);
-  tmdbBearerField.appendChild(tmdbBearerInput);
-
   const note = document.createElement("p");
   note.className = "upload-note";
   note.textContent =
-    "These values are saved on the Pi. Fallback Wi-Fi changes take effect the next time hotspot mode starts, and TMDb credentials are used on the next online rescan.";
+    "These values are saved on the Pi. Fallback Wi-Fi changes take effect the next time hotspot mode starts, and the TMDb API key is used on the next online rescan.";
 
   const feedback = document.createElement("p");
   feedback.className = "upload-status";
@@ -3253,7 +3446,6 @@ function createDeviceConfigCard() {
   fields.appendChild(hotspotNameField);
   fields.appendChild(wifiPasswordField);
   fields.appendChild(tmdbApiKeyField);
-  fields.appendChild(tmdbBearerField);
   form.appendChild(fields);
   form.appendChild(note);
   form.appendChild(feedback);
@@ -3273,7 +3465,6 @@ function createDeviceConfigCard() {
       hotspotSsid: hotspotNameInput.value.trim(),
       wifiPassword: wifiPasswordInput.value.trim(),
       tmdbApiKey: tmdbApiKeyInput.value.trim(),
-      tmdbBearerToken: tmdbBearerInput.value.trim(),
     };
   };
 
@@ -3281,7 +3472,6 @@ function createDeviceConfigCard() {
   hotspotNameInput.addEventListener("input", syncDraft);
   wifiPasswordInput.addEventListener("input", syncDraft);
   tmdbApiKeyInput.addEventListener("input", syncDraft);
-  tmdbBearerInput.addEventListener("input", syncDraft);
   syncDraft();
   applyConfigState(state.deviceConfigFeedback, state.deviceConfigFeedbackTone);
 
@@ -3293,7 +3483,6 @@ function createDeviceConfigCard() {
       hotspotSsid: String(state.deviceConfigDraft.hotspotSsid || "").trim(),
       wifiPassword: String(state.deviceConfigDraft.wifiPassword || "").trim(),
       tmdbApiKey: String(state.deviceConfigDraft.tmdbApiKey || "").trim(),
-      tmdbBearerToken: String(state.deviceConfigDraft.tmdbBearerToken || "").trim(),
     };
 
     if (!draft.deviceName) {
@@ -3330,12 +3519,12 @@ function createDeviceConfigCard() {
         hotspotSsid: String(savedConfig.hotspotSsid || draft.hotspotSsid).trim(),
         wifiPassword: String(savedConfig.wifiPassword || draft.wifiPassword).trim(),
         tmdbApiKey: String(savedConfig.tmdbApiKey || draft.tmdbApiKey).trim(),
-        tmdbBearerToken: String(savedConfig.tmdbBearerToken || draft.tmdbBearerToken).trim(),
       };
       state.deviceConfigLoaded = true;
       if (payload.status) {
         state.status = payload.status;
         refreshLiveUploadActivity(uploadStatusSnapshot());
+        refreshLiveMetadataActivity(metadataRefreshSnapshot());
       }
       const wifiChanged =
         state.deviceConfigDraft.hotspotSsid !== previousHotspotSsid ||
@@ -3361,6 +3550,34 @@ function createDeviceConfigCard() {
   card.appendChild(title);
   card.appendChild(copy);
   card.appendChild(form);
+  return card;
+}
+
+function createMetadataRefreshCard() {
+  const status = metadataRefreshSnapshot();
+  const card = document.createElement("article");
+  card.className = "info-card info-card--metadata";
+
+  const eyebrow = document.createElement("p");
+  eyebrow.className = "eyebrow";
+  eyebrow.textContent = "Metadata";
+
+  const title = document.createElement("h3");
+  title.textContent = "Metadata Refresh Output";
+
+  const copy = document.createElement("p");
+  copy.className = "info-copy";
+  copy.textContent =
+    "Watch the TMDb metadata command in realtime during online rescans. The latest output lines stay here so the HDMI screen can show what the Pi is doing.";
+
+  const activity = document.createElement("div");
+  registerLiveMetadataActivityTarget(activity);
+  renderMetadataRefreshActivity(activity, status);
+
+  card.appendChild(eyebrow);
+  card.appendChild(title);
+  card.appendChild(copy);
+  card.appendChild(activity);
   return card;
 }
 
@@ -4828,6 +5045,14 @@ function renderDevicePage(container) {
       searchText: "admin controls rescan refresh cache clear watch history wipe everything local data metadata",
     },
     {
+      eyebrow: "Metadata",
+      title: "Metadata Refresh Output",
+      copy: "Watch the TMDb metadata command line by line during online rescans.",
+      renderCard: () => createMetadataRefreshCard(),
+      searchText:
+        "metadata refresh output tmdb progress rescan command log online status live output recent lines script",
+    },
+    {
       eyebrow: "Config",
       title: "Device Settings",
       copy: "Change the server name and fallback Wi-Fi details without opening the Pi shell.",
@@ -5045,11 +5270,14 @@ async function pollDeviceStatus() {
   deviceStatusPollTimer = 0;
   deviceStatusPollInFlight = true;
   const previousUpload = uploadStatusSnapshot();
+  const previousMetadata = metadataRefreshSnapshot();
 
   try {
     await loadStatus();
     const nextUpload = uploadStatusSnapshot();
+    const nextMetadata = metadataRefreshSnapshot();
     refreshLiveUploadActivity(nextUpload);
+    refreshLiveMetadataActivity(nextMetadata);
     const completionKey = uploadCompletionRefreshKey(nextUpload);
     if (completionKey && completionKey !== lastCompletedUploadRefreshKey) {
       state.preferServerLibrary = true;
@@ -5060,11 +5288,18 @@ async function pollDeviceStatus() {
     if (uploadCompletionRefreshKey(previousUpload) && !completionKey) {
       lastCompletedUploadRefreshKey = "";
     }
+
+    if (metadataRefreshIsActive(previousMetadata) && !metadataRefreshIsActive(nextMetadata)) {
+      state.preferServerLibrary = true;
+      await loadLibrary();
+    }
   } catch (error) {
     console.warn("Device status poll failed", error);
   } finally {
     deviceStatusPollInFlight = false;
-    scheduleDeviceStatusPolling(uploadIsActive(uploadStatusSnapshot()) ? 900 : 2500);
+    scheduleDeviceStatusPolling(
+      uploadIsActive(uploadStatusSnapshot()) || metadataRefreshIsActive(metadataRefreshSnapshot()) ? 900 : 2500,
+    );
   }
 }
 
@@ -5074,7 +5309,9 @@ function syncDeviceStatusPolling() {
     return;
   }
   if (!deviceStatusPollTimer) {
-    scheduleDeviceStatusPolling(uploadIsActive(uploadStatusSnapshot()) ? 900 : 2500);
+    scheduleDeviceStatusPolling(
+      uploadIsActive(uploadStatusSnapshot()) || metadataRefreshIsActive(metadataRefreshSnapshot()) ? 900 : 2500,
+    );
   }
 }
 
@@ -5109,7 +5346,6 @@ function ensureDeviceConfigLoaded() {
         hotspotSsid: String(config.hotspotSsid || state.deviceConfigDraft.hotspotSsid || "").trim(),
         wifiPassword: String(config.wifiPassword || state.deviceConfigDraft.wifiPassword || "").trim(),
         tmdbApiKey: String(config.tmdbApiKey || state.deviceConfigDraft.tmdbApiKey || "").trim(),
-        tmdbBearerToken: String(config.tmdbBearerToken || state.deviceConfigDraft.tmdbBearerToken || "").trim(),
       };
       state.deviceConfigLoaded = true;
       render();
@@ -5284,7 +5520,6 @@ async function refreshAll() {
       hotspotSsid: String(config.hotspotSsid || state.deviceConfigDraft.hotspotSsid || "").trim(),
       wifiPassword: String(config.wifiPassword || state.deviceConfigDraft.wifiPassword || "").trim(),
       tmdbApiKey: String(config.tmdbApiKey || state.deviceConfigDraft.tmdbApiKey || "").trim(),
-      tmdbBearerToken: String(config.tmdbBearerToken || state.deviceConfigDraft.tmdbBearerToken || "").trim(),
     };
     state.deviceConfigLoaded = true;
   }

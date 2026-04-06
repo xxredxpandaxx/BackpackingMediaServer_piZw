@@ -611,6 +611,7 @@ button {
   grid-column: span 2;
 }
 
+.info-card--metadata,
 .info-card--config {
   grid-column: span 2;
 }
@@ -898,6 +899,24 @@ button {
 .upload-activity-warning {
   color: #ffd37d;
   line-height: 1.6;
+}
+
+.metadata-activity-log {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.metadata-activity-line {
+  margin: 0;
+  color: var(--muted);
+  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
 }
 
 .upload-actions {
@@ -1463,6 +1482,7 @@ button {
     grid-column: auto;
   }
 
+  .info-card--metadata,
   .info-card--config {
     grid-column: auto;
   }

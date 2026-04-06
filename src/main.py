@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import queue
 import socket
 import subprocess
 import sys
@@ -456,6 +457,11 @@ def normalize_upload_id(raw_value: object) -> str:
     return "".join(output).strip("-")[:80]
 
 
+def sanitize_status_line(raw_value: object, max_chars: int = 320) -> str:
+    value = " ".join(str(raw_value or "").replace("\x00", "").split()).strip()
+    return value[:max_chars]
+
+
 def load_settings() -> dict[str, object]:
     storage_root_value = os.environ.get("NOMADSCREEN_STORAGE_ROOT", "").strip()
     storage_root = Path(storage_root_value) if storage_root_value else DEFAULT_STORAGE_ROOT
@@ -598,6 +604,7 @@ class AppState:
         self.recent_clients: dict[str, float] = {}
         self.storage_ready = False
         self.upload_status = self.default_upload_status()
+        self.metadata_refresh_status = self.default_metadata_refresh_status()
         self.scan_library()
 
     def default_upload_status(self) -> dict[str, object]:
@@ -728,6 +735,135 @@ class AppState:
             current["updatedAt"] = now
             self.upload_status = current
             return self.upload_status_payload()
+
+    def default_metadata_refresh_status(self) -> dict[str, object]:
+        return {
+            "id": "",
+            "active": False,
+            "phase": "idle",
+            "message": "",
+            "error": "",
+            "reason": "",
+            "detail": "",
+            "enabled": bool(self.settings.get("metadata_refresh_on_rescan")),
+            "configured": self.metadata_refresh_configured(),
+            "online": False,
+            "attempted": False,
+            "success": False,
+            "script": str(self.metadata_refresh_script_path()),
+            "recentLines": [],
+            "outputLineCount": 0,
+            "exitCode": None,
+            "startedAt": "",
+            "updatedAt": "",
+            "completedAt": "",
+        }
+
+    def metadata_refresh_status_payload(self) -> dict[str, object]:
+        with self.lock:
+            payload = dict(self.metadata_refresh_status)
+        payload["recentLines"] = list(payload.get("recentLines") or [])
+        return payload
+
+    def set_metadata_refresh_status(
+        self,
+        refresh_id: str,
+        *,
+        active: bool | None = None,
+        phase: str | None = None,
+        message: str | None = None,
+        error: str | None = None,
+        reason: str | None = None,
+        detail: str | None = None,
+        enabled: bool | None = None,
+        configured: bool | None = None,
+        online: bool | None = None,
+        attempted: bool | None = None,
+        success: bool | None = None,
+        script: str | None = None,
+        recent_lines: list[str] | None = None,
+        append_line: str | None = None,
+        exit_code: int | None = None,
+    ) -> dict[str, object]:
+        safe_refresh_id = normalize_upload_id(refresh_id) or f"metadata-{int(time.time() * 1000)}"
+        safe_phase = lowercase_copy(phase) if phase is not None else None
+        if safe_phase not in {None, "idle", "skipped", "preparing", "running", "completed", "error"}:
+            safe_phase = "running"
+        safe_message = sanitize_status_line(message, 240) if message is not None else None
+        safe_error = sanitize_status_line(error, 240) if error is not None else None
+        safe_reason = sanitize_status_line(reason, 80) if reason is not None else None
+        safe_detail = str(detail or "").replace("\x00", "").strip()[:1200] if detail is not None else None
+        safe_script = str(script or "").strip()[:260] if script is not None else None
+        safe_recent_lines = (
+            [line for line in (sanitize_status_line(entry) for entry in recent_lines) if line][-12:]
+            if recent_lines is not None
+            else None
+        )
+        safe_append_line = sanitize_status_line(append_line) if append_line is not None else None
+        now = iso_timestamp_now()
+
+        with self.lock:
+            current = dict(self.metadata_refresh_status)
+            if str(current.get("id") or "") != safe_refresh_id:
+                current = self.default_metadata_refresh_status()
+                current["id"] = safe_refresh_id
+                current["startedAt"] = now
+            elif not str(current.get("startedAt") or ""):
+                current["startedAt"] = now
+
+            if safe_phase is not None:
+                current["phase"] = safe_phase
+            if safe_message is not None:
+                current["message"] = safe_message
+            if safe_error is not None:
+                current["error"] = safe_error
+            if safe_reason is not None:
+                current["reason"] = safe_reason
+            if safe_detail is not None:
+                current["detail"] = safe_detail
+            if enabled is not None:
+                current["enabled"] = bool(enabled)
+            if configured is not None:
+                current["configured"] = bool(configured)
+            if online is not None:
+                current["online"] = bool(online)
+            if attempted is not None:
+                current["attempted"] = bool(attempted)
+            if success is not None:
+                current["success"] = bool(success)
+            if safe_script is not None:
+                current["script"] = safe_script
+            if safe_recent_lines is not None:
+                current["recentLines"] = safe_recent_lines
+                current["outputLineCount"] = len(safe_recent_lines)
+            if safe_append_line:
+                recent_lines_buffer = list(current.get("recentLines") or [])
+                recent_lines_buffer.append(safe_append_line)
+                current["recentLines"] = recent_lines_buffer[-12:]
+                current["outputLineCount"] = int(current.get("outputLineCount") or 0) + 1
+                if not current.get("detail"):
+                    current["detail"] = "\n".join(current["recentLines"])
+            if exit_code is not None:
+                current["exitCode"] = int(exit_code)
+
+            if not str(current.get("detail") or "").strip() and current.get("recentLines"):
+                current["detail"] = "\n".join(list(current["recentLines"])[-8:])
+
+            if active is not None:
+                current["active"] = bool(active)
+            else:
+                current["active"] = current["phase"] in {"preparing", "running"}
+            if current["phase"] in {"idle", "skipped", "completed", "error"}:
+                current["active"] = False
+
+            if current["phase"] in {"skipped", "completed", "error"}:
+                current["completedAt"] = now
+            elif current["phase"] != "idle":
+                current["completedAt"] = ""
+
+            current["updatedAt"] = now
+            self.metadata_refresh_status = current
+            return self.metadata_refresh_status_payload()
 
     def cleanup_recent_clients(self, now: float | None = None) -> None:
         cutoff = (now or time.time()) - int(self.settings["client_window_seconds"])
@@ -892,6 +1028,7 @@ class AppState:
 
     def run_metadata_refresh_on_rescan(self) -> dict[str, object]:
         script_path = self.metadata_refresh_script_path()
+        refresh_id = f"metadata-{int(time.time() * 1000)}"
         result: dict[str, object] = {
             "enabled": bool(self.settings.get("metadata_refresh_on_rescan")),
             "configured": self.metadata_refresh_configured(),
@@ -904,18 +1041,69 @@ class AppState:
             "message": "",
             "detail": "",
         }
+        self.set_metadata_refresh_status(
+            refresh_id,
+            phase="preparing",
+            enabled=bool(result["enabled"]),
+            configured=bool(result["configured"]),
+            online=False,
+            attempted=False,
+            success=False,
+            script=str(script_path),
+            recent_lines=[],
+            detail="",
+            message="Checking connectivity before starting the TMDb metadata refresh...",
+            error="",
+            reason="",
+        )
 
         if not bool(self.settings.get("metadata_refresh_on_rescan")):
             result["reason"] = "disabled"
             result["message"] = "Metadata refresh is disabled for rescans."
+            self.set_metadata_refresh_status(
+                refresh_id,
+                phase="skipped",
+                enabled=False,
+                configured=bool(result["configured"]),
+                online=False,
+                attempted=False,
+                success=False,
+                message=result["message"],
+                reason=result["reason"],
+                error="",
+            )
             return result
         if not script_path.exists():
             result["reason"] = "missing-script"
             result["message"] = "Metadata refresh script was not found, so the Pi used a normal rescan."
+            self.set_metadata_refresh_status(
+                refresh_id,
+                phase="error",
+                enabled=bool(result["enabled"]),
+                configured=bool(result["configured"]),
+                online=False,
+                attempted=False,
+                success=False,
+                message=result["message"],
+                reason=result["reason"],
+                error="Metadata refresh script not found.",
+            )
             return result
         if not self.metadata_refresh_configured():
             result["reason"] = "missing-credentials"
             result["message"] = "TMDb credentials are not configured, so the Pi used a normal rescan."
+            self.set_metadata_refresh_status(
+                refresh_id,
+                phase="skipped",
+                enabled=bool(result["enabled"]),
+                configured=False,
+                online=False,
+                attempted=False,
+                success=False,
+                message=result["message"],
+                reason=result["reason"],
+                error="",
+            )
             return result
 
         online = self.internet_available()
@@ -923,10 +1111,23 @@ class AppState:
         if not online:
             result["reason"] = "offline"
             result["message"] = "The Pi is offline, so metadata refresh was skipped."
+            self.set_metadata_refresh_status(
+                refresh_id,
+                phase="skipped",
+                enabled=bool(result["enabled"]),
+                configured=True,
+                online=False,
+                attempted=False,
+                success=False,
+                message=result["message"],
+                reason=result["reason"],
+                error="",
+            )
             return result
 
         command = [
             sys.executable,
+            "-u",
             str(script_path),
             "--storage-root",
             str(self.settings["storage_root"]),
@@ -935,34 +1136,197 @@ class AppState:
         ]
         result["attempted"] = True
         result["ran"] = True
+        self.set_metadata_refresh_status(
+            refresh_id,
+            phase="running",
+            enabled=bool(result["enabled"]),
+            configured=True,
+            online=True,
+            attempted=True,
+            success=False,
+            script=str(script_path),
+            recent_lines=[],
+            detail="",
+            message="TMDb metadata refresh is running on the Pi now...",
+            error="",
+            reason="",
+        )
+        output_lines: list[str] = []
         try:
-            completed = subprocess.run(
+            completed = subprocess.Popen(
                 command,
-                check=False,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 text=True,
-                timeout=int(self.settings["metadata_refresh_timeout_seconds"]),
+                bufsize=1,
                 cwd=str(APP_ROOT),
                 env={
                     **os.environ,
                     "NOMADSCREEN_STORAGE_ROOT": str(self.settings["storage_root"]),
                     "NOMADSCREEN_MEDIA_ROOT": str(self.settings["media_directory"]),
+                    "PYTHONUNBUFFERED": "1",
                 },
             )
         except (OSError, subprocess.SubprocessError) as error:
             result["reason"] = "execution-error"
             result["message"] = "Metadata refresh could not be started, so the Pi used a normal rescan."
             result["detail"] = str(error)
+            self.set_metadata_refresh_status(
+                refresh_id,
+                phase="error",
+                enabled=bool(result["enabled"]),
+                configured=True,
+                online=True,
+                attempted=True,
+                success=False,
+                message=result["message"],
+                reason=result["reason"],
+                error=sanitize_status_line(str(error), 240),
+                detail=result["detail"],
+            )
             return result
 
-        result["detail"] = self.summarize_process_output(completed.stdout, completed.stderr)
-        if completed.returncode == 0:
+        line_queue: queue.Queue[str | None] = queue.Queue()
+        timeout_seconds = max(int(self.settings["metadata_refresh_timeout_seconds"]), 1)
+        deadline = time.monotonic() + timeout_seconds
+
+        def read_process_output() -> None:
+            stream = completed.stdout
+            if stream is None:
+                line_queue.put(None)
+                return
+            try:
+                for raw_line in stream:
+                    line_queue.put(raw_line)
+            finally:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+                line_queue.put(None)
+
+        reader_thread = threading.Thread(target=read_process_output, daemon=True)
+        reader_thread.start()
+        stream_closed = False
+        timed_out = False
+
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+            try:
+                raw_line = line_queue.get(timeout=min(0.25, max(remaining, 0.05)))
+            except queue.Empty:
+                raw_line = None
+            if raw_line is None:
+                if completed.poll() is not None:
+                    stream_closed = True
+                if stream_closed and line_queue.empty():
+                    break
+            else:
+                clean_line = sanitize_status_line(raw_line)
+                if clean_line:
+                    output_lines.append(clean_line)
+                    self.set_metadata_refresh_status(
+                        refresh_id,
+                        phase="running",
+                        enabled=bool(result["enabled"]),
+                        configured=True,
+                        online=True,
+                        attempted=True,
+                        success=False,
+                        message="TMDb metadata refresh is running on the Pi now...",
+                        append_line=clean_line,
+                    )
+            if completed.poll() is not None and line_queue.empty():
+                break
+
+        if timed_out:
+            completed.kill()
+            try:
+                completed.wait(timeout=2)
+            except subprocess.SubprocessError:
+                pass
+            reader_thread.join(timeout=1.0)
+            result["reason"] = "timeout"
+            result["message"] = "Metadata refresh timed out, so the Pi fell back to the normal rescan results."
+            result["detail"] = "\n".join(output_lines[-8:])
+            self.set_metadata_refresh_status(
+                refresh_id,
+                phase="error",
+                enabled=bool(result["enabled"]),
+                configured=True,
+                online=True,
+                attempted=True,
+                success=False,
+                message=result["message"],
+                reason=result["reason"],
+                error=f"Timed out after {timeout_seconds} seconds.",
+                detail=result["detail"],
+            )
+            return result
+
+        return_code = completed.wait()
+        reader_thread.join(timeout=1.0)
+        while True:
+            try:
+                raw_line = line_queue.get_nowait()
+            except queue.Empty:
+                break
+            if raw_line is None:
+                continue
+            clean_line = sanitize_status_line(raw_line)
+            if clean_line:
+                output_lines.append(clean_line)
+                self.set_metadata_refresh_status(
+                    refresh_id,
+                    phase="running",
+                    enabled=bool(result["enabled"]),
+                    configured=True,
+                    online=True,
+                    attempted=True,
+                    success=False,
+                    message="TMDb metadata refresh is running on the Pi now...",
+                    append_line=clean_line,
+                )
+
+        result["detail"] = "\n".join(output_lines[-8:])
+        if return_code == 0:
             result["success"] = True
             result["message"] = "TMDb metadata refreshed before rescanning the library."
+            self.set_metadata_refresh_status(
+                refresh_id,
+                phase="completed",
+                enabled=bool(result["enabled"]),
+                configured=True,
+                online=True,
+                attempted=True,
+                success=True,
+                message=result["message"],
+                reason="",
+                error="",
+                detail=result["detail"],
+                exit_code=return_code,
+            )
             return result
 
         result["reason"] = "command-failed"
         result["message"] = "Metadata refresh failed, so the Pi fell back to the normal rescan results."
+        self.set_metadata_refresh_status(
+            refresh_id,
+            phase="error",
+            enabled=bool(result["enabled"]),
+            configured=True,
+            online=True,
+            attempted=True,
+            success=False,
+            message=result["message"],
+            reason=result["reason"],
+            error=f"Command exited with status {return_code}.",
+            detail=result["detail"],
+            exit_code=return_code,
+        )
         return result
 
     def virtual_media_path(self, actual_path: Path) -> str:
@@ -1450,6 +1814,7 @@ class AppState:
             "metadataShowCount": len(self.show_metadata),
             "preferServerLibrary": self.metadata_index_stale,
             "upload": self.upload_status_payload(),
+            "metadataRefresh": self.metadata_refresh_status_payload(),
             "platform": "raspberry-pi-zero-w",
         }
 
@@ -1459,7 +1824,6 @@ class AppState:
             "hotspotSsid": str(self.settings["ssid"]),
             "wifiPassword": str(self.settings["wifi_password"]),
             "tmdbApiKey": str(self.settings.get("tmdb_api_key") or ""),
-            "tmdbBearerToken": str(self.settings.get("tmdb_bearer_token") or ""),
             "configSource": self.settings["config_source"],
         }
 
@@ -1469,7 +1833,7 @@ class AppState:
         hotspot_ssid: object,
         wifi_password: object,
         tmdb_api_key: object = "",
-        tmdb_bearer_token: object = "",
+        tmdb_bearer_token: object | None = None,
     ) -> dict[str, object]:
         safe_device_name = normalize_device_name(str(device_name or ""))[:MAX_DEVICE_NAME_LENGTH]
         if not safe_device_name:
@@ -1490,7 +1854,8 @@ class AppState:
             raw_config.pop("accessPointSsid", None)
             raw_config["wifiPassword"] = safe_wifi_password
             raw_config["tmdbApiKey"] = str(tmdb_api_key or "").strip()
-            raw_config["tmdbBearerToken"] = str(tmdb_bearer_token or "").strip()
+            if tmdb_bearer_token is not None:
+                raw_config["tmdbBearerToken"] = str(tmdb_bearer_token or "").strip()
             if isinstance(raw_config.get("wifi"), dict):
                 wifi_block = dict(raw_config.get("wifi") or {})
                 wifi_block["ssid"] = safe_hotspot_ssid
@@ -1503,7 +1868,7 @@ class AppState:
 
         return {
             "ok": True,
-            "message": "Saved device settings. Fallback Wi-Fi changes apply the next time the hotspot starts. TMDb credentials are used on the next online rescan.",
+            "message": "Saved device settings. Fallback Wi-Fi changes apply the next time the hotspot starts. The TMDb API key is used on the next online rescan.",
             "config": self.device_config_payload(),
             "status": self.status_payload(),
         }
