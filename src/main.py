@@ -20,7 +20,7 @@ from flask import Flask, Response, jsonify, redirect, request, send_file, send_f
 
 APP_ROOT = Path(__file__).resolve().parents[1]
 STATIC_ROOT = APP_ROOT / "data"
-DEFAULT_STORAGE_ROOT = APP_ROOT / "sdcard-template"
+DEFAULT_STORAGE_ROOT = APP_ROOT / ".nomadscreen-runtime"
 
 DEFAULT_DEVICE_NAME = "Nomad Screen"
 DEFAULT_MDNS_HOST = "nomadscreen"
@@ -2020,7 +2020,7 @@ class AppState:
 
         library_item = self.find_library_item(safe_path)
         safe_section = lowercase_copy(str(payload.get("section") or (library_item or {}).get("section") or "")).strip()
-        if safe_section not in {"movies", "tv"}:
+        if safe_section not in {"movies", "tv", "audiobooks"}:
             return None
 
         safe_show_slug = slugify(

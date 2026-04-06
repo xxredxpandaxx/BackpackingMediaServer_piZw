@@ -74,6 +74,7 @@ const state = {
 };
 
 const NOMAD_STORAGE_PREFIX = "nomadscreen-";
+const PLAYBACK_BACKUP_KEY = `${NOMAD_STORAGE_PREFIX}playback-cache-v1`;
 const PROGRESS_SAVE_INTERVAL_MS = 5000;
 const RESUME_MIN_SECONDS = 30;
 const CATALOG_PAGE_SIZE = 40;
@@ -1310,21 +1311,70 @@ function buildLibraryFromIndex(raw) {
 }
 
 async function loadServerPlaybackState() {
-  const response = await fetch("/api/playback-state", { cache: "no-store" });
-  const payload = await response.json().catch(() => ({}));
+  const localBackup = readLocalPlaybackBackup();
+
+  let response;
+  let payload;
+  try {
+    response = await fetch("/api/playback-state", { cache: "no-store" });
+    payload = await response.json().catch(() => ({}));
+  } catch (error) {
+    if (hasLocalPlaybackBackup(localBackup)) {
+      state.playbackProgress = localBackup.playback;
+      state.watchedOverrides = localBackup.watched;
+      state.playbackProfile = {
+        source: "local-backup",
+        sharedAcrossBrowsers: false,
+      };
+      state.playbackLoaded = true;
+      return { ok: false, fallback: "local-backup" };
+    }
+    throw error;
+  }
+
   if (!response.ok) {
+    if (hasLocalPlaybackBackup(localBackup)) {
+      state.playbackProgress = localBackup.playback;
+      state.watchedOverrides = localBackup.watched;
+      state.playbackProfile = {
+        source: "local-backup",
+        sharedAcrossBrowsers: false,
+      };
+      state.playbackLoaded = true;
+      return { ok: false, fallback: "local-backup" };
+    }
     throw new Error(payload.error || `Playback state returned HTTP ${response.status}`);
   }
 
-  state.playbackProgress = payload.playback && typeof payload.playback === "object" ? payload.playback : {};
-  state.watchedOverrides = payload.watched && typeof payload.watched === "object" ? payload.watched : {};
+  const serverPlayback = payload.playback && typeof payload.playback === "object" ? payload.playback : {};
+  const serverWatched = payload.watched && typeof payload.watched === "object" ? payload.watched : {};
+  const mergedPlayback = mergePlaybackMaps(serverPlayback, localBackup.playback);
+  const mergedWatched = mergeWatchedMaps(serverWatched, localBackup.watched);
+
+  state.playbackProgress = mergedPlayback;
+  state.watchedOverrides = mergedWatched;
   state.playbackProfile = payload.profile || null;
   state.playbackLoaded = true;
+  persistLocalPlaybackBackup();
+
+  if (
+    !playbackMapsEqual(serverPlayback, mergedPlayback) ||
+    !watchedMapsEqual(serverWatched, mergedWatched)
+  ) {
+    enqueuePlaybackStateUpdate(
+      {
+        playback: Object.values(mergedPlayback),
+        watched: mergedWatched,
+      },
+      { silent: true },
+    );
+  }
+
   return payload;
 }
 
 function serializePlaybackEntryForServer(entry) {
-  if (!entry || !entry.path || (entry.section !== "movies" && entry.section !== "tv")) {
+  if (!entry || !entry.path || !["movies", "tv", "audiobooks"].includes(entry.section)) {
     return null;
   }
   return {
@@ -1336,6 +1386,200 @@ function serializePlaybackEntryForServer(entry) {
     completed: Boolean(entry.completed),
     lastPlayedAt: String(entry.lastPlayedAt || ""),
   };
+}
+
+function normalizePlaybackEntrySnapshot(entry) {
+  const safe = serializePlaybackEntryForServer(entry);
+  return safe ? { ...safe } : null;
+}
+
+function readLocalPlaybackBackup() {
+  const empty = { playback: {}, watched: {} };
+  try {
+    const raw = window.localStorage.getItem(PLAYBACK_BACKUP_KEY);
+    if (!raw) {
+      return empty;
+    }
+    const parsed = JSON.parse(raw);
+    const playback = {};
+    const watched = {};
+
+    const playbackEntries =
+      parsed && parsed.playback && typeof parsed.playback === "object"
+        ? Array.isArray(parsed.playback)
+          ? parsed.playback
+          : Object.values(parsed.playback)
+        : [];
+    for (const entry of playbackEntries) {
+      const safe = normalizePlaybackEntrySnapshot(entry);
+      if (safe) {
+        playback[safe.path] = safe;
+      }
+    }
+
+    if (parsed && parsed.watched && typeof parsed.watched === "object") {
+      for (const [path, value] of Object.entries(parsed.watched)) {
+        const safePath = String(path || "").trim();
+        if (!safePath) {
+          continue;
+        }
+        watched[safePath] = Boolean(value);
+      }
+    }
+
+    return { playback, watched };
+  } catch (error) {
+    return empty;
+  }
+}
+
+function hasLocalPlaybackBackup(backup) {
+  return Boolean(
+    backup &&
+      ((backup.playback && Object.keys(backup.playback).length) ||
+        (backup.watched && Object.keys(backup.watched).length)),
+  );
+}
+
+function playbackEntrySortTime(entry) {
+  return Date.parse((entry && entry.lastPlayedAt) || 0) || 0;
+}
+
+function choosePlaybackEntry(left, right) {
+  if (!left) {
+    return right || null;
+  }
+  if (!right) {
+    return left;
+  }
+
+  const leftTime = playbackEntrySortTime(left);
+  const rightTime = playbackEntrySortTime(right);
+  if (leftTime !== rightTime) {
+    return leftTime >= rightTime ? left : right;
+  }
+
+  const leftProgress = playbackCurrentTime(left);
+  const rightProgress = playbackCurrentTime(right);
+  if (leftProgress !== rightProgress) {
+    return leftProgress >= rightProgress ? left : right;
+  }
+
+  const leftDuration = playbackDuration(left);
+  const rightDuration = playbackDuration(right);
+  return leftDuration >= rightDuration ? left : right;
+}
+
+function mergePlaybackMaps(serverPlayback, localPlayback) {
+  const merged = {};
+  const keys = new Set([
+    ...Object.keys(serverPlayback || {}),
+    ...Object.keys(localPlayback || {}),
+  ]);
+
+  for (const path of keys) {
+    const chosen = choosePlaybackEntry(
+      normalizePlaybackEntrySnapshot(serverPlayback && serverPlayback[path]),
+      normalizePlaybackEntrySnapshot(localPlayback && localPlayback[path]),
+    );
+    if (chosen) {
+      merged[path] = chosen;
+    }
+  }
+
+  return merged;
+}
+
+function mergeWatchedMaps(serverWatched, localWatched) {
+  return {
+    ...(serverWatched || {}),
+    ...(localWatched || {}),
+  };
+}
+
+function playbackMapsEqual(left, right) {
+  const leftKeys = Object.keys(left || {}).sort();
+  const rightKeys = Object.keys(right || {}).sort();
+  if (leftKeys.length !== rightKeys.length) {
+    return false;
+  }
+
+  for (let index = 0; index < leftKeys.length; index += 1) {
+    if (leftKeys[index] !== rightKeys[index]) {
+      return false;
+    }
+    const leftEntry = normalizePlaybackEntrySnapshot(left[leftKeys[index]]);
+    const rightEntry = normalizePlaybackEntrySnapshot(right[rightKeys[index]]);
+    if (!leftEntry || !rightEntry) {
+      return false;
+    }
+    if (
+      leftEntry.section !== rightEntry.section ||
+      leftEntry.showSlug !== rightEntry.showSlug ||
+      leftEntry.currentTime !== rightEntry.currentTime ||
+      leftEntry.duration !== rightEntry.duration ||
+      leftEntry.completed !== rightEntry.completed ||
+      leftEntry.lastPlayedAt !== rightEntry.lastPlayedAt
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function watchedMapsEqual(left, right) {
+  const leftKeys = Object.keys(left || {}).sort();
+  const rightKeys = Object.keys(right || {}).sort();
+  if (leftKeys.length !== rightKeys.length) {
+    return false;
+  }
+
+  for (let index = 0; index < leftKeys.length; index += 1) {
+    const key = leftKeys[index];
+    if (key !== rightKeys[index] || Boolean(left[key]) !== Boolean(right[key])) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function persistLocalPlaybackBackup() {
+  try {
+    const playback = {};
+    for (const entry of Object.values(state.playbackProgress || {})) {
+      const safe = normalizePlaybackEntrySnapshot(entry);
+      if (safe) {
+        playback[safe.path] = safe;
+      }
+    }
+
+    const watched = {};
+    for (const [path, value] of Object.entries(state.watchedOverrides || {})) {
+      const safePath = String(path || "").trim();
+      if (!safePath) {
+        continue;
+      }
+      watched[safePath] = Boolean(value);
+    }
+
+    if (!Object.keys(playback).length && !Object.keys(watched).length) {
+      window.localStorage.removeItem(PLAYBACK_BACKUP_KEY);
+      return;
+    }
+
+    window.localStorage.setItem(
+      PLAYBACK_BACKUP_KEY,
+      JSON.stringify({
+        savedAt: new Date().toISOString(),
+        playback,
+        watched,
+      }),
+    );
+  } catch (error) {
+    console.warn("Could not persist local playback backup", error);
+  }
 }
 
 function postPlaybackStateUpdate(payload, options = {}) {
@@ -1472,6 +1716,7 @@ function resetLocalState(keepWatchHistory) {
   if (!keepWatchHistory) {
     state.playbackProgress = {};
     state.watchedOverrides = {};
+    persistLocalPlaybackBackup();
   }
 
   resetPlayers();
@@ -1589,6 +1834,17 @@ function hasResumeProgress(entry) {
   return !isPlaybackComplete(entry);
 }
 
+function isTrackablePlaybackItem(item) {
+  return Boolean(
+    item &&
+      item.path &&
+      (
+        (item.type === "video" && (item.section === "movies" || item.section === "tv")) ||
+        (item.type === "audio" && item.section === "audiobooks")
+      ),
+  );
+}
+
 function isWatchableVideoItem(item) {
   return Boolean(item && item.type === "video" && item.path && (item.section === "movies" || item.section === "tv"));
 }
@@ -1629,7 +1885,11 @@ function isShowWatched(show) {
 }
 
 function hasResumeProgressForItem(item) {
-  if (!isWatchableVideoItem(item) || isItemWatched(item)) {
+  if (!isTrackablePlaybackItem(item)) {
+    return false;
+  }
+
+  if (item.type === "video" && isItemWatched(item)) {
     return false;
   }
   return hasResumeProgress(playbackEntryForPath(item.path));
@@ -1696,6 +1956,7 @@ function setWatchedStateForItems(items, watched) {
     },
     { silent: false },
   );
+  persistLocalPlaybackBackup();
   render();
 }
 
@@ -1791,7 +2052,7 @@ function continueWatchingEntries() {
   const resumePaths = new Set();
 
   for (const item of allMediaItems()) {
-    if (item.type !== "video") {
+    if (!isTrackablePlaybackItem(item)) {
       continue;
     }
 
@@ -1875,8 +2136,24 @@ function resumeTimeForItem(item) {
   return Math.max(0, Math.min(playbackCurrentTime(entry), duration - 3));
 }
 
+function activePlaybackElement() {
+  if (!state.playingItem) {
+    return null;
+  }
+
+  if (state.playingItem.type === "video") {
+    return els.video;
+  }
+
+  if (state.playingItem.type === "audio") {
+    return els.audio;
+  }
+
+  return null;
+}
+
 function recordPlaybackProgress(item, currentTime, duration, options = {}) {
-  if (!item || item.type !== "video" || !item.path || !Number.isFinite(currentTime) || currentTime < 0) {
+  if (!isTrackablePlaybackItem(item) || !Number.isFinite(currentTime) || currentTime < 0) {
     return;
   }
 
@@ -1906,6 +2183,8 @@ function recordPlaybackProgress(item, currentTime, duration, options = {}) {
     clearWatched.push(item.path);
   }
 
+  persistLocalPlaybackBackup();
+
   enqueuePlaybackStateUpdate(
     {
       playback: [entry],
@@ -1920,7 +2199,8 @@ function recordPlaybackProgress(item, currentTime, duration, options = {}) {
 
 function persistActivePlaybackProgress(force, completed, refreshHome, keepalive = false) {
   const item = state.playingItem;
-  if (!item || item.type !== "video" || !els.video.currentSrc) {
+  const element = activePlaybackElement();
+  if (!isTrackablePlaybackItem(item) || !element || !element.currentSrc) {
     return;
   }
 
@@ -1929,25 +2209,30 @@ function persistActivePlaybackProgress(force, completed, refreshHome, keepalive 
     return;
   }
 
-  if (!Number.isFinite(els.video.currentTime)) {
+  if (!Number.isFinite(element.currentTime)) {
     return;
   }
 
   state.lastProgressSaveAt = now;
-  recordPlaybackProgress(item, els.video.currentTime, els.video.duration, { completed, keepalive });
+  recordPlaybackProgress(item, element.currentTime, element.duration, { completed, keepalive });
 
   if (refreshHome && state.route.name === "home" && !state.query) {
     render();
   }
 }
 
-function applyPendingVideoResume() {
+function applyPendingPlaybackResume() {
   if (
     !state.pendingResume ||
     !state.playingItem ||
-    state.playingItem.type !== "video" ||
+    !isTrackablePlaybackItem(state.playingItem) ||
     state.pendingResume.path !== state.playingItem.path
   ) {
+    return;
+  }
+
+  const element = activePlaybackElement();
+  if (!element) {
     return;
   }
 
@@ -1958,13 +2243,13 @@ function applyPendingVideoResume() {
   }
 
   let safeTarget = target;
-  if (Number.isFinite(els.video.duration) && els.video.duration > 0) {
-    safeTarget = Math.max(0, Math.min(target, els.video.duration - 3));
+  if (Number.isFinite(element.duration) && element.duration > 0) {
+    safeTarget = Math.max(0, Math.min(target, element.duration - 3));
   }
 
-  if (safeTarget > 0 && Math.abs(els.video.currentTime - safeTarget) > 1) {
+  if (safeTarget > 0 && Math.abs(element.currentTime - safeTarget) > 1) {
     try {
-      els.video.currentTime = safeTarget;
+      element.currentTime = safeTarget;
     } catch (error) {
       return;
     }
@@ -2633,7 +2918,7 @@ async function playItem(item, options = {}) {
 
   els.empty.style.display = "none";
 
-  if (item.type === "video") {
+  if (item.type === "video" || (item.type === "audio" && item.section === "audiobooks")) {
     const startAt =
       options.startAt != null
         ? Number(options.startAt)
@@ -2646,6 +2931,9 @@ async function playItem(item, options = {}) {
         time: startAt,
       };
     }
+  }
+
+  if (item.type === "video") {
     els.video.src = item.streamUrl;
     els.video.load();
     els.video.style.display = "block";
@@ -2694,11 +2982,16 @@ function attachPlayerDiagnostics() {
 
   els.video.addEventListener("error", () => reportError("Video", els.video));
   els.audio.addEventListener("error", () => reportError("Audio", els.audio));
-  els.video.addEventListener("loadedmetadata", applyPendingVideoResume);
-  els.video.addEventListener("canplay", applyPendingVideoResume);
+  els.video.addEventListener("loadedmetadata", applyPendingPlaybackResume);
+  els.video.addEventListener("canplay", applyPendingPlaybackResume);
+  els.audio.addEventListener("loadedmetadata", applyPendingPlaybackResume);
+  els.audio.addEventListener("canplay", applyPendingPlaybackResume);
   els.video.addEventListener("timeupdate", () => persistActivePlaybackProgress(false, false, false));
   els.video.addEventListener("pause", () => persistActivePlaybackProgress(true, false, false));
   els.video.addEventListener("ended", () => persistActivePlaybackProgress(true, true, true));
+  els.audio.addEventListener("timeupdate", () => persistActivePlaybackProgress(false, false, false));
+  els.audio.addEventListener("pause", () => persistActivePlaybackProgress(true, false, false));
+  els.audio.addEventListener("ended", () => persistActivePlaybackProgress(true, true, true));
 }
 
 function clearSearch() {
@@ -5262,11 +5555,11 @@ function renderHomePage(container) {
 
   appendGridSection(container, {
     eyebrow: "Continue Watching",
-    title: "Client-Side Progress",
-    subtitle: "Resume unfinished movies and episodes, plus keep the next TV episode ready on this device.",
+    title: "Resume And Next Up",
+    subtitle: "Resume unfinished movies, episodes, and audiobooks, plus keep the next TV episode ready on this device profile.",
     items: continueEntries,
     renderItem: createContinueWatchingCard,
-    emptyMessage: "Start a movie or episode on this device and it will show up here.",
+    emptyMessage: "Start a movie, episode, or audiobook on this device and it will show up here.",
   });
 
   appendGridSection(container, {
@@ -6425,6 +6718,7 @@ window.addEventListener("popstate", () => {
 });
 
 window.addEventListener("beforeunload", () => persistActivePlaybackProgress(true, false, false, true));
+window.addEventListener("pagehide", () => persistActivePlaybackProgress(true, false, false, true));
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
     persistActivePlaybackProgress(true, false, false, true);

@@ -1,0 +1,9 @@
+{
+  "tmdbApiKey": "",
+  "tmdbBearerToken": "",
+  "language": "en-US",
+  "country": "US",
+  "downloadImages": true,
+  "overwriteImages": false,
+  "minimumMatchScore": 0.55
+}

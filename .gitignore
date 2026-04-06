@@ -1,4 +1,4 @@
-sdcard-template/media/.nomadscreen/
+.nomadscreen-runtime/
 __pycache__/
 .pytest_cache/
 .venv/

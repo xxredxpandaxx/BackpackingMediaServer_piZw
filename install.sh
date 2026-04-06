@@ -225,18 +225,17 @@ prepare_repo() {
 seed_storage() {
   log "Preparing runtime storage at ${STORAGE_ROOT}"
   run_root mkdir -p "${STORAGE_ROOT}"
-  if [[ -f "${INSTALL_DIR}/sdcard-template/nomadscreen.config.json" ]]; then
-    run_root cp -a -n "${INSTALL_DIR}/sdcard-template/nomadscreen.config.json" "${STORAGE_ROOT}/"
-  fi
-  if [[ -d "${INSTALL_DIR}/sdcard-template/tools" ]]; then
-    run_root mkdir -p "${STORAGE_ROOT}/tools"
-    run_root cp -a -n "${INSTALL_DIR}/sdcard-template/tools/." "${STORAGE_ROOT}/tools/"
+  if [[ -f "${INSTALL_DIR}/nomadscreen.config.example.json" ]]; then
+    run_root cp -a -n "${INSTALL_DIR}/nomadscreen.config.example.json" "${STORAGE_ROOT}/nomadscreen.config.json"
   fi
   log "Preparing media library at ${MEDIA_ROOT}"
-  run_root mkdir -p "${MEDIA_ROOT}"
-  if [[ -d "${INSTALL_DIR}/sdcard-template/media" ]]; then
-    run_root cp -a -n "${INSTALL_DIR}/sdcard-template/media/." "${MEDIA_ROOT}/"
-  fi
+  run_root mkdir -p \
+    "${MEDIA_ROOT}" \
+    "${MEDIA_ROOT}/movies" \
+    "${MEDIA_ROOT}/tv" \
+    "${MEDIA_ROOT}/music" \
+    "${MEDIA_ROOT}/audiobooks" \
+    "${MEDIA_ROOT}/documents"
   run_root chown -R "${INSTALL_USER}:${INSTALL_GROUP}" "${STORAGE_ROOT}"
   run_root chown -R "${INSTALL_USER}:${INSTALL_GROUP}" "${MEDIA_ROOT}"
 }

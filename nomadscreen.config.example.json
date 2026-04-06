@@ -1,0 +1,20 @@
+{
+  "deviceName": "Nomad Screen",
+  "hotspotSsid": "NomadScreen",
+  "wifiPassword": "backpackingmedia",
+  "fallbackAccessPointEnabled": true,
+  "knownWifiTimeoutSeconds": 20,
+  "wifiInterface": "wlan0",
+  "httpPort": 80,
+  "bindAddress": "0.0.0.0",
+  "mdnsEnabled": false,
+  "metadataRefreshOnRescan": true,
+  "metadataRefreshTimeoutSeconds": 1800,
+  "tmdbApiKey": "",
+  "tmdbBearerToken": "",
+  "language": "en-US",
+  "country": "US",
+  "downloadImages": true,
+  "overwriteImages": false,
+  "minimumMatchScore": 0.55
+}

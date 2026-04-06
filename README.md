@@ -13,7 +13,7 @@ A Raspberry Pi Zero W portable media server that keeps the existing Nomad Screen
   - `/api/stream`
   - `/api/asset`
   - `/api/rescan`
-- The storage layout from `sdcard-template/` still applies, so existing metadata tooling and `library.json` files stay compatible while the Pi also builds a SQLite catalog for paged browsing.
+- The Pi still uses a simple `nomadscreen.config.json` plus `media/` layout, and it keeps `library.json` compatibility while also building a SQLite catalog for paged browsing.
 
 ## Project layout
 
@@ -21,7 +21,7 @@ A Raspberry Pi Zero W portable media server that keeps the existing Nomad Screen
 - `src/main.py`: Pi-native HTTP server, media scan logic, metadata merge, and streaming endpoints
 - `data/`: static web app shell, styles, and client-side browsing logic
 - `tools/nomadscreen_refresh_metadata.py`: Pi-native metadata builder used during online rescans
-- `sdcard-template/`: copy-ready storage layout with `/media`, metadata tooling, and sample config
+- `nomadscreen.config.example.json`: sample runtime config for `/srv/nomadscreen/nomadscreen.config.json`
 - `deploy/network/`: fallback Wi-Fi script and `systemd` unit for known-network-first hotspot mode
 - `deploy/nomadscreen.service`: example `systemd` unit
 
@@ -34,7 +34,36 @@ The server expects a storage root that contains:
 - `media/.nomadscreen/library.json` when metadata has been generated
 - `media/.nomadscreen/library.db` after the Pi scans the library
 
-By default, the repo uses `sdcard-template/` as the storage root so the project can run immediately in-place. On the Pi, `NOMADSCREEN_STORAGE_ROOT` holds config/runtime files such as `nomadscreen.config.json`, while `NOMADSCREEN_MEDIA_ROOT` can point at the real media library path. The installer now defaults that media path to `~/media`. Large web uploads are staged under `/var/tmp/nomadscreen-upload` so they do not fill the Pi Zero W's small `/tmp` RAM disk.
+For local development, the app now keeps its default runtime files under `.nomadscreen-runtime/` inside the repo so test media and generated metadata do not clutter the project root. On the Pi, `NOMADSCREEN_STORAGE_ROOT` holds config/runtime files such as `nomadscreen.config.json`, while `NOMADSCREEN_MEDIA_ROOT` can point at the real media library path. The installer now defaults that media path to `~/media`. Large web uploads are staged under `/var/tmp/nomadscreen-upload` so they do not fill the Pi Zero W's small `/tmp` RAM disk.
+
+### Recommended media layout
+
+- `media/movies`: movie files such as `.mp4`
+- `media/tv`: episodic video files organized however you prefer
+- `media/music`: music files such as `.mp3`, `.m4a`, `.flac`
+- `media/audiobooks`: spoken-audio files such as `.mp3`, `.m4a`, `.m4b`
+- `media/documents`: PDFs, maps, permits, checklists, and images
+
+Nested folders inside `media/documents` show up as clickable folders in the Documents page.
+
+### Runtime config notes
+
+Keep `nomadscreen.config.json` in your runtime storage root, for example `/srv/nomadscreen`. You can keep that storage on:
+
+- the Pi filesystem
+- an external USB drive
+- a removable SD card mounted by the Pi
+
+Edit that config file to set:
+
+- the device/server name shown in the web UI
+- the fallback hotspot name and password
+- whether fallback hotspot mode is enabled
+- how long the Pi should wait for a known Wi-Fi network before it creates its own access point
+- TMDb metadata settings and image-download options
+- optional Pi server settings such as `httpPort`, `bindAddress`, and `mdnsEnabled`
+
+The backend and the fallback hotspot service both derive the `.local` host name automatically from `deviceName`.
 
 The web UI now uses the SQLite catalog for the Home, Movies, TV, Movie Detail, and Show Detail routes so the browser does not need to download the entire library at once. Posters are lazy-loaded and the movie/show grids keep requesting more entries as you scroll.
 
@@ -77,7 +106,8 @@ What that installer does:
 
 - installs `git`, `python3`, `python3-venv`, and `NetworkManager`
 - clones or updates the repo into `/opt/nomadscreen`
-- seeds `/srv/nomadscreen` with config/tools and seeds `~/media` with the media folder layout without overwriting existing files
+- seeds `/srv/nomadscreen/nomadscreen.config.json` from `nomadscreen.config.example.json` if needed
+- creates the standard `~/media` folder layout without overwriting existing files
 - creates `/opt/nomadscreen/.venv` and installs Python dependencies
 - prepares `/var/tmp/nomadscreen-upload` for large browser uploads
 - writes and enables `nomadscreen-network.service`
@@ -120,21 +150,22 @@ curl -fsSL https://raw.githubusercontent.com/xxredxpandaxx/BackpackingMediaServe
    sudo chown -R $USER:$USER /opt/nomadscreen
    ```
 
-3. Copy `sdcard-template/nomadscreen.config.json` into your runtime storage root, for example `/srv/nomadscreen`, and copy `sdcard-template/media/` into your real media path, for example `~/media`.
-4. Create a virtual environment and install the dependency:
+3. Copy `nomadscreen.config.example.json` to your runtime storage root as `nomadscreen.config.json`, for example `/srv/nomadscreen/nomadscreen.config.json`.
+4. Create your media folders under the real media path, for example `~/media/{movies,tv,music,audiobooks,documents}`.
+5. Create a virtual environment and install the dependency:
 
    ```bash
    python3 -m venv /opt/nomadscreen/.venv
    /opt/nomadscreen/.venv/bin/pip install -r /opt/nomadscreen/requirements.txt
    ```
 
-5. Start the server manually once to confirm the library loads:
+6. Start the server manually once to confirm the library loads:
 
    ```bash
    NOMADSCREEN_STORAGE_ROOT=/srv/nomadscreen NOMADSCREEN_MEDIA_ROOT=/home/pi/media /opt/nomadscreen/.venv/bin/python /opt/nomadscreen/src/main.py
    ```
 
-6. Install the example service if you want it to start on boot:
+7. Install the example service if you want it to start on boot:
 
    ```bash
    sudo cp /opt/nomadscreen/deploy/network/nomadscreen-network.service /etc/systemd/system/nomadscreen-network.service
@@ -146,7 +177,7 @@ curl -fsSL https://raw.githubusercontent.com/xxredxpandaxx/BackpackingMediaServe
    sudo systemctl enable --now nomadscreen.service
    ```
 
-7. Open `/app/device` and use the built-in upload panel to send files over Wi-Fi, or copy media into `~/media` manually if you prefer.
+8. Open `/app/device` and use the built-in upload panel to send files over Wi-Fi, or copy media into `~/media` manually if you prefer.
 
 ## Loading content over Wi-Fi
 
@@ -217,6 +248,16 @@ Nothing about the metadata format changed, but the default Pi-side metadata refr
 - The metadata refresh step now also writes richer `movie_metadata` and `show_metadata` tables inside that same SQLite file using the smarter TMDb detail fetch logic
 - If the JSON file is missing, the backend falls back to a direct filesystem scan and still rebuilds the live library plus the SQLite catalog
 
+Typical metadata flow:
+
+1. Copy media into the `media/` folders.
+2. Optionally run the metadata tool directly on the Pi.
+3. Let it rebuild `media/.nomadscreen/library.json` and any downloaded artwork.
+4. Transfer the updated media tree to the Pi if needed.
+5. Trigger `Rescan Library` from `/app/device`.
+
 ## Notes
 
 - The frontend still exposes a "Device" page, but it now reports Raspberry Pi service status instead of onboard firmware state.
+- The Pi-side automatic rescan path uses `tools/nomadscreen_refresh_metadata.py`.
+- On Raspberry Pi OS Bookworm and newer, NetworkManager remembers known Wi-Fi networks and the project only creates its own hotspot when those networks are unavailable.

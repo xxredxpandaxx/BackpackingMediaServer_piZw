@@ -1214,7 +1214,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     script_root = Path(__file__).resolve().parents[1]
-    default_storage_root = script_root / "sdcard-template"
+    default_storage_root = script_root / ".nomadscreen-runtime"
     storage_root = Path(args.storage_root).expanduser() if args.storage_root else default_storage_root
     media_root = Path(args.media_root).expanduser() if args.media_root else storage_root / "media"
     storage_root = storage_root.resolve(strict=False)
