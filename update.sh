@@ -9,6 +9,7 @@ STORAGE_ROOT="${NOMADSCREEN_STORAGE_ROOT:-}"
 MEDIA_ROOT="${NOMADSCREEN_MEDIA_ROOT:-}"
 HTTP_PORT="${NOMADSCREEN_PORT:-}"
 TMP_DIR="${NOMADSCREEN_TMP_DIR:-/var/tmp/nomadscreen-install}"
+UPLOAD_TMP_DIR="${NOMADSCREEN_UPLOAD_TMP_DIR:-}"
 REPO_REF="${NOMADSCREEN_REPO_REF:-}"
 RESTART_NETWORK=0
 
@@ -29,6 +30,7 @@ Options:
   --port PORT             HTTP port for the service (default: preserved from installed service)
   --ref REF               Branch or ref to update to (default: current checked-out branch)
   --tmp-dir PATH          Temp build dir for pip work (default: /var/tmp/nomadscreen-install)
+  --upload-tmp-dir PATH   Temp dir for large web uploads (default: preserved from installed service or /var/tmp/nomadscreen-upload)
   --restart-network       Restart the Wi-Fi fallback service too
   -h, --help              Show this help
 EOF
@@ -118,6 +120,11 @@ parse_args() {
         TMP_DIR="$2"
         shift 2
         ;;
+      --upload-tmp-dir)
+        [[ $# -ge 2 ]] || die "--upload-tmp-dir requires a value"
+        UPLOAD_TMP_DIR="$2"
+        shift 2
+        ;;
       --restart-network)
         RESTART_NETWORK=1
         shift
@@ -162,10 +169,12 @@ ensure_install_context() {
 
   [[ -n "${STORAGE_ROOT}" ]] || STORAGE_ROOT="$(read_unit_environment "${service_path}" "NOMADSCREEN_STORAGE_ROOT" || true)"
   [[ -n "${MEDIA_ROOT}" ]] || MEDIA_ROOT="$(read_unit_environment "${service_path}" "NOMADSCREEN_MEDIA_ROOT" || true)"
+  [[ -n "${UPLOAD_TMP_DIR}" ]] || UPLOAD_TMP_DIR="$(read_unit_environment "${service_path}" "NOMADSCREEN_UPLOAD_TMP_DIR" || true)"
   [[ -n "${HTTP_PORT}" ]] || HTTP_PORT="$(read_unit_environment "${service_path}" "NOMADSCREEN_PORT" || true)"
 
   [[ -n "${STORAGE_ROOT}" ]] || STORAGE_ROOT="/srv/nomadscreen"
   [[ -n "${MEDIA_ROOT}" ]] || MEDIA_ROOT="${INSTALL_HOME}/media"
+  [[ -n "${UPLOAD_TMP_DIR}" ]] || UPLOAD_TMP_DIR="/var/tmp/nomadscreen-upload"
   [[ -n "${HTTP_PORT}" ]] || HTTP_PORT="80"
 }
 
@@ -173,6 +182,9 @@ prepare_tmp_dir() {
   log "Preparing temp build directory at ${TMP_DIR}"
   run_root mkdir -p "${TMP_DIR}"
   run_root chown -R "${INSTALL_USER}:${INSTALL_GROUP}" "${TMP_DIR}"
+  log "Preparing upload temp directory at ${UPLOAD_TMP_DIR}"
+  run_root mkdir -p "${UPLOAD_TMP_DIR}"
+  run_root chown -R "${INSTALL_USER}:${INSTALL_GROUP}" "${UPLOAD_TMP_DIR}"
 }
 
 ensure_repo() {
@@ -265,7 +277,9 @@ WorkingDirectory=${INSTALL_DIR}
 Environment=PYTHONUNBUFFERED=1
 Environment=NOMADSCREEN_STORAGE_ROOT=${STORAGE_ROOT}
 Environment=NOMADSCREEN_MEDIA_ROOT=${MEDIA_ROOT}
+Environment=NOMADSCREEN_UPLOAD_TMP_DIR=${UPLOAD_TMP_DIR}
 Environment=NOMADSCREEN_PORT=${HTTP_PORT}
+Environment=TMPDIR=${UPLOAD_TMP_DIR}
 ExecStart=${INSTALL_DIR}/.venv/bin/python ${INSTALL_DIR}/src/main.py
 Restart=on-failure
 RestartSec=5
@@ -307,6 +321,7 @@ print_success() {
   log "App directory: ${INSTALL_DIR}"
   log "Storage root: ${STORAGE_ROOT}"
   log "Media library: ${MEDIA_ROOT}"
+  log "Upload temp dir: ${UPLOAD_TMP_DIR}"
   log "Service restarted: ${SERVICE_NAME}.service"
   if [[ "${RESTART_NETWORK}" != "1" ]]; then
     log "Run 'sudo systemctl restart ${NETWORK_SERVICE_NAME}.service' later if you need hotspot/network script changes applied immediately."

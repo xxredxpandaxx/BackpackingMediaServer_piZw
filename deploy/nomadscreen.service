@@ -11,7 +11,9 @@ WorkingDirectory=/opt/nomadscreen
 Environment=PYTHONUNBUFFERED=1
 Environment=NOMADSCREEN_STORAGE_ROOT=/srv/nomadscreen
 Environment=NOMADSCREEN_MEDIA_ROOT=/home/pi/media
+Environment=NOMADSCREEN_UPLOAD_TMP_DIR=/var/tmp/nomadscreen-upload
 Environment=NOMADSCREEN_PORT=80
+Environment=TMPDIR=/var/tmp/nomadscreen-upload
 ExecStart=/opt/nomadscreen/.venv/bin/python /opt/nomadscreen/src/main.py
 Restart=on-failure
 RestartSec=5

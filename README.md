@@ -32,7 +32,7 @@ The server expects a storage root that contains:
 - `media/`
 - `media/.nomadscreen/library.json` when metadata has been generated
 
-By default, the repo uses `sdcard-template/` as the storage root so the project can run immediately in-place. On the Pi, `NOMADSCREEN_STORAGE_ROOT` holds config/runtime files such as `nomadscreen.config.json`, while `NOMADSCREEN_MEDIA_ROOT` can point at the real media library path. The installer now defaults that media path to `~/media`.
+By default, the repo uses `sdcard-template/` as the storage root so the project can run immediately in-place. On the Pi, `NOMADSCREEN_STORAGE_ROOT` holds config/runtime files such as `nomadscreen.config.json`, while `NOMADSCREEN_MEDIA_ROOT` can point at the real media library path. The installer now defaults that media path to `~/media`. Large web uploads are staged under `/var/tmp/nomadscreen-upload` so they do not fill the Pi Zero W's small `/tmp` RAM disk.
 
 ## Local run
 
@@ -73,6 +73,7 @@ What that installer does:
 - clones or updates the repo into `/opt/nomadscreen`
 - seeds `/srv/nomadscreen` with config/tools and seeds `~/media` with the media folder layout without overwriting existing files
 - creates `/opt/nomadscreen/.venv` and installs Python dependencies
+- prepares `/var/tmp/nomadscreen-upload` for large browser uploads
 - writes and enables `nomadscreen-network.service`
 - writes and enables `nomadscreen.service`
 
@@ -87,6 +88,7 @@ That updater:
 - pulls the latest code into `/opt/nomadscreen`
 - refreshes Python dependencies
 - rewrites the service units with your current paths
+- keeps large web uploads pointed at `/var/tmp/nomadscreen-upload`
 - restarts `nomadscreen`
 - leaves `nomadscreen-network` alone by default so you do not get kicked off the Pi's Wi-Fi mid-update
 
@@ -142,7 +144,7 @@ curl -fsSL https://raw.githubusercontent.com/xxredxpandaxx/BackpackingMediaServe
 
 ## Loading content over Wi-Fi
 
-Once the Pi is online, the fastest path is the upload panel on `/app/device`, which saves files into the library and rescans automatically.
+Once the Pi is online, the fastest path is the upload panel on `/app/device`, which saves files into the library and rescans automatically. Big uploads stage through `/var/tmp/nomadscreen-upload` first, so free space there matters too even though the finished media lands in `~/media`.
 
 You can still move media into `~/media` with whatever network workflow fits your setup, then run `/api/rescan` or use the Device page in the web UI.
 

@@ -24,6 +24,7 @@ const state = {
   deviceConfigFeedbackTone: "",
   preferServerLibrary: false,
   uploadingLocally: false,
+  uploadSelectionLocked: false,
   uploadDestinations: [],
 };
 
@@ -3440,6 +3441,14 @@ function createUploadCard() {
     }
   };
 
+  const syncSelectionLock = () => {
+    state.uploadSelectionLocked = Boolean(
+      (fileInput.files && fileInput.files.length) ||
+      (folderInput.files && folderInput.files.length) ||
+      state.uploadingLocally,
+    );
+  };
+
   const renderDestinationPicker = () => {
     const activeConfig = uploadRootConfigForPath(selectedDestination);
     destinationCurrentValue.textContent = selectedDestination;
@@ -3533,10 +3542,16 @@ function createUploadCard() {
     state.uploadDraft.newFolder = newFolderInput.value.trim();
   };
 
+  const handleSelectionChange = () => {
+    syncSelectionLock();
+    syncHints();
+  };
+
   newFolderInput.addEventListener("input", syncHints);
-  fileInput.addEventListener("change", syncHints);
-  folderInput.addEventListener("change", syncHints);
+  fileInput.addEventListener("change", handleSelectionChange);
+  folderInput.addEventListener("change", handleSelectionChange);
   renderDestinationPicker();
+  syncSelectionLock();
   syncHints();
   applyUploadState(state.uploadFeedback, state.uploadFeedbackTone);
 
@@ -3553,6 +3568,7 @@ function createUploadCard() {
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
 
+    syncSelectionLock();
     const entries = collectUploadEntries(fileInput.files, folderInput.files);
     if (!entries.length) {
       state.uploadFeedback = "Choose at least one file or folder to upload.";
@@ -3572,6 +3588,7 @@ function createUploadCard() {
     state.uploadDraft.destination = selectedDestination;
     state.uploadDraft.newFolder = newFolderInput.value.trim();
     state.uploadingLocally = true;
+    syncSelectionLock();
 
     form.querySelectorAll("input, button").forEach((element) => {
       element.disabled = true;
@@ -3599,6 +3616,7 @@ function createUploadCard() {
       }
       fileInput.value = "";
       folderInput.value = "";
+      state.uploadSelectionLocked = false;
       els.pageSubtitle.textContent = state.uploadFeedback;
       state.uploadingLocally = false;
       syncHints();
@@ -3628,6 +3646,7 @@ function createUploadCard() {
         error: state.uploadFeedback,
       });
       state.uploadingLocally = false;
+      syncSelectionLock();
       form.querySelectorAll("input, button").forEach((element) => {
         element.disabled = false;
       });
@@ -4782,9 +4801,15 @@ function renderDevicePage(container) {
         { label: "Media storage", value: status.sdMounted ? "Mounted and ready" : "Not available" },
         { label: "Connected clients", value: String(status.clients || 0) },
         { label: "Media root", value: status.mediaRoot || "/media" },
+        {
+          label: "Upload staging",
+          value: status.uploadTempRoot
+            ? `${status.uploadTempRoot}${status.uploadTempReady === false ? " (check permissions)" : ""}`
+            : "Unavailable",
+        },
         { label: "Last playback", value: lastPlayed || "Nothing played yet" },
       ],
-      searchText: `${status.sdMounted ? "mounted ready" : "not available"} ${status.clients || 0} ${status.mediaRoot || ""} ${lastPlayed || ""}`,
+      searchText: `${status.sdMounted ? "mounted ready" : "not available"} ${status.clients || 0} ${status.mediaRoot || ""} ${status.uploadTempRoot || ""} ${lastPlayed || ""}`,
     },
     {
       eyebrow: "Library",
@@ -4998,7 +5023,9 @@ function ensureUploadDestinationsLoaded() {
 
   uploadDestinationsRequest = loadUploadDestinations()
     .then(() => {
-      render();
+      if (state.route.name === "device" && !state.uploadSelectionLocked && !state.uploadingLocally) {
+        render();
+      }
     })
     .catch((error) => {
       console.warn("Unable to load upload destinations", error);
@@ -5162,7 +5189,7 @@ async function refreshAll() {
   await loadStatus();
   await loadLibrary();
   if (state.route.name === "device") {
-    await loadUploadDestinations();
+    await (uploadDestinationsRequest || loadUploadDestinations());
   }
   lastCompletedUploadRefreshKey = uploadCompletionRefreshKey(uploadStatusSnapshot());
 }

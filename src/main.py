@@ -5,6 +5,7 @@ import mimetypes
 import os
 import socket
 import subprocess
+import tempfile
 import threading
 import time
 from datetime import datetime, timezone
@@ -321,6 +322,12 @@ def safe_int(value: object, default: int, minimum: int = 0) -> int:
     return parsed if parsed >= minimum else default
 
 
+def default_upload_temp_directory() -> Path:
+    if os.name == "posix":
+        return Path("/var/tmp/nomadscreen-upload")
+    return Path(tempfile.gettempdir()) / "nomadscreen-upload"
+
+
 def sanitize_upload_filename(raw_filename: str) -> str:
     file_name = Path(str(raw_filename or "").replace("\\", "/")).name.strip().replace("\x00", "")
     if not file_name or file_name in {".", ".."} or file_name.startswith("."):
@@ -477,6 +484,14 @@ def load_settings() -> dict[str, object]:
     else:
         media_directory = storage_root / DEFAULT_MEDIA_ROOT.lstrip("/")
     media_directory = media_directory.expanduser()
+    upload_tmp_value = os.environ.get("NOMADSCREEN_UPLOAD_TMP_DIR", "").strip()
+    if upload_tmp_value:
+        upload_tmp_directory = Path(upload_tmp_value).expanduser()
+        if not upload_tmp_directory.is_absolute():
+            upload_tmp_directory = storage_root / upload_tmp_directory
+    else:
+        upload_tmp_directory = default_upload_temp_directory()
+    upload_tmp_directory = upload_tmp_directory.expanduser()
 
     bind_address = (
         os.environ.get("NOMADSCREEN_BIND", "").strip()
@@ -512,6 +527,7 @@ def load_settings() -> dict[str, object]:
     return {
         "storage_root": storage_root,
         "media_directory": media_directory,
+        "upload_tmp_directory": upload_tmp_directory,
         "config_path": config_path,
         "device_name": device_name,
         "ssid": hotspot_ssid,
@@ -538,6 +554,8 @@ class AppState:
     def __init__(self) -> None:
         self.lock = threading.RLock()
         self.settings = load_settings()
+        self.upload_temp_ready = False
+        self.configure_upload_temp_directory()
         self.media_library: list[dict[str, object]] = []
         self.item_metadata: list[dict[str, object]] = []
         self.show_metadata: dict[str, dict[str, object]] = {}
@@ -805,6 +823,18 @@ class AppState:
 
     def media_root_path(self) -> Path:
         return Path(self.settings["media_directory"]).resolve(strict=False)
+
+    def upload_temp_root_path(self) -> Path:
+        return Path(self.settings["upload_tmp_directory"]).resolve(strict=False)
+
+    def configure_upload_temp_directory(self) -> None:
+        upload_temp_directory = self.upload_temp_root_path()
+        try:
+            upload_temp_directory.mkdir(parents=True, exist_ok=True)
+            tempfile.tempdir = str(upload_temp_directory)
+            self.upload_temp_ready = True
+        except OSError:
+            self.upload_temp_ready = False
 
     def virtual_media_path(self, actual_path: Path) -> str:
         try:
@@ -1279,6 +1309,8 @@ class AppState:
             "libraryCount": len(self.media_library),
             "mediaRoot": str(self.settings["media_directory"]),
             "mediaVirtualRoot": DEFAULT_MEDIA_ROOT,
+            "uploadTempRoot": str(self.settings["upload_tmp_directory"]),
+            "uploadTempReady": self.upload_temp_ready,
             "clients": self.active_client_count(),
             "lastPlayed": self.last_played_title,
             "lastPlayedType": self.last_played_type,
@@ -1327,6 +1359,7 @@ class AppState:
             config_path.parent.mkdir(parents=True, exist_ok=True)
             config_path.write_text(json.dumps(raw_config, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
             self.settings = load_settings()
+            self.configure_upload_temp_directory()
 
         return {
             "ok": True,
@@ -1640,8 +1673,9 @@ def api_upload() -> Response:
                 message=f"Saving files on the Pi ({len(uploaded_items)}/{len(files)})...",
                 warnings=warnings,
             )
-        except OSError:
-            warnings.append(f"Failed to save {file_name}.")
+        except OSError as error:
+            error_message = str(getattr(error, "strerror", "") or error).strip()
+            warnings.append(f"Failed to save {file_name}{': ' + error_message if error_message else '.'}")
 
     if not uploaded_items:
         state.set_upload_status(
