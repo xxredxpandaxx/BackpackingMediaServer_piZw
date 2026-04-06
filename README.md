@@ -214,7 +214,7 @@ Nothing about the metadata format changed, but the default Pi-side metadata refr
 
 - The Pi backend still reads `media/.nomadscreen/library.json` when present for metadata compatibility
 - Each rescan also rebuilds `media/.nomadscreen/library.db`, which powers the paged movie/show catalog APIs used by the web UI
-- The metadata refresh step now also writes a richer `movie_metadata` table inside that same SQLite file using the smarter TMDb detail fetch logic
+- The metadata refresh step now also writes richer `movie_metadata` and `show_metadata` tables inside that same SQLite file using the smarter TMDb detail fetch logic
 - If the JSON file is missing, the backend falls back to a direct filesystem scan and still rebuilds the live library plus the SQLite catalog
 
 ## Notes

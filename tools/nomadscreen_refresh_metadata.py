@@ -305,10 +305,39 @@ class TmdbClient:
                 break
         return collected
 
+    def search_tv(self, title: str) -> list[dict[str, object]]:
+        if not title:
+            return []
+        collected: list[dict[str, object]] = []
+        seen_ids: set[int] = set()
+        for query_title in tmdb_search_queries(title, None):
+            payload = self.request("search/tv", params={"query": query_title})
+            results = payload.get("results")
+            if not isinstance(results, list):
+                continue
+            for entry in results:
+                if not isinstance(entry, dict):
+                    continue
+                show_id = int(entry.get("id") or 0)
+                if show_id > 0 and show_id in seen_ids:
+                    continue
+                if show_id > 0:
+                    seen_ids.add(show_id)
+                collected.append(entry)
+            if collected:
+                break
+        return collected
+
     def movie_details(self, movie_id: int) -> dict[str, object]:
         return self.request(
             f"movie/{movie_id}",
             params={"append_to_response": "credits,videos,keywords,release_dates"},
+        )
+
+    def tv_details(self, show_id: int) -> dict[str, object]:
+        return self.request(
+            f"tv/{show_id}",
+            params={"append_to_response": "content_ratings,credits,videos,keywords"},
         )
 
 
@@ -415,6 +444,33 @@ def extract_video_urls(details: dict[str, object]) -> str:
     return comma_join(urls)
 
 
+def extract_tv_certification(details: dict[str, object], country: str) -> str:
+    content_ratings = details.get("content_ratings")
+    if not isinstance(content_ratings, dict):
+        return ""
+    results = content_ratings.get("results")
+    if not isinstance(results, list):
+        return ""
+    target_country = str(country or "US").upper() or "US"
+    for entry in results:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("iso_3166_1") or "").upper() != target_country:
+            continue
+        rating = str(entry.get("rating") or "").strip()
+        if rating:
+            return rating
+    return ""
+
+
+def extract_networks(details: dict[str, object]) -> str:
+    return comma_join(names_from_entries(details.get("networks")))
+
+
+def extract_creators(details: dict[str, object]) -> str:
+    return comma_join(names_from_entries(details.get("created_by")))
+
+
 def detect_resolution_label(filename: str) -> str:
     match = re.search(r"(2160p|1080p|720p|480p)", str(filename or ""), flags=re.IGNORECASE)
     return str(match.group(1) or "").upper() if match else ""
@@ -488,6 +544,7 @@ def build_base_item(file_path: Path, media_root: Path) -> dict[str, object]:
         season_label = prettify_name(parts[3]) if len(parts) >= 4 else "Season 1"
         item["showTitle"] = show_title
         item["showSlug"] = slugify(show_title)
+        item["year"] = get_year_from_text(show_title) or str(item.get("year") or "")
         item["seasonLabel"] = season_label
         item["seasonNumber"] = parse_season_number(season_label)
         item["episodeNumber"] = parse_episode_number(file_path.name)
@@ -541,6 +598,41 @@ def compute_movie_score(
             score += 0.4
         elif difference <= 5:
             score += 0.2
+    return round(score, 2)
+
+
+def compute_tv_score(
+    local_title: str,
+    local_year: int | None,
+    details: dict[str, object],
+) -> float:
+    tmdb_name = str(details.get("name") or "")
+    tmdb_original_name = str(details.get("original_name") or "")
+    local_title_candidates = tmdb_search_queries(local_title, local_year)
+    if not local_title_candidates:
+        local_title_candidates = [str(local_title or "").strip().lower()]
+    title_similarity = 0.0
+    for local_candidate in local_title_candidates:
+        title_similarity = max(
+            title_similarity,
+            fuzz.token_sort_ratio(local_candidate, tmdb_name.lower()) / 100.0 if tmdb_name else 0.0,
+            fuzz.token_sort_ratio(local_candidate, tmdb_original_name.lower()) / 100.0 if tmdb_original_name else 0.0,
+        )
+    score = 0.0
+    if title_similarity >= 0.9:
+        score += 0.7
+    elif title_similarity >= 0.8:
+        score += 0.5
+    elif title_similarity >= 0.7:
+        score += 0.25
+
+    first_air_date = str(details.get("first_air_date") or "")
+    tmdb_year = int(first_air_date[:4]) if len(first_air_date) >= 4 and first_air_date[:4].isdigit() else None
+    if local_year and tmdb_year:
+        if local_year == tmdb_year:
+            score += 0.3
+        elif abs(local_year - tmdb_year) <= 1:
+            score += 0.15
     return round(score, 2)
 
 
@@ -670,6 +762,140 @@ def enrich_movie_item(
             item["backdropPath"] = backdrop_path
 
 
+def enrich_show_record(
+    show: dict[str, object],
+    client: TmdbClient,
+    metadata_root: Path,
+    unmatched: list[dict[str, object]],
+) -> None:
+    local_title = clean_lookup_title(str(show.get("title") or "")) or str(show.get("title") or "").strip().lower()
+    local_year_text = str(show.get("year") or "")
+    local_year = int(local_year_text) if local_year_text.isdigit() else None
+
+    candidates = client.search_tv(local_title)[:8]
+    best_details: dict[str, object] | None = None
+    best_score = 0.0
+    close_candidates: list[dict[str, object]] = []
+
+    for candidate in candidates:
+        show_id = int(candidate.get("id") or 0)
+        if show_id <= 0:
+            continue
+        try:
+            details = client.tv_details(show_id)
+        except requests.RequestException:
+            continue
+        score = compute_tv_score(local_title, local_year, details)
+        close_candidates.append(
+            {
+                "title": str(details.get("name") or ""),
+                "score": score,
+            }
+        )
+        if score > best_score:
+            best_score = score
+            best_details = details
+
+    if best_details is None or best_score < client.minimum_match_score:
+        unmatched.append(
+            {
+                "path": f"/media/tv/{slugify(str(show.get('title') or 'show'))}",
+                "section": "tv",
+                "query": local_title,
+                "searchQueries": tmdb_search_queries(local_title, local_year),
+                "year": local_year,
+                "candidates": close_candidates,
+            }
+        )
+        return
+
+    first_air_date = str(best_details.get("first_air_date") or "")
+    original_name = str(best_details.get("original_name") or "").strip()
+    status = str(best_details.get("status") or "").strip()
+    original_language = str(best_details.get("original_language") or "").strip()
+    genres_text = comma_join(names_from_entries(best_details.get("genres")))
+    keywords = extract_keywords(best_details)
+    cast_members = extract_cast(best_details, limit=8)
+    creators = extract_creators(best_details)
+    networks = extract_networks(best_details)
+    videos = extract_video_urls(best_details)
+
+    show["title"] = str(best_details.get("name") or show.get("title") or "")
+    show["overview"] = str(best_details.get("overview") or "")
+    show["year"] = first_air_date[:4] if len(first_air_date) >= 4 else str(show.get("year") or "")
+    show["genres"] = genres_text
+    show["contentRating"] = extract_tv_certification(best_details, client.country)
+    show["source"] = "tmdb"
+    show["tmdbRating"] = round(float(best_details.get("vote_average") or 0.0), 1)
+    show["matchConfidence"] = best_score
+    show["tmdbId"] = int(best_details.get("id") or 0)
+    show["originalTitle"] = original_name
+    show["firstAirDate"] = first_air_date
+    show["status"] = status
+    show["originalLanguage"] = original_language
+    show["keywords"] = keywords
+    show["cast"] = cast_members
+    show["creators"] = creators
+    show["networks"] = networks
+    show["videos"] = videos
+    show["seasonCount"] = int(best_details.get("number_of_seasons") or show.get("seasonCount") or 0)
+    show["episodeCount"] = int(best_details.get("number_of_episodes") or show.get("episodeCount") or 0)
+    show["popularity"] = round(float(best_details.get("popularity") or 0.0), 3)
+    show["voteCount"] = int(best_details.get("vote_count") or 0)
+
+    show_id = int(best_details.get("id") or 0)
+    if show_id > 0:
+        poster_path = save_tmdb_image(
+            client,
+            str(best_details.get("poster_path") or ""),
+            metadata_root / "posters",
+            "/media/.nomadscreen/posters",
+            f"show-{show_id}",
+            "w500",
+        )
+        backdrop_path = save_tmdb_image(
+            client,
+            str(best_details.get("backdrop_path") or ""),
+            metadata_root / "backdrops",
+            "/media/.nomadscreen/backdrops",
+            f"show-{show_id}",
+            "w780",
+        )
+        if poster_path:
+            show["posterPath"] = poster_path
+        if backdrop_path:
+            show["backdropPath"] = backdrop_path
+
+
+def apply_show_metadata_to_items(items: list[dict[str, object]], shows: list[dict[str, object]]) -> None:
+    show_map = {
+        str(show.get("slug") or ""): show
+        for show in shows
+        if str(show.get("slug") or "")
+    }
+    for item in items:
+        if str(item.get("section") or "") != "tv":
+            continue
+        show = show_map.get(str(item.get("showSlug") or ""))
+        if show is None:
+            continue
+        item["showTitle"] = str(show.get("title") or item.get("showTitle") or "")
+        if not str(item.get("year") or ""):
+            item["year"] = str(show.get("year") or "")
+        item["overview"] = str(show.get("overview") or item.get("overview") or "")
+        item["genres"] = str(show.get("genres") or item.get("genres") or "")
+        item["contentRating"] = str(show.get("contentRating") or item.get("contentRating") or "")
+        item["source"] = str(show.get("source") or item.get("source") or "local")
+        if float(item.get("tmdbRating") or 0.0) <= 0 and float(show.get("tmdbRating") or 0.0) > 0:
+            item["tmdbRating"] = float(show.get("tmdbRating") or 0.0)
+        if float(item.get("matchConfidence") or 0.0) <= 0 and float(show.get("matchConfidence") or 0.0) > 0:
+            item["matchConfidence"] = float(show.get("matchConfidence") or 0.0)
+        if not str(item.get("posterPath") or "") and str(show.get("posterPath") or ""):
+            item["posterPath"] = str(show.get("posterPath") or "")
+        if not str(item.get("backdropPath") or "") and str(show.get("backdropPath") or ""):
+            item["backdropPath"] = str(show.get("backdropPath") or "")
+
+
 def build_show_records(items: list[dict[str, object]]) -> list[dict[str, object]]:
     show_map: dict[str, dict[str, object]] = {}
     for item in items:
@@ -692,8 +918,16 @@ def build_show_records(items: list[dict[str, object]]) -> list[dict[str, object]
                 "source": str(item.get("source") or "local"),
                 "tmdbRating": float(item.get("tmdbRating") or 0.0),
                 "matchConfidence": float(item.get("matchConfidence") or 0.0),
+                "seasonCount": 0,
+                "episodeCount": 0,
+                "_seasonKeys": set(),
             },
         )
+        season_key = f"{int(item.get('seasonNumber') or 0)}|{str(item.get('seasonLabel') or '').strip().lower()}"
+        if season_key not in record["_seasonKeys"]:
+            record["_seasonKeys"].add(season_key)
+            record["seasonCount"] = int(record.get("seasonCount") or 0) + 1
+        record["episodeCount"] = int(record.get("episodeCount") or 0) + 1
         if not record["year"] and item.get("year"):
             record["year"] = str(item.get("year") or "")
         if not record["genres"] and item.get("genres"):
@@ -710,6 +944,8 @@ def build_show_records(items: list[dict[str, object]]) -> list[dict[str, object]
             record["matchConfidence"] = float(item.get("matchConfidence") or 0.0)
         if str(item.get("source") or "") == "tmdb":
             record["source"] = "tmdb"
+    for record in show_map.values():
+        record.pop("_seasonKeys", None)
     return sorted(show_map.values(), key=lambda entry: str(entry.get("title") or "").lower())
 
 
@@ -816,6 +1052,96 @@ def write_movie_metadata_database(metadata_root: Path, items: list[dict[str, obj
     return db_path
 
 
+def write_show_metadata_database(metadata_root: Path, shows: list[dict[str, object]]) -> Path:
+    db_path = metadata_root / "library.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    rows = [
+        (
+            str(show.get("slug") or ""),
+            int(show.get("tmdbId") or 0),
+            str(show.get("title") or ""),
+            str(show.get("originalTitle") or ""),
+            str(show.get("overview") or ""),
+            str(show.get("year") or ""),
+            str(show.get("firstAirDate") or ""),
+            str(show.get("status") or ""),
+            str(show.get("originalLanguage") or ""),
+            str(show.get("genres") or ""),
+            str(show.get("keywords") or ""),
+            str(show.get("creators") or ""),
+            str(show.get("cast") or ""),
+            str(show.get("networks") or ""),
+            str(show.get("videos") or ""),
+            int(show.get("seasonCount") or 0),
+            int(show.get("episodeCount") or 0),
+            float(show.get("popularity") or 0.0),
+            float(show.get("tmdbRating") or 0.0),
+            int(show.get("voteCount") or 0),
+            str(show.get("contentRating") or ""),
+            float(show.get("matchConfidence") or 0.0),
+            str(show.get("posterPath") or ""),
+            str(show.get("backdropPath") or ""),
+            str(show.get("source") or ""),
+            isoformat_now(),
+        )
+        for show in shows
+        if str(show.get("slug") or "")
+    ]
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS show_metadata (
+                slug TEXT PRIMARY KEY,
+                tmdb_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                original_title TEXT NOT NULL,
+                overview TEXT NOT NULL,
+                year TEXT NOT NULL,
+                first_air_date TEXT NOT NULL,
+                status TEXT NOT NULL,
+                original_language TEXT NOT NULL,
+                genres TEXT NOT NULL,
+                keywords TEXT NOT NULL,
+                creators TEXT NOT NULL,
+                cast TEXT NOT NULL,
+                networks TEXT NOT NULL,
+                videos TEXT NOT NULL,
+                season_count INTEGER NOT NULL,
+                episode_count INTEGER NOT NULL,
+                popularity REAL NOT NULL,
+                vote_average REAL NOT NULL,
+                vote_count INTEGER NOT NULL,
+                certification TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                poster_path TEXT NOT NULL,
+                backdrop_path TEXT NOT NULL,
+                source TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_show_metadata_tmdb_id ON show_metadata(tmdb_id)")
+        connection.execute("DELETE FROM show_metadata")
+        if rows:
+            connection.executemany(
+                """
+                INSERT INTO show_metadata (
+                    slug, tmdb_id, title, original_title, overview, year, first_air_date,
+                    status, original_language, genres, keywords, creators, cast,
+                    networks, videos, season_count, episode_count, popularity,
+                    vote_average, vote_count, certification, confidence, poster_path,
+                    backdrop_path, source, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+        connection.commit()
+
+    return db_path
+
+
 def isoformat_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -851,7 +1177,15 @@ def build_library(storage_root: Path, media_root: Path, verbose: bool) -> dict[s
 
     items.sort(key=lambda entry: str(entry.get("path") or "").lower())
     shows = build_show_records(items)
+    if client.enabled:
+        for show in shows:
+            try:
+                enrich_show_record(show, client, metadata_root, unmatched)
+            except requests.RequestException as error:
+                log(f"TMDb lookup failed for show {show.get('title')}: {error}")
+        apply_show_metadata_to_items(items, shows)
     metadata_db_path = write_movie_metadata_database(metadata_root, items)
+    write_show_metadata_database(metadata_root, shows)
     library = {
         "version": 1,
         "generatedAt": isoformat_now(),
@@ -894,7 +1228,7 @@ def main() -> int:
     library = result["library"]
     unmatched = result["unmatched"]
     log(f"Metadata written to {media_root / '.nomadscreen' / 'library.json'}")
-    log(f"Movie metadata written to {result['metadataDbPath']}")
+    log(f"Movie and show metadata written to {result['metadataDbPath']}")
     log(f"Indexed {len(library['items'])} item(s) and {len(library['shows'])} show record(s).")
     if unmatched:
         log(f"{len(unmatched)} movie item(s) need review. See {media_root / '.nomadscreen' / 'unmatched.json'}.")
