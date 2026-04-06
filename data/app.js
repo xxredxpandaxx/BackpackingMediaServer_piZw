@@ -2811,8 +2811,16 @@ function delay(ms) {
 async function rescanLibrary() {
   els.pageSubtitle.textContent = "Rescanning the media library and refreshing metadata...";
   state.preferServerLibrary = true;
-  await fetch("/api/rescan", { method: "POST" });
+  const response = await fetch("/api/rescan", { method: "POST", cache: "no-store" });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || `Rescan returned HTTP ${response.status}`);
+  }
   await refreshAll();
+  if (payload.message) {
+    els.pageSubtitle.textContent = payload.message;
+  }
+  return payload;
 }
 
 async function refreshDeviceData() {

@@ -20,6 +20,7 @@ A Raspberry Pi Zero W portable media server that keeps the existing Nomad Screen
 - `install.sh`: idempotent Pi installer for public GitHub repos
 - `src/main.py`: Pi-native HTTP server, media scan logic, metadata merge, and streaming endpoints
 - `data/`: static web app shell, styles, and client-side browsing logic
+- `tools/nomadscreen_refresh_metadata.py`: Pi-native metadata builder used during online rescans
 - `sdcard-template/`: copy-ready storage layout with `/media`, metadata tooling, and sample config
 - `deploy/network/`: fallback Wi-Fi script and `systemd` unit for known-network-first hotspot mode
 - `deploy/nomadscreen.service`: example `systemd` unit
@@ -146,6 +147,8 @@ curl -fsSL https://raw.githubusercontent.com/xxredxpandaxx/BackpackingMediaServe
 
 Once the Pi is online, the fastest path is the upload panel on `/app/device`, which saves files into the library and rescans automatically. Big uploads stage through `/var/tmp/nomadscreen-upload` first, so free space there matters too even though the finished media lands in `~/media`.
 
+When you tap `Rescan Library` on the Device page, the Pi now checks for internet access first. If it is online and TMDb credentials are configured, it runs `tools/nomadscreen_refresh_metadata.py` before the normal library scan so movie metadata and downloaded artwork stay fresh. If the Pi is offline, it falls back to the normal local rescan without failing the request.
+
 You can still move media into `~/media` with whatever network workflow fits your setup, then run `/api/rescan` or use the Device page in the web UI.
 
 Common choices are:
@@ -185,6 +188,8 @@ To preload known networks, use Raspberry Pi Imager advanced settings before firs
 - `wifiInterface`
 - `fallbackAccessPointEnabled`
 - `knownWifiTimeoutSeconds`
+- `metadataRefreshOnRescan`
+- `metadataRefreshTimeoutSeconds`
 - `maxClients`
 - `maxStreams`
 - `clientWindowSeconds`
@@ -193,10 +198,15 @@ If a field is missing, sensible defaults are used.
 
 ## Metadata workflow
 
-Nothing about the metadata format changed.
+Nothing about the metadata format changed, but the default Pi-side metadata refresh path is now the Python tool in `tools/nomadscreen_refresh_metadata.py`.
 
 - Put your media under `media/`
-- Run the existing metadata refresh tooling from `sdcard-template/tools/`
+- Run the bundled metadata builder manually if you want:
+
+  ```bash
+  /opt/nomadscreen/.venv/bin/python /opt/nomadscreen/tools/nomadscreen_refresh_metadata.py --storage-root /srv/nomadscreen --media-root /home/pi/media
+  ```
+
 - The Pi backend reads `media/.nomadscreen/library.json` when present
 - If that file is missing, the backend falls back to a direct filesystem scan and still builds `/api/library`
 

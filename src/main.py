@@ -5,6 +5,7 @@ import mimetypes
 import os
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -30,11 +31,13 @@ DEFAULT_MEDIA_ROOT = "/media"
 DEFAULT_METADATA_ROOT = "/media/.nomadscreen"
 DEFAULT_METADATA_INDEX_PATH = "/media/.nomadscreen/library.json"
 DEFAULT_RUNTIME_CONFIG_PATH = "/nomadscreen.config.json"
+DEFAULT_METADATA_REFRESH_SCRIPT = APP_ROOT / "tools" / "nomadscreen_refresh_metadata.py"
 DEFAULT_BIND_ADDRESS = "0.0.0.0"
 DEFAULT_HTTP_PORT = 80
 DEFAULT_MAX_CLIENTS = 6
 DEFAULT_MAX_STREAMS = 12
 DEFAULT_CLIENT_WINDOW_SECONDS = 300
+DEFAULT_METADATA_REFRESH_TIMEOUT_SECONDS = 1800
 MAX_DEVICE_NAME_LENGTH = 80
 MAX_HOTSPOT_SSID_LENGTH = 32
 MIN_HOTSPOT_PASSWORD_LENGTH = 8
@@ -484,6 +487,17 @@ def load_settings() -> dict[str, object]:
     else:
         media_directory = storage_root / DEFAULT_MEDIA_ROOT.lstrip("/")
     media_directory = media_directory.expanduser()
+    metadata_refresh_script_value = (
+        os.environ.get("NOMADSCREEN_METADATA_REFRESH_SCRIPT", "").strip()
+        or str(raw_config.get("metadataRefreshScript") or "")
+    )
+    if metadata_refresh_script_value:
+        metadata_refresh_script = Path(metadata_refresh_script_value).expanduser()
+        if not metadata_refresh_script.is_absolute():
+            metadata_refresh_script = APP_ROOT / metadata_refresh_script
+    else:
+        metadata_refresh_script = DEFAULT_METADATA_REFRESH_SCRIPT
+    metadata_refresh_script = metadata_refresh_script.expanduser()
     upload_tmp_value = os.environ.get("NOMADSCREEN_UPLOAD_TMP_DIR", "").strip()
     if upload_tmp_value:
         upload_tmp_directory = Path(upload_tmp_value).expanduser()
@@ -515,6 +529,15 @@ def load_settings() -> dict[str, object]:
         DEFAULT_KNOWN_WIFI_TIMEOUT_SECONDS,
         5,
     )
+    metadata_refresh_on_rescan = env_bool(
+        "NOMADSCREEN_METADATA_REFRESH_ON_RESCAN",
+        config_bool(raw_config.get("metadataRefreshOnRescan"), True),
+    )
+    metadata_refresh_timeout_seconds = safe_int(
+        os.environ.get("NOMADSCREEN_METADATA_REFRESH_TIMEOUT_SECONDS") or raw_config.get("metadataRefreshTimeoutSeconds"),
+        DEFAULT_METADATA_REFRESH_TIMEOUT_SECONDS,
+        30,
+    )
     fallback_ap_enabled = env_bool(
         "NOMADSCREEN_FALLBACK_AP",
         config_bool(
@@ -527,6 +550,9 @@ def load_settings() -> dict[str, object]:
     return {
         "storage_root": storage_root,
         "media_directory": media_directory,
+        "metadata_refresh_script": metadata_refresh_script,
+        "metadata_refresh_on_rescan": metadata_refresh_on_rescan,
+        "metadata_refresh_timeout_seconds": metadata_refresh_timeout_seconds,
         "upload_tmp_directory": upload_tmp_directory,
         "config_path": config_path,
         "device_name": device_name,
@@ -546,6 +572,8 @@ def load_settings() -> dict[str, object]:
             DEFAULT_CLIENT_WINDOW_SECONDS,
             30,
         ),
+        "tmdb_api_key": str(raw_config.get("tmdbApiKey") or "").strip(),
+        "tmdb_bearer_token": str(raw_config.get("tmdbBearerToken") or "").strip(),
         "config_source": config_source,
     }
 
@@ -835,6 +863,107 @@ class AppState:
             self.upload_temp_ready = True
         except OSError:
             self.upload_temp_ready = False
+
+    def metadata_refresh_script_path(self) -> Path:
+        return Path(self.settings["metadata_refresh_script"]).resolve(strict=False)
+
+    def metadata_refresh_configured(self) -> bool:
+        return bool(
+            str(self.settings.get("tmdb_api_key") or "").strip() or str(self.settings.get("tmdb_bearer_token") or "").strip()
+        )
+
+    def internet_available(self) -> bool:
+        for host, port in (("api.themoviedb.org", 443), ("1.1.1.1", 53)):
+            try:
+                with socket.create_connection((host, port), timeout=2.5):
+                    return True
+            except OSError:
+                continue
+        return False
+
+    def summarize_process_output(self, stdout: str, stderr: str, max_lines: int = 8, max_chars: int = 600) -> str:
+        lines = [line.strip() for line in f"{stdout}\n{stderr}".splitlines() if line.strip()]
+        if not lines:
+            return ""
+        summary = "\n".join(lines[-max_lines:])
+        if len(summary) > max_chars:
+            summary = summary[-max_chars:]
+        return summary
+
+    def run_metadata_refresh_on_rescan(self) -> dict[str, object]:
+        script_path = self.metadata_refresh_script_path()
+        result: dict[str, object] = {
+            "enabled": bool(self.settings.get("metadata_refresh_on_rescan")),
+            "configured": self.metadata_refresh_configured(),
+            "online": False,
+            "attempted": False,
+            "ran": False,
+            "success": False,
+            "script": str(script_path),
+            "reason": "",
+            "message": "",
+            "detail": "",
+        }
+
+        if not bool(self.settings.get("metadata_refresh_on_rescan")):
+            result["reason"] = "disabled"
+            result["message"] = "Metadata refresh is disabled for rescans."
+            return result
+        if not script_path.exists():
+            result["reason"] = "missing-script"
+            result["message"] = "Metadata refresh script was not found, so the Pi used a normal rescan."
+            return result
+        if not self.metadata_refresh_configured():
+            result["reason"] = "missing-credentials"
+            result["message"] = "TMDb credentials are not configured, so the Pi used a normal rescan."
+            return result
+
+        online = self.internet_available()
+        result["online"] = online
+        if not online:
+            result["reason"] = "offline"
+            result["message"] = "The Pi is offline, so metadata refresh was skipped."
+            return result
+
+        command = [
+            sys.executable,
+            str(script_path),
+            "--storage-root",
+            str(self.settings["storage_root"]),
+            "--media-root",
+            str(self.settings["media_directory"]),
+        ]
+        result["attempted"] = True
+        result["ran"] = True
+        try:
+            completed = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=int(self.settings["metadata_refresh_timeout_seconds"]),
+                cwd=str(APP_ROOT),
+                env={
+                    **os.environ,
+                    "NOMADSCREEN_STORAGE_ROOT": str(self.settings["storage_root"]),
+                    "NOMADSCREEN_MEDIA_ROOT": str(self.settings["media_directory"]),
+                },
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            result["reason"] = "execution-error"
+            result["message"] = "Metadata refresh could not be started, so the Pi used a normal rescan."
+            result["detail"] = str(error)
+            return result
+
+        result["detail"] = self.summarize_process_output(completed.stdout, completed.stderr)
+        if completed.returncode == 0:
+            result["success"] = True
+            result["message"] = "TMDb metadata refreshed before rescanning the library."
+            return result
+
+        result["reason"] = "command-failed"
+        result["message"] = "Metadata refresh failed, so the Pi fell back to the normal rescan results."
+        return result
 
     def virtual_media_path(self, actual_path: Path) -> str:
         try:
@@ -1744,8 +1873,21 @@ def api_upload() -> Response:
 
 @app.post("/api/rescan")
 def api_rescan() -> Response:
+    metadata_refresh = state.run_metadata_refresh_on_rescan()
     state.scan_library()
-    return no_store_json({"ok": True})
+    message = "Library rescanned."
+    if metadata_refresh.get("message"):
+        if bool(metadata_refresh.get("success")):
+            message = str(metadata_refresh["message"])
+        elif str(metadata_refresh.get("reason") or "") == "offline":
+            message = "Library rescanned. The Pi is offline, so TMDb metadata refresh was skipped."
+        elif str(metadata_refresh.get("reason") or "") == "missing-credentials":
+            message = "Library rescanned. Add TMDb credentials to enable metadata refresh during rescans."
+        elif str(metadata_refresh.get("reason") or "") == "disabled":
+            message = "Library rescanned without running the metadata refresh command."
+        else:
+            message = f"{str(metadata_refresh['message'])} Library scan still completed."
+    return no_store_json({"ok": True, "message": message, "metadataRefresh": metadata_refresh})
 
 
 @app.errorhandler(404)

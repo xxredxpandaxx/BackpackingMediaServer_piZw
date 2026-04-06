@@ -8,6 +8,8 @@
   "httpPort": 80,
   "bindAddress": "0.0.0.0",
   "mdnsEnabled": false,
+  "metadataRefreshOnRescan": true,
+  "metadataRefreshTimeoutSeconds": 1800,
   "tmdbApiKey": "",
   "tmdbBearerToken": "",
   "language": "en-US",

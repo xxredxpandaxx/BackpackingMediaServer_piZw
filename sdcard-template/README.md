@@ -31,8 +31,9 @@ The backend and the fallback hotspot service both derive the Wi-Fi name and `.lo
 
 1. Copy media into the `/media` folders in this storage root.
 2. If you maintain the library from a Windows machine before sending it to the Pi, double-click `NomadScreen Refresh Metadata.cmd`.
-3. Let the script rebuild `/media/.nomadscreen/library.json` and any downloaded artwork.
-4. Transfer the updated media tree to the Pi if needed, then trigger `/api/rescan` from the Device page.
+3. On the Pi, the `Rescan Library` button will also try to run the bundled Python metadata builder automatically whenever the Pi is online and TMDb credentials are configured.
+4. Let the script rebuild `/media/.nomadscreen/library.json` and any downloaded artwork.
+5. Transfer the updated media tree to the Pi if needed, then trigger `/api/rescan` from the Device page.
 
 The Pi backend reads those generated files for titles, summaries, ratings, and poster art, but it does not show `.nomadscreen` as normal media.
 
@@ -46,7 +47,8 @@ The Pi backend reads those generated files for titles, summaries, ratings, and p
 
 ## Notes
 
-- The metadata script still works with built-in PowerShell on Windows.
+- The PowerShell metadata script still works with built-in PowerShell on Windows.
+- The Pi-side automatic rescan path now uses the Python metadata builder in `/opt/nomadscreen/tools/nomadscreen_refresh_metadata.py`.
 - `tools/nomadscreen-metadata.config.json` is kept only as a legacy metadata-only fallback.
 - Nested folders inside `media/documents` still show up as clickable folders in the Documents page.
 - On Raspberry Pi OS Bookworm and newer, NetworkManager remembers known Wi-Fi networks and the project will only create its own hotspot when those networks are unavailable.
