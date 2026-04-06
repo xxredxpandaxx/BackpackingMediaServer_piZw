@@ -676,7 +676,7 @@ function metadataRefreshPhaseTone(refresh) {
 function metadataRefreshCopy(refresh) {
   const phase = metadataRefreshPhase(refresh);
   if (!metadataRefreshHasActivity(refresh)) {
-    return "Run an online library rescan to watch TMDb metadata output here.";
+    return "Use Rescan Library to refresh posters, summaries, and ratings. Updates will show up here as they happen.";
   }
   if (phase === "error") {
     return refresh.error || refresh.message || "Metadata refresh stopped before it finished.";
@@ -691,12 +691,12 @@ function metadataRefreshCopy(refresh) {
     return refresh.message;
   }
   if (phase === "preparing") {
-    return "Checking connectivity and getting the metadata command ready.";
+    return "Getting everything ready before the library refresh starts.";
   }
   if (phase === "running") {
-    return "Reading live metadata output from the Pi.";
+    return "Refreshing library details now. Live updates will keep appearing here.";
   }
-  return "Ready for the next metadata refresh.";
+  return "Ready whenever you want to refresh library details again.";
 }
 
 function metadataRefreshOutputLines(refresh) {
@@ -4565,7 +4565,17 @@ function createMetadataRefreshCard() {
   const copy = document.createElement("p");
   copy.className = "info-copy";
   copy.textContent =
-    "Watch the TMDb metadata command in realtime during online rescans. The latest output lines stay here so the HDMI screen can show what the Pi is doing.";
+    "Refresh library details here and follow along while the Pi updates posters, summaries, and ratings. The live output stays visible below the whole time.";
+
+  const actions = document.createElement("div");
+  actions.className = "info-actions";
+  actions.appendChild(
+    createButton("Rescan Library", "primary-button", () => {
+      rescanLibrary().catch((error) => {
+        els.pageSubtitle.textContent = `Rescan failed: ${error.message}`;
+      });
+    }),
+  );
 
   const activity = document.createElement("div");
   registerLiveMetadataActivityTarget(activity);
@@ -4574,6 +4584,7 @@ function createMetadataRefreshCard() {
   card.appendChild(eyebrow);
   card.appendChild(title);
   card.appendChild(copy);
+  card.appendChild(actions);
   card.appendChild(activity);
   return card;
 }
@@ -5276,13 +5287,6 @@ function updatePageActions(show, movie, season, documentBrowser) {
   }
 
   if (state.route.name === "device") {
-    els.actions.appendChild(
-      createButton("Rescan Library", "primary-button", () => {
-        rescanLibrary().catch((error) => {
-          els.pageSubtitle.textContent = `Rescan failed: ${error.message}`;
-        });
-      }),
-    );
     els.actions.appendChild(
       createButton("Refresh Device Data", "ghost-button", () => {
         refreshDeviceData().catch((error) => {
@@ -6132,15 +6136,6 @@ function renderDevicePage(container) {
         { label: "Metadata mode", value: status.metadataAvailable ? "Metadata loaded" : "Local names only" },
       ],
       actions: [
-        {
-          label: "Rescan Library",
-          className: "primary-button",
-          onClick: () => {
-            rescanLibrary().catch((error) => {
-              els.pageSubtitle.textContent = `Rescan failed: ${error.message}`;
-            });
-          },
-        },
         {
           label: "Refresh Device Data",
           className: "ghost-button",
