@@ -1458,10 +1458,19 @@ class AppState:
             "deviceName": str(self.settings["device_name"]),
             "hotspotSsid": str(self.settings["ssid"]),
             "wifiPassword": str(self.settings["wifi_password"]),
+            "tmdbApiKey": str(self.settings.get("tmdb_api_key") or ""),
+            "tmdbBearerToken": str(self.settings.get("tmdb_bearer_token") or ""),
             "configSource": self.settings["config_source"],
         }
 
-    def save_device_config(self, device_name: object, hotspot_ssid: object, wifi_password: object) -> dict[str, object]:
+    def save_device_config(
+        self,
+        device_name: object,
+        hotspot_ssid: object,
+        wifi_password: object,
+        tmdb_api_key: object = "",
+        tmdb_bearer_token: object = "",
+    ) -> dict[str, object]:
         safe_device_name = normalize_device_name(str(device_name or ""))[:MAX_DEVICE_NAME_LENGTH]
         if not safe_device_name:
             raise ValueError("Enter a server name.")
@@ -1480,6 +1489,8 @@ class AppState:
             raw_config["hotspotSsid"] = safe_hotspot_ssid
             raw_config.pop("accessPointSsid", None)
             raw_config["wifiPassword"] = safe_wifi_password
+            raw_config["tmdbApiKey"] = str(tmdb_api_key or "").strip()
+            raw_config["tmdbBearerToken"] = str(tmdb_bearer_token or "").strip()
             if isinstance(raw_config.get("wifi"), dict):
                 wifi_block = dict(raw_config.get("wifi") or {})
                 wifi_block["ssid"] = safe_hotspot_ssid
@@ -1492,7 +1503,7 @@ class AppState:
 
         return {
             "ok": True,
-            "message": "Saved device settings. Fallback Wi-Fi changes apply the next time the hotspot starts.",
+            "message": "Saved device settings. Fallback Wi-Fi changes apply the next time the hotspot starts. TMDb credentials are used on the next online rescan.",
             "config": self.device_config_payload(),
             "status": self.status_payload(),
         }
@@ -1616,6 +1627,11 @@ def api_status() -> Response:
     return no_store_json(state.status_payload())
 
 
+@app.get("/api/device-config")
+def api_device_config_get() -> Response:
+    return no_store_json({"ok": True, "config": state.device_config_payload()})
+
+
 @app.post("/api/device-config")
 def api_device_config() -> Response:
     payload = request.get_json(silent=True) or {}
@@ -1624,6 +1640,8 @@ def api_device_config() -> Response:
             payload.get("deviceName"),
             payload.get("hotspotSsid") or payload.get("wifiName"),
             payload.get("wifiPassword"),
+            payload.get("tmdbApiKey"),
+            payload.get("tmdbBearerToken"),
         )
     except ValueError as error:
         return no_store_json({"error": str(error)}, 400)

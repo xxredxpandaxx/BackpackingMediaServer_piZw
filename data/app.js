@@ -19,9 +19,12 @@ const state = {
     deviceName: "",
     hotspotSsid: "",
     wifiPassword: "",
+    tmdbApiKey: "",
+    tmdbBearerToken: "",
   },
   deviceConfigFeedback: "",
   deviceConfigFeedbackTone: "",
+  deviceConfigLoaded: false,
   preferServerLibrary: false,
   uploadingLocally: false,
   uploadSelectionLocked: false,
@@ -103,6 +106,7 @@ let deviceStatusPollTimer = 0;
 let deviceStatusPollInFlight = false;
 let lastCompletedUploadRefreshKey = "";
 let uploadDestinationsRequest = null;
+let deviceConfigRequest = null;
 let liveUploadActivityTargets = new Set();
 
 function parseRoute(pathname) {
@@ -2844,6 +2848,15 @@ async function saveDeviceConfig(values) {
   return payload;
 }
 
+async function loadDeviceConfig() {
+  const response = await fetch("/api/device-config", { cache: "no-store" });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || `Device config returned HTTP ${response.status}`);
+  }
+  return payload.config || {};
+}
+
 function createUploadId() {
   return `upload-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -3125,6 +3138,8 @@ function createDeviceConfigCard() {
   const initialDeviceName = String(storedDraft.deviceName || status.device || appDisplayName()).trim();
   const initialHotspotSsid = String(storedDraft.hotspotSsid || status.hotspotSsid || hotspotNetworkName(status) || appNetworkName()).trim();
   const initialWifiPassword = String(storedDraft.wifiPassword || status.hotspotPassword || "").trim();
+  const initialTmdbApiKey = String(storedDraft.tmdbApiKey || "").trim();
+  const initialTmdbBearerToken = String(storedDraft.tmdbBearerToken || "").trim();
   const card = document.createElement("article");
   card.className = "info-card info-card--config";
 
@@ -3138,7 +3153,7 @@ function createDeviceConfigCard() {
   const copy = document.createElement("p");
   copy.className = "info-copy";
   copy.textContent =
-    "Choose the name shown in the web app, plus the fallback Wi-Fi name and password the Pi will use when it cannot join a known network.";
+    "Choose the name shown in the web app, the fallback Wi-Fi details the Pi will use when it cannot join a known network, and the TMDb credentials used for online metadata refreshes.";
 
   const form = document.createElement("form");
   form.className = "upload-form";
@@ -3190,10 +3205,38 @@ function createDeviceConfigCard() {
   wifiPasswordField.appendChild(wifiPasswordLabel);
   wifiPasswordField.appendChild(wifiPasswordInput);
 
+  const tmdbApiKeyField = document.createElement("label");
+  tmdbApiKeyField.className = "upload-field";
+  const tmdbApiKeyLabel = document.createElement("span");
+  tmdbApiKeyLabel.className = "upload-label";
+  tmdbApiKeyLabel.textContent = "TMDb API key";
+  const tmdbApiKeyInput = document.createElement("input");
+  tmdbApiKeyInput.className = "upload-text";
+  tmdbApiKeyInput.type = "password";
+  tmdbApiKeyInput.name = "tmdb-api-key";
+  tmdbApiKeyInput.autocomplete = "off";
+  tmdbApiKeyInput.value = initialTmdbApiKey;
+  tmdbApiKeyField.appendChild(tmdbApiKeyLabel);
+  tmdbApiKeyField.appendChild(tmdbApiKeyInput);
+
+  const tmdbBearerField = document.createElement("label");
+  tmdbBearerField.className = "upload-field upload-field--full";
+  const tmdbBearerLabel = document.createElement("span");
+  tmdbBearerLabel.className = "upload-label";
+  tmdbBearerLabel.textContent = "TMDb bearer token";
+  const tmdbBearerInput = document.createElement("input");
+  tmdbBearerInput.className = "upload-text";
+  tmdbBearerInput.type = "password";
+  tmdbBearerInput.name = "tmdb-bearer-token";
+  tmdbBearerInput.autocomplete = "off";
+  tmdbBearerInput.value = initialTmdbBearerToken;
+  tmdbBearerField.appendChild(tmdbBearerLabel);
+  tmdbBearerField.appendChild(tmdbBearerInput);
+
   const note = document.createElement("p");
   note.className = "upload-note";
   note.textContent =
-    "These values are saved on the Pi. Fallback Wi-Fi changes take effect the next time hotspot mode starts.";
+    "These values are saved on the Pi. Fallback Wi-Fi changes take effect the next time hotspot mode starts, and TMDb credentials are used on the next online rescan.";
 
   const feedback = document.createElement("p");
   feedback.className = "upload-status";
@@ -3209,6 +3252,8 @@ function createDeviceConfigCard() {
   fields.appendChild(deviceNameField);
   fields.appendChild(hotspotNameField);
   fields.appendChild(wifiPasswordField);
+  fields.appendChild(tmdbApiKeyField);
+  fields.appendChild(tmdbBearerField);
   form.appendChild(fields);
   form.appendChild(note);
   form.appendChild(feedback);
@@ -3227,12 +3272,16 @@ function createDeviceConfigCard() {
       deviceName: deviceNameInput.value.trim(),
       hotspotSsid: hotspotNameInput.value.trim(),
       wifiPassword: wifiPasswordInput.value.trim(),
+      tmdbApiKey: tmdbApiKeyInput.value.trim(),
+      tmdbBearerToken: tmdbBearerInput.value.trim(),
     };
   };
 
   deviceNameInput.addEventListener("input", syncDraft);
   hotspotNameInput.addEventListener("input", syncDraft);
   wifiPasswordInput.addEventListener("input", syncDraft);
+  tmdbApiKeyInput.addEventListener("input", syncDraft);
+  tmdbBearerInput.addEventListener("input", syncDraft);
   syncDraft();
   applyConfigState(state.deviceConfigFeedback, state.deviceConfigFeedbackTone);
 
@@ -3243,6 +3292,8 @@ function createDeviceConfigCard() {
       deviceName: String(state.deviceConfigDraft.deviceName || "").trim(),
       hotspotSsid: String(state.deviceConfigDraft.hotspotSsid || "").trim(),
       wifiPassword: String(state.deviceConfigDraft.wifiPassword || "").trim(),
+      tmdbApiKey: String(state.deviceConfigDraft.tmdbApiKey || "").trim(),
+      tmdbBearerToken: String(state.deviceConfigDraft.tmdbBearerToken || "").trim(),
     };
 
     if (!draft.deviceName) {
@@ -3278,7 +3329,10 @@ function createDeviceConfigCard() {
         deviceName: String(savedConfig.deviceName || draft.deviceName).trim(),
         hotspotSsid: String(savedConfig.hotspotSsid || draft.hotspotSsid).trim(),
         wifiPassword: String(savedConfig.wifiPassword || draft.wifiPassword).trim(),
+        tmdbApiKey: String(savedConfig.tmdbApiKey || draft.tmdbApiKey).trim(),
+        tmdbBearerToken: String(savedConfig.tmdbBearerToken || draft.tmdbBearerToken).trim(),
       };
+      state.deviceConfigLoaded = true;
       if (payload.status) {
         state.status = payload.status;
         refreshLiveUploadActivity(uploadStatusSnapshot());
@@ -5043,6 +5097,31 @@ function ensureUploadDestinationsLoaded() {
     });
 }
 
+function ensureDeviceConfigLoaded() {
+  if (state.route.name !== "device" || state.deviceConfigLoaded || deviceConfigRequest) {
+    return;
+  }
+
+  deviceConfigRequest = loadDeviceConfig()
+    .then((config) => {
+      state.deviceConfigDraft = {
+        deviceName: String(config.deviceName || state.deviceConfigDraft.deviceName || "").trim(),
+        hotspotSsid: String(config.hotspotSsid || state.deviceConfigDraft.hotspotSsid || "").trim(),
+        wifiPassword: String(config.wifiPassword || state.deviceConfigDraft.wifiPassword || "").trim(),
+        tmdbApiKey: String(config.tmdbApiKey || state.deviceConfigDraft.tmdbApiKey || "").trim(),
+        tmdbBearerToken: String(config.tmdbBearerToken || state.deviceConfigDraft.tmdbBearerToken || "").trim(),
+      };
+      state.deviceConfigLoaded = true;
+      render();
+    })
+    .catch((error) => {
+      console.warn("Unable to load device config", error);
+    })
+    .finally(() => {
+      deviceConfigRequest = null;
+    });
+}
+
 function renderNav() {
   for (const link of els.nav) {
     link.classList.remove("is-active");
@@ -5106,6 +5185,7 @@ function render() {
 
   syncDeviceStatusPolling();
   ensureUploadDestinationsLoaded();
+  ensureDeviceConfigLoaded();
 }
 
 async function loadStatus() {
@@ -5198,6 +5278,15 @@ async function refreshAll() {
   await loadLibrary();
   if (state.route.name === "device") {
     await (uploadDestinationsRequest || loadUploadDestinations());
+    const config = await (deviceConfigRequest || loadDeviceConfig());
+    state.deviceConfigDraft = {
+      deviceName: String(config.deviceName || state.deviceConfigDraft.deviceName || "").trim(),
+      hotspotSsid: String(config.hotspotSsid || state.deviceConfigDraft.hotspotSsid || "").trim(),
+      wifiPassword: String(config.wifiPassword || state.deviceConfigDraft.wifiPassword || "").trim(),
+      tmdbApiKey: String(config.tmdbApiKey || state.deviceConfigDraft.tmdbApiKey || "").trim(),
+      tmdbBearerToken: String(config.tmdbBearerToken || state.deviceConfigDraft.tmdbBearerToken || "").trim(),
+    };
+    state.deviceConfigLoaded = true;
   }
   lastCompletedUploadRefreshKey = uploadCompletionRefreshKey(uploadStatusSnapshot());
 }
