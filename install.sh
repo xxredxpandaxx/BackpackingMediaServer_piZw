@@ -65,6 +65,14 @@ run_as_install_user() {
   fi
 }
 
+configure_checkout_git() {
+  run_as_install_user git -C "${INSTALL_DIR}" config core.fileMode false >/dev/null 2>&1 || true
+}
+
+print_checkout_status() {
+  run_as_install_user git -C "${INSTALL_DIR}" status --short || true
+}
+
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -183,8 +191,11 @@ prepare_repo() {
 
   if [[ -d "${INSTALL_DIR}/.git" ]]; then
     log "Updating existing checkout in ${INSTALL_DIR}"
+    configure_checkout_git
     clean_generated_checkout_files
-    if run_as_install_user git -C "${INSTALL_DIR}" status --porcelain | grep -q .; then
+    if print_checkout_status | grep -q .; then
+      log "Existing checkout still has local changes:"
+      print_checkout_status | sed 's/^/[nomadscreen-install]   /'
       die "Existing checkout has local changes. Commit or discard them before rerunning the installer."
     fi
 
@@ -199,6 +210,8 @@ prepare_repo() {
     log "Cloning ${REPO_URL} into ${INSTALL_DIR}"
     run_as_install_user git clone --depth 1 --branch "${REPO_REF}" "${REPO_URL}" "${INSTALL_DIR}"
   fi
+
+  configure_checkout_git
 
   if [[ -f "${INSTALL_DIR}/install.sh" ]]; then
     run_root chmod 0755 "${INSTALL_DIR}/install.sh"

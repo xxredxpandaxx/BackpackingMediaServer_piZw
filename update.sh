@@ -61,6 +61,33 @@ run_as_install_user() {
   fi
 }
 
+configure_checkout_git() {
+  run_as_install_user git -C "${INSTALL_DIR}" config core.fileMode false >/dev/null 2>&1 || true
+}
+
+clean_generated_checkout_files() {
+  local generated_path
+
+  log "Cleaning generated files from the existing checkout"
+  for generated_path in ".tmp" ".pytest_cache"; do
+    if [[ -e "${INSTALL_DIR}/${generated_path}" ]]; then
+      run_root rm -rf "${INSTALL_DIR}/${generated_path}"
+    fi
+  done
+
+  run_root find "${INSTALL_DIR}" \
+    -type d \
+    \( -name "__pycache__" -o -name ".pytest_cache" \) \
+    -prune \
+    -exec rm -rf {} +
+
+  run_root chown -R "${INSTALL_USER}:${INSTALL_GROUP}" "${INSTALL_DIR}"
+}
+
+print_checkout_status() {
+  run_as_install_user git -C "${INSTALL_DIR}" status --short || true
+}
+
 read_unit_value() {
   local file_path="$1"
   local key="$2"
@@ -190,7 +217,11 @@ prepare_tmp_dir() {
 ensure_repo() {
   [[ -d "${INSTALL_DIR}/.git" ]] || die "No git checkout found at ${INSTALL_DIR}. Run install.sh first."
   run_root chown -R "${INSTALL_USER}:${INSTALL_GROUP}" "${INSTALL_DIR}"
-  if run_as_install_user git -C "${INSTALL_DIR}" status --porcelain | grep -q .; then
+  configure_checkout_git
+  clean_generated_checkout_files
+  if print_checkout_status | grep -q .; then
+    log "Existing checkout still has local changes:"
+    print_checkout_status | sed 's/^/[nomadscreen-update]   /'
     die "Existing checkout has local changes. Commit or discard them before running the updater."
   fi
 }
@@ -206,6 +237,7 @@ update_repo() {
   log "Fetching ${REPO_REF} from origin"
   run_as_install_user git -C "${INSTALL_DIR}" fetch --depth 1 origin "${REPO_REF}"
   run_as_install_user git -C "${INSTALL_DIR}" checkout -B "${REPO_REF}" FETCH_HEAD
+  configure_checkout_git
 
   if [[ -f "${INSTALL_DIR}/install.sh" ]]; then
     run_root chmod 0755 "${INSTALL_DIR}/install.sh"
