@@ -3906,7 +3906,11 @@ function createCard(kind, config) {
   const variant = isShow ? "landscape" : "portrait";
   node.classList.add(isShow ? "show-card" : "media-card--poster");
   if (config.cardClassName) {
-    node.classList.add(config.cardClassName);
+    node.classList.add(
+      ...String(config.cardClassName)
+        .split(/\s+/)
+        .filter(Boolean),
+    );
   }
   if (config.compact) {
     node.classList.add("library-card--compact");
@@ -4283,7 +4287,11 @@ function appendCarouselSection(container, config) {
     for (const item of config.items) {
       const card = config.renderItem(item);
       if (config.itemClassName) {
-        card.classList.add(config.itemClassName);
+        card.classList.add(
+          ...String(config.itemClassName)
+            .split(/\s+/)
+            .filter(Boolean),
+        );
       }
       scroller.appendChild(card);
     }
