@@ -227,16 +227,25 @@ def normalize_language(value: str) -> str:
 
 
 def normalize_series_index(value: object) -> str:
+    def normalize_numeric_text(raw_value: object) -> str:
+        try:
+            numeric = float(str(raw_value or "").strip())
+        except (TypeError, ValueError):
+            return ""
+        if numeric <= 0:
+            return ""
+        return str(int(numeric)) if numeric.is_integer() else str(numeric).rstrip("0").rstrip(".")
+
     if isinstance(value, (int, float)) and float(value) > 0:
         numeric = float(value)
         return str(int(numeric)) if numeric.is_integer() else str(numeric).rstrip("0").rstrip(".")
     for candidate in flatten_text_values(value):
         direct_match = re.fullmatch(r"\d+(?:\.\d+)?", candidate)
         if direct_match:
-            return normalize_series_index(direct_match.group(0))
+            return normalize_numeric_text(direct_match.group(0))
         match = re.search(r"(\d+(?:\.\d+)?)", candidate)
         if match:
-            return normalize_series_index(match.group(1))
+            return normalize_numeric_text(match.group(1))
     return ""
 
 
