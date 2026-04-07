@@ -17,6 +17,8 @@ from urllib.parse import quote
 
 from flask import Flask, Response, jsonify, redirect, request, send_file, send_from_directory
 
+from audiobook_metadata import extract_audiobook_embedded_metadata
+
 
 APP_ROOT = Path(__file__).resolve().parents[1]
 STATIC_ROOT = APP_ROOT / "data"
@@ -197,6 +199,17 @@ def atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> None
         except OSError:
             pass
         raise
+
+
+def ensure_table_columns(connection: sqlite3.Connection, table_name: str, columns: dict[str, str]) -> None:
+    existing = {
+        str(row[1]).lower()
+        for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
+    for column_name, definition in columns.items():
+        if column_name.lower() in existing:
+            continue
+        connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
 
 
 def configure_sqlite_connection(connection: sqlite3.Connection) -> sqlite3.Connection:
@@ -565,6 +578,10 @@ def normalize_catalog_query(raw_value: object) -> str:
     return " ".join(str(raw_value or "").split()).strip()
 
 
+def normalize_catalog_genre(raw_value: object) -> str:
+    return " ".join(str(raw_value or "").split()).strip()
+
+
 def normalize_catalog_limit(raw_value: object, default: int = DEFAULT_CATALOG_PAGE_SIZE) -> int:
     try:
         parsed = int(raw_value)
@@ -584,6 +601,26 @@ def normalize_catalog_offset(raw_value: object) -> int:
 def catalog_like_pattern(raw_query: object) -> str:
     normalized = normalize_catalog_query(raw_query).lower()
     return f"%{normalized}%" if normalized else "%"
+
+
+def split_catalog_genres(raw_value: object) -> list[str]:
+    known: set[str] = set()
+    values: list[str] = []
+    for part in str(raw_value or "").split(","):
+        genre = " ".join(part.split()).strip()
+        if not genre:
+            continue
+        key = genre.casefold()
+        if key in known:
+            continue
+        known.add(key)
+        values.append(genre)
+    return values
+
+
+def catalog_genre_pattern(raw_value: object) -> str:
+    normalized = normalize_catalog_genre(raw_value).lower()
+    return f"%,{normalized},%" if normalized else "%"
 
 
 def load_settings() -> dict[str, object]:
@@ -1552,6 +1589,12 @@ class AppState:
                     "contentRating": str(entry.get("contentRating") or ""),
                     "artist": str(entry.get("artist") or ""),
                     "album": str(entry.get("album") or ""),
+                    "narrators": str(entry.get("narrators") or ""),
+                    "publisher": str(entry.get("publisher") or ""),
+                    "language": str(entry.get("language") or ""),
+                    "tags": str(entry.get("tags") or ""),
+                    "seriesName": str(entry.get("seriesName") or ""),
+                    "seriesIndex": str(entry.get("seriesIndex") or ""),
                     "posterPath": normalize_virtual_path(str(entry.get("posterPath") or "")),
                     "backdropPath": normalize_virtual_path(str(entry.get("backdropPath") or "")),
                     "metadataSource": str(entry.get("source") or ""),
@@ -1620,6 +1663,12 @@ class AppState:
                 "contentRating",
                 "artist",
                 "album",
+                "narrators",
+                "publisher",
+                "language",
+                "tags",
+                "seriesName",
+                "seriesIndex",
                 "posterPath",
                 "backdropPath",
                 "metadataSource",
@@ -1698,6 +1747,12 @@ class AppState:
                         "contentRating": "",
                         "artist": "",
                         "album": "",
+                        "narrators": "",
+                        "publisher": "",
+                        "language": "",
+                        "tags": "",
+                        "seriesName": "",
+                        "seriesIndex": "",
                         "posterPath": "",
                         "backdropPath": "",
                         "metadataSource": "",
@@ -1713,6 +1768,17 @@ class AppState:
                         "bytes": actual_path.stat().st_size if actual_path.exists() else 0,
                     }
                     self.decorate_item(item)
+                    if item["section"] == "audiobooks":
+                        embedded = extract_audiobook_embedded_metadata(actual_path, self.metadata_root_path())
+                        for field, value in embedded.items():
+                            if isinstance(value, str):
+                                if value:
+                                    item[field] = value
+                            elif isinstance(value, (int, float)):
+                                if float(value) > 0:
+                                    item[field] = value
+                            elif value:
+                                item[field] = value
                     self.apply_item_metadata(item, item_entries, show_entries)
                     scanned_items.append(item)
 
@@ -1894,6 +1960,12 @@ class AppState:
                 item.get("contentRating"),
                 item.get("artist"),
                 item.get("album"),
+                item.get("narrators"),
+                item.get("publisher"),
+                item.get("language"),
+                item.get("tags"),
+                item.get("seriesName"),
+                item.get("seriesIndex"),
                 item.get("showTitle"),
                 item.get("seasonLabel"),
                 item.get("path"),
@@ -1937,6 +2009,12 @@ class AppState:
                 str(item.get("contentRating") or ""),
                 str(item.get("artist") or ""),
                 str(item.get("album") or ""),
+                str(item.get("narrators") or ""),
+                str(item.get("publisher") or ""),
+                str(item.get("language") or ""),
+                str(item.get("tags") or ""),
+                str(item.get("seriesName") or ""),
+                str(item.get("seriesIndex") or ""),
                 normalize_virtual_path(str(item.get("posterPath") or "")),
                 normalize_virtual_path(str(item.get("backdropPath") or "")),
                 str(item.get("metadataSource") or ""),
@@ -1995,6 +2073,12 @@ class AppState:
                     content_rating TEXT NOT NULL,
                     artist TEXT NOT NULL,
                     album TEXT NOT NULL,
+                    narrators TEXT NOT NULL DEFAULT '',
+                    publisher TEXT NOT NULL DEFAULT '',
+                    language TEXT NOT NULL DEFAULT '',
+                    tags TEXT NOT NULL DEFAULT '',
+                    series_name TEXT NOT NULL DEFAULT '',
+                    series_index TEXT NOT NULL DEFAULT '',
                     poster_path TEXT NOT NULL,
                     backdrop_path TEXT NOT NULL,
                     metadata_source TEXT NOT NULL,
@@ -2014,6 +2098,18 @@ class AppState:
                     search_text TEXT NOT NULL
                 )
                 """
+            )
+            ensure_table_columns(
+                connection,
+                "items",
+                {
+                    "narrators": "TEXT NOT NULL DEFAULT ''",
+                    "publisher": "TEXT NOT NULL DEFAULT ''",
+                    "language": "TEXT NOT NULL DEFAULT ''",
+                    "tags": "TEXT NOT NULL DEFAULT ''",
+                    "series_name": "TEXT NOT NULL DEFAULT ''",
+                    "series_index": "TEXT NOT NULL DEFAULT ''",
+                },
             )
             connection.execute(
                 """
@@ -2048,11 +2144,12 @@ class AppState:
                 """
                 INSERT INTO items (
                     path, title, sort_title, sort_key, overview, tagline, year, release_date,
-                    genres, content_rating, artist, album, poster_path, backdrop_path,
+                    genres, content_rating, artist, album, narrators, publisher, language, tags,
+                    series_name, series_index, poster_path, backdrop_path,
                     metadata_source, tmdb_rating, runtime_minutes, match_confidence,
                     show_title, show_slug, season_label, season_number, episode_number,
                     has_metadata, bytes, section, type, extension, search_text
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 item_rows,
             )
@@ -2256,7 +2353,7 @@ class AppState:
                         or (existing_row["section"] if existing_row is not None else "")
                         or ""
                     )
-                    if safe_section not in {"movies", "tv"}:
+                    if safe_section not in {"movies", "tv", "audiobooks"}:
                         continue
                     safe_show_slug = str(
                         (library_item or {}).get("showSlug")
@@ -2362,6 +2459,12 @@ class AppState:
             "contentRating": str(row["content_rating"] or ""),
             "artist": str(row["artist"] or ""),
             "album": str(row["album"] or ""),
+            "narrators": str(row["narrators"] or ""),
+            "publisher": str(row["publisher"] or ""),
+            "language": str(row["language"] or ""),
+            "tags": str(row["tags"] or ""),
+            "seriesName": str(row["series_name"] or ""),
+            "seriesIndex": str(row["series_index"] or ""),
             "posterPath": normalize_virtual_path(str(row["poster_path"] or "")),
             "backdropPath": normalize_virtual_path(str(row["backdrop_path"] or "")),
             "metadataSource": str(row["metadata_source"] or ""),
@@ -2492,15 +2595,60 @@ class AppState:
             "items": [self.serialize_catalog_item_row(row) for row in rows],
         }
 
-    def catalog_movies_payload(self, offset: object, limit: object, query: object) -> dict[str, object]:
+    def catalog_genres_payload(self) -> dict[str, list[str]]:
+        grouped = {
+            "movies": [],
+            "tv": [],
+            "audiobooks": [],
+        }
+        known = {
+            "movies": set(),
+            "tv": set(),
+            "audiobooks": set(),
+        }
+
+        def add_genres(section: str, raw_value: object) -> None:
+            if section not in grouped:
+                return
+            for genre in split_catalog_genres(raw_value):
+                key = genre.casefold()
+                if key in known[section]:
+                    continue
+                known[section].add(key)
+                grouped[section].append(genre)
+
+        with self.catalog_connection() as connection:
+            movie_rows = connection.execute("SELECT genres FROM items WHERE section = 'movies' AND genres <> ''").fetchall()
+            audiobook_rows = connection.execute(
+                "SELECT genres FROM items WHERE section = 'audiobooks' AND genres <> ''"
+            ).fetchall()
+            show_rows = connection.execute("SELECT genres FROM shows WHERE genres <> ''").fetchall()
+
+        for row in movie_rows:
+            add_genres("movies", row["genres"])
+        for row in audiobook_rows:
+            add_genres("audiobooks", row["genres"])
+        for row in show_rows:
+            add_genres("tv", row["genres"])
+
+        for section, values in grouped.items():
+            grouped[section] = sorted(values, key=str.casefold)
+
+        return grouped
+
+    def catalog_movies_payload(self, offset: object, limit: object, query: object, genre: object) -> dict[str, object]:
         safe_offset = normalize_catalog_offset(offset)
         safe_limit = normalize_catalog_limit(limit)
         safe_query = normalize_catalog_query(query)
+        safe_genre = normalize_catalog_genre(genre)
         params: list[object] = ["movies"]
         where = "WHERE section = ?"
         if safe_query:
             where += " AND search_text LIKE ?"
             params.append(catalog_like_pattern(safe_query))
+        if safe_genre:
+            where += " AND LOWER(',' || REPLACE(REPLACE(genres, ', ', ','), ' ,', ',') || ',') LIKE ?"
+            params.append(catalog_genre_pattern(safe_genre))
         with self.catalog_connection() as connection:
             total = int(connection.execute(f"SELECT COUNT(*) FROM items {where}", params).fetchone()[0])
             rows = connection.execute(
@@ -2515,6 +2663,7 @@ class AppState:
             ).fetchall()
         return {
             "query": safe_query,
+            "genre": safe_genre,
             "offset": safe_offset,
             "limit": safe_limit,
             "total": total,
@@ -2534,15 +2683,19 @@ class AppState:
             ).fetchone()
         return self.serialize_catalog_item_row(row) if row is not None else None
 
-    def catalog_shows_payload(self, offset: object, limit: object, query: object) -> dict[str, object]:
+    def catalog_shows_payload(self, offset: object, limit: object, query: object, genre: object) -> dict[str, object]:
         safe_offset = normalize_catalog_offset(offset)
         safe_limit = normalize_catalog_limit(limit)
         safe_query = normalize_catalog_query(query)
+        safe_genre = normalize_catalog_genre(genre)
         params: list[object] = []
         where = ""
         if safe_query:
             where = "WHERE search_text LIKE ?"
             params.append(catalog_like_pattern(safe_query))
+        if safe_genre:
+            where = f"{where} {'AND' if where else 'WHERE'} LOWER(',' || REPLACE(REPLACE(genres, ', ', ','), ' ,', ',') || ',') LIKE ?"
+            params.append(catalog_genre_pattern(safe_genre))
         with self.catalog_connection() as connection:
             total = int(connection.execute(f"SELECT COUNT(*) FROM shows {where}", params).fetchone()[0])
             rows = connection.execute(
@@ -2557,6 +2710,7 @@ class AppState:
             ).fetchall()
         return {
             "query": safe_query,
+            "genre": safe_genre,
             "offset": safe_offset,
             "limit": safe_limit,
             "total": total,
@@ -3072,6 +3226,15 @@ def api_catalog_search() -> Response:
     return no_store_json({"ok": True, **payload})
 
 
+@app.get("/api/catalog/genres")
+def api_catalog_genres() -> Response:
+    try:
+        payload = state.catalog_genres_payload()
+    except sqlite3.Error:
+        return no_store_json({"error": "Catalog genres are unavailable right now."}, 500)
+    return no_store_json({"ok": True, **payload})
+
+
 @app.get("/api/catalog/movies")
 def api_catalog_movies() -> Response:
     try:
@@ -3079,6 +3242,7 @@ def api_catalog_movies() -> Response:
             request.args.get("offset"),
             request.args.get("limit"),
             request.args.get("q"),
+            request.args.get("genre"),
         )
     except sqlite3.Error:
         return no_store_json({"error": "Movie catalog is unavailable right now."}, 500)
@@ -3103,6 +3267,7 @@ def api_catalog_shows() -> Response:
             request.args.get("offset"),
             request.args.get("limit"),
             request.args.get("q"),
+            request.args.get("genre"),
         )
     except sqlite3.Error:
         return no_store_json({"error": "Show catalog is unavailable right now."}, 500)

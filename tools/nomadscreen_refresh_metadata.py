@@ -6,12 +6,20 @@ import os
 import re
 import sqlite3
 import subprocess
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
 from rapidfuzz import fuzz
+
+SCRIPT_ROOT = Path(__file__).resolve().parents[1]
+SOURCE_ROOT = SCRIPT_ROOT / "src"
+if str(SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SOURCE_ROOT))
+
+from audiobook_metadata import extract_audiobook_embedded_metadata
 
 
 GENERATOR_NAME = "Nomad Screen Python Metadata Builder"
@@ -572,6 +580,12 @@ def build_base_item(file_path: Path, media_root: Path) -> dict[str, object]:
         "contentRating": "",
         "artist": "",
         "album": "",
+        "narrators": "",
+        "publisher": "",
+        "language": "",
+        "tags": "",
+        "seriesName": "",
+        "seriesIndex": "",
         "posterPath": "",
         "backdropPath": "",
         "source": "local",
@@ -600,6 +614,17 @@ def build_base_item(file_path: Path, media_root: Path) -> dict[str, object]:
             item["album"] = prettify_name(parts[3])
         elif len(parts) >= 3:
             item["artist"] = prettify_name(parts[2])
+    if section == "audiobooks":
+        embedded = extract_audiobook_embedded_metadata(file_path, media_root / ".nomadscreen")
+        for key, value in embedded.items():
+            if isinstance(value, str):
+                if value:
+                    item[key] = value
+            elif isinstance(value, (int, float)):
+                if float(value) > 0:
+                    item[key] = value
+            elif value:
+                item[key] = value
     return item
 
 

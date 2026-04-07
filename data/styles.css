@@ -278,6 +278,17 @@ button {
   max-width: 240px;
 }
 
+#page-filter-slot {
+  width: 100%;
+  max-width: 240px;
+}
+
+.filter-field {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+}
+
 #search-input {
   width: 100%;
   padding: 10px 14px;
@@ -286,6 +297,17 @@ button {
   background: rgba(7, 18, 33, 0.9);
   color: var(--text);
   font-size: 0.88rem;
+}
+
+#genre-filter-input {
+  width: 100%;
+  padding: 10px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(7, 18, 33, 0.9);
+  color: var(--text);
+  font-size: 0.88rem;
+  appearance: none;
 }
 
 .page-actions,
@@ -1066,6 +1088,67 @@ button {
   object-fit: cover;
   opacity: 0;
   transition: opacity 180ms ease;
+}
+
+.card-art-icon {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  pointer-events: none;
+}
+
+.card-art-icon svg {
+  width: min(58%, 124px);
+  height: auto;
+  overflow: visible;
+  filter: drop-shadow(0 12px 28px rgba(0, 0, 0, 0.26));
+}
+
+.card-art-icon-shape,
+.card-art-icon-line {
+  vector-effect: non-scaling-stroke;
+}
+
+.card-art-icon-shape--folder-back {
+  fill: rgba(255, 232, 163, 0.78);
+}
+
+.card-art-icon-shape--folder-front {
+  fill: rgba(255, 202, 84, 0.94);
+}
+
+.card-art-icon-shape--pdf-page {
+  fill: rgba(250, 252, 255, 0.96);
+}
+
+.card-art-icon-line--pdf-fold {
+  fill: none;
+  stroke: rgba(164, 179, 199, 0.9);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 3;
+}
+
+.card-art-icon-shape--pdf-label {
+  fill: rgba(224, 78, 78, 0.96);
+}
+
+.card-art-icon-text {
+  fill: rgba(255, 248, 248, 0.98);
+  font-size: 11px;
+  font-weight: 800;
+  font-family: "Segoe UI", sans-serif;
+  letter-spacing: 0.18em;
+}
+
+.folder-card .card-art-icon svg {
+  width: min(56%, 128px);
+}
+
+.file-card .card-art-icon--pdf svg {
+  width: min(48%, 108px);
 }
 
 .card-art--loaded .card-art-image {
