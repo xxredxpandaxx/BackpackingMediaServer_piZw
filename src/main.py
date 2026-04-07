@@ -4,6 +4,7 @@ import json
 import mimetypes
 import os
 import queue
+import re
 import socket
 import sqlite3
 import subprocess
@@ -308,6 +309,14 @@ def slugify_text(value: object, fallback: str = "unknown-show") -> str:
     return "".join(output).strip("-") or fallback
 
 
+def normalize_audiobook_collection_label(value: object) -> str:
+    normalized = normalize_catalog_query(value)
+    if not normalized:
+        return ""
+    cleaned = normalize_catalog_query(re.sub(r"\s+#\d+(?:\.\d+)?\s*$", "", normalized))
+    return cleaned or normalized
+
+
 def relative_media_path(path: object) -> str:
     normalized = normalize_virtual_path(str(path or ""))
     if normalized.startswith("/media/"):
@@ -328,15 +337,15 @@ def audiobook_folder_segments(path: object) -> list[str]:
 
 
 def audiobook_collection_name(series_name: object, album: object, path: object) -> str:
-    safe_series_name = normalize_catalog_query(series_name)
+    safe_series_name = normalize_audiobook_collection_label(series_name)
     if safe_series_name:
         return safe_series_name
-    safe_album = normalize_catalog_query(album)
+    safe_album = normalize_audiobook_collection_label(album)
     if safe_album:
         return safe_album
     folders = audiobook_folder_segments(path)
     if len(folders) >= 2:
-        return title_from_path(folders[1])
+        return normalize_audiobook_collection_label(title_from_path(folders[1]))
     return ""
 
 
@@ -2756,7 +2765,7 @@ class AppState:
         safe_limit = normalize_catalog_limit(limit)
         safe_query = normalize_catalog_query(query)
         safe_genre = normalize_catalog_genre(genre)
-        safe_collection = normalize_catalog_query(collection)
+        safe_collection = normalize_audiobook_collection_label(collection)
         safe_author = normalize_catalog_query(author)
         params: list[object] = ["audiobooks"]
         where = "WHERE section = ?"

@@ -2991,12 +2991,26 @@ function createFactPill(label) {
   return pill;
 }
 
+function normalizeAudiobookCollectionLabel(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "";
+  }
+
+  const cleaned = raw.replace(/\s+#\d+(?:\.\d+)?\s*$/i, "").trim();
+  return cleaned || raw;
+}
+
+function audiobookSeriesName(item) {
+  return normalizeAudiobookCollectionLabel(item && item.seriesName);
+}
+
 function audiobookSeriesLabel(item) {
   if (!item) {
     return "";
   }
 
-  const seriesName = String(item.seriesName || "").trim();
+  const seriesName = audiobookSeriesName(item);
   const seriesIndex = String(item.seriesIndex || "").trim();
   if (seriesName && seriesIndex) {
     return `${seriesName} - Book ${seriesIndex}`;
@@ -3016,6 +3030,8 @@ function audiobookNarratorLabel(item) {
 
 function itemDetailFacts(item, probe) {
   const facts = [];
+  const audiobookCollection = item && item.section === "audiobooks" ? audiobookCollectionName(item) : "";
+  const audiobookSeries = item && item.section === "audiobooks" ? audiobookSeriesLabel(item) : "";
 
   if (item.section === "tv" && item.showTitle) {
     facts.push(item.showTitle);
@@ -3029,10 +3045,13 @@ function itemDetailFacts(item, probe) {
   if (item.artist) {
     facts.push(item.artist);
   }
-  if (item.album) {
+  if (item.album && item.section !== "audiobooks") {
     facts.push(item.album);
   }
   if (item.section === "audiobooks") {
+    if (audiobookCollection && audiobookCollection !== item.artist && audiobookCollection !== audiobookSeries) {
+      facts.push(audiobookCollection);
+    }
     facts.push("Audiobook");
     if (item.narrators) {
       facts.push(audiobookNarratorLabel(item));
@@ -3043,7 +3062,7 @@ function itemDetailFacts(item, probe) {
     if (item.language) {
       facts.push(item.language);
     }
-    const seriesLabel = audiobookSeriesLabel(item);
+    const seriesLabel = audiobookSeries;
     if (seriesLabel) {
       facts.push(seriesLabel);
     }
@@ -3095,7 +3114,7 @@ function itemSummary(item) {
     return (
       joinBits([
         item.artist,
-        audiobookSeriesLabel(item) || item.album,
+        audiobookSeriesLabel(item) || audiobookCollectionName(item),
         audiobookNarratorLabel(item),
         item.publisher,
         item.year,
@@ -3599,19 +3618,19 @@ function audiobookCollectionName(item) {
     return "";
   }
 
-  const seriesName = String(item.seriesName || "").trim();
+  const seriesName = audiobookSeriesName(item);
   if (seriesName) {
     return seriesName;
   }
 
-  const album = String(item.album || "").trim();
+  const album = normalizeAudiobookCollectionLabel(item.album);
   if (album) {
     return album;
   }
 
   const folders = audiobookFolderSegments(item);
   if (folders.length >= 2) {
-    return titleFromPath(folders[1]);
+    return normalizeAudiobookCollectionLabel(titleFromPath(folders[1]));
   }
 
   return "";
@@ -6898,12 +6917,14 @@ function renderAudiobookDetailPage(container, audiobook) {
     { label: "Tags", value: audiobook.tags || "Unknown" },
     { label: "Duration", value: formatRuntime(audiobook.runtimeMinutes) || "Unknown" },
   ];
+  const collectionLabel = normalizeAudiobookCollectionLabel(audiobook.album);
+  const seriesName = audiobookSeriesName(audiobook);
   if (
-    audiobook.album &&
-    audiobook.album !== audiobook.title &&
-    audiobook.album !== audiobook.seriesName
+    collectionLabel &&
+    collectionLabel !== audiobook.title &&
+    collectionLabel !== seriesName
   ) {
-    detailsRows.splice(1, 0, { label: "Collection", value: audiobook.album });
+    detailsRows.splice(1, 0, { label: "Collection", value: collectionLabel });
   }
 
   const cards = [
