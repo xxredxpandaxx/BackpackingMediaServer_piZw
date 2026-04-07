@@ -1636,13 +1636,20 @@ class AppState:
     def decorate_item(self, item: dict[str, object]) -> None:
         segments = split_path(str(item["path"]))
         item["section"] = section_from_path(segments, str(item["type"]))
-        if item["section"] != "tv":
+        if item["section"] == "tv":
+            item["showTitle"] = prettify_name(segments[2]) if len(segments) >= 4 else "Unknown Show"
+            item["showSlug"] = slugify(str(item["showTitle"]))
+            item["seasonLabel"] = prettify_name(segments[3]) if len(segments) >= 5 else "Season 1"
+            item["seasonNumber"] = parse_season_number(str(item["seasonLabel"]))
+            item["episodeNumber"] = parse_episode_number(str(item["title"]))
             return
-        item["showTitle"] = prettify_name(segments[2]) if len(segments) >= 4 else "Unknown Show"
-        item["showSlug"] = slugify(str(item["showTitle"]))
-        item["seasonLabel"] = prettify_name(segments[3]) if len(segments) >= 5 else "Season 1"
-        item["seasonNumber"] = parse_season_number(str(item["seasonLabel"]))
-        item["episodeNumber"] = parse_episode_number(str(item["title"]))
+
+        if item["section"] in {"music", "audiobooks"}:
+            if len(segments) >= 4:
+                item["artist"] = prettify_name(segments[2])
+                item["album"] = prettify_name(segments[3])
+            elif len(segments) >= 3:
+                item["artist"] = prettify_name(segments[2])
 
     def apply_item_metadata(
         self,

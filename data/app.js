@@ -3683,6 +3683,10 @@ function createAudiobookGroupCard(group) {
   });
 }
 
+function createAudiobookShelfCard(item) {
+  return createMediaCard(item, { cardClassName: "movie-page-card" });
+}
+
 function relativeMediaPath(path) {
   return String(path || "").replace(/^\/media\//, "");
 }
@@ -6917,7 +6921,7 @@ function renderAudiobookPage(container) {
       .filter(Boolean)
       .join(" "),
     items,
-    renderItem: createMediaCard,
+    renderItem: createAudiobookShelfCard,
     emptyMessage: selectedGenre
       ? `No audiobooks in ${selectedGenre} match this page yet.`
       : "No audiobooks match this page yet.",
