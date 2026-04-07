@@ -3582,6 +3582,28 @@ function audiobookCollectionName(item) {
   return "";
 }
 
+function firstAudiobookInCollection(items) {
+  return [...(items || [])].sort((left, right) => {
+    const leftIndex = Number.parseFloat(String((left && left.seriesIndex) || "").trim());
+    const rightIndex = Number.parseFloat(String((right && right.seriesIndex) || "").trim());
+    const leftHasIndex = Number.isFinite(leftIndex) && leftIndex > 0;
+    const rightHasIndex = Number.isFinite(rightIndex) && rightIndex > 0;
+
+    if (leftHasIndex && rightHasIndex && leftIndex !== rightIndex) {
+      return leftIndex - rightIndex;
+    }
+    if (leftHasIndex !== rightHasIndex) {
+      return leftHasIndex ? -1 : 1;
+    }
+
+    const titleOrder = compareText(left && (left.sortTitle || left.title), right && (right.sortTitle || right.title));
+    if (titleOrder !== 0) {
+      return titleOrder;
+    }
+    return compareText(left && left.path, right && right.path);
+  })[0] || null;
+}
+
 function buildAudiobookBrowseGroups(items, kind) {
   const groups = new Map();
 
@@ -3595,10 +3617,7 @@ function buildAudiobookBrowseGroups(items, kind) {
     }
 
     const author = audiobookAuthorName(item);
-    const key =
-      kind === "author"
-        ? slugifyText(label)
-        : `${slugifyText(label)}|${slugifyText(author || "unknown-author")}`;
+    const key = slugifyText(label);
 
     let group = groups.get(key);
     if (!group) {
@@ -3623,9 +3642,12 @@ function buildAudiobookBrowseGroups(items, kind) {
       group.collections.add(collectionName);
     }
     if (
-      !group.previewItem ||
-      (!group.previewItem.posterUrl && item.posterUrl) ||
-      (!group.previewItem.backdropUrl && item.backdropUrl)
+      group.kind !== "collection" &&
+      (
+        !group.previewItem ||
+        (!group.previewItem.posterUrl && item.posterUrl) ||
+        (!group.previewItem.backdropUrl && item.backdropUrl)
+      )
     ) {
       group.previewItem = item;
     }
@@ -3636,6 +3658,7 @@ function buildAudiobookBrowseGroups(items, kind) {
       const authors = Array.from(group.authors);
       const collections = Array.from(group.collections);
       const primaryAuthor = authors[0] || "";
+      const previewItem = group.kind === "collection" ? firstAudiobookInCollection(group.items) : group.previewItem;
       const searchText = [
         group.label,
         ...authors,
@@ -3650,16 +3673,13 @@ function buildAudiobookBrowseGroups(items, kind) {
         kind: group.kind,
         label: group.label,
         items: group.items,
-        previewItem: group.previewItem,
+        previewItem,
         authors,
         collections,
         primaryAuthor,
         count: group.items.length,
         searchText,
-        filterQuery:
-          group.kind === "collection"
-            ? joinBits([group.label, primaryAuthor]) || group.label
-            : group.label,
+        filterQuery: group.label,
       };
     })
     .filter((group) => {
