@@ -72,8 +72,22 @@ const state = {
     loaded: false,
     loadingMore: false,
   },
+  catalogAudiobooks: {
+    query: "",
+    genre: "",
+    total: 0,
+    offset: 0,
+    limit: 40,
+    count: 0,
+    hasMore: false,
+    items: [],
+    loaded: false,
+    loadingMore: false,
+  },
   catalogMovie: null,
   catalogMovieLoaded: false,
+  catalogAudiobook: null,
+  catalogAudiobookLoaded: false,
   catalogShow: null,
   catalogShowLoaded: false,
   deviceConfigFeedback: "",
@@ -2625,11 +2639,11 @@ function genreFilterLabel(section = routeGenreSection()) {
 }
 
 function routeUsesCatalogSummary() {
-  return ["home", "movies", "movie", "tv", "show", "season"].includes(state.route.name);
+  return ["home", "movies", "movie", "tv", "show", "season", "audiobooks", "audiobook"].includes(state.route.name);
 }
 
 function routeUsesServerSearch() {
-  return ["home", "movies", "tv"].includes(state.route.name);
+  return ["home", "movies", "tv", "audiobooks"].includes(state.route.name);
 }
 
 function homeSections() {
@@ -2709,10 +2723,16 @@ function allMediaItems() {
   if (state.catalogMovie) {
     addItem(state.catalogMovie);
   }
+  if (state.catalogAudiobook) {
+    addItem(state.catalogAudiobook);
+  }
   for (const item of (state.catalogProgress && state.catalogProgress.items) || []) {
     addItem(item);
   }
   for (const item of state.catalogMovies.items || []) {
+    addItem(item);
+  }
+  for (const item of state.catalogAudiobooks.items || []) {
     addItem(item);
   }
   for (const item of state.catalogSearch.items || []) {
@@ -3684,7 +3704,11 @@ function createAudiobookGroupCard(group) {
 }
 
 function createAudiobookShelfCard(item) {
-  return createMediaCard(item, { cardClassName: "movie-page-card" });
+  return createMediaCard(item, {
+    compact: true,
+    includeYearInTitle: true,
+    cardClassName: "movie-page-card",
+  });
 }
 
 function relativeMediaPath(path) {
@@ -4396,6 +4420,19 @@ function prepareRouteDataForLoading() {
     state.library = null;
     return;
   }
+  if (state.route.name === "audiobooks") {
+    state.catalogAudiobooks = createEmptyCatalogPageState();
+    state.catalogAudiobooks.query = state.query;
+    state.catalogAudiobooks.genre = currentGenreFilter("audiobooks");
+    state.library = null;
+    return;
+  }
+  if (state.route.name === "audiobook") {
+    state.catalogAudiobook = null;
+    state.catalogAudiobookLoaded = false;
+    state.library = null;
+    return;
+  }
   if (state.route.name === "tv") {
     state.catalogShows = createEmptyCatalogPageState();
     state.catalogShows.query = state.query;
@@ -4565,6 +4602,43 @@ async function loadCatalogShows(options = {}) {
   };
 }
 
+async function loadCatalogAudiobooks(options = {}) {
+  const append = Boolean(options.append);
+  const safeQuery = String(options.query != null ? options.query : state.query).trim();
+  const safeGenre = String(options.genre != null ? options.genre : currentGenreFilter("audiobooks")).trim();
+  const existing = state.catalogAudiobooks || createEmptyCatalogPageState();
+  const limit = Number(options.limit || existing.limit || CATALOG_PAGE_SIZE) || CATALOG_PAGE_SIZE;
+  const offset = append ? Number(existing.offset || 0) : Number(options.offset || 0);
+  if (!append) {
+    state.catalogAudiobooks = {
+      ...createEmptyCatalogPageState(limit),
+      query: safeQuery,
+      genre: safeGenre,
+    };
+  } else {
+    state.catalogAudiobooks = {
+      ...existing,
+      loadingMore: true,
+    };
+  }
+  const payload = await fetchCatalogJson(
+    `/api/catalog/audiobooks?offset=${offset}&limit=${limit}&q=${encodeURIComponent(safeQuery)}&genre=${encodeURIComponent(safeGenre)}`,
+    "Audiobooks",
+  );
+  state.catalogAudiobooks = {
+    query: safeQuery,
+    genre: String(payload.genre != null ? payload.genre : safeGenre).trim(),
+    total: Number(payload.total || 0),
+    offset: Number(payload.offset || 0) + Number(payload.count || 0),
+    limit: Number(payload.limit || limit),
+    count: Number(payload.count || 0),
+    hasMore: Boolean(payload.hasMore),
+    items: append ? [...(existing.items || []), ...(payload.items || [])] : Array.isArray(payload.items) ? payload.items : [],
+    loaded: true,
+    loadingMore: false,
+  };
+}
+
 async function loadCatalogMovie(path) {
   const safePath = String(path || "").trim();
   state.catalogMovie = null;
@@ -4585,6 +4659,28 @@ async function loadCatalogMovie(path) {
   }
   state.catalogMovie = payload.item || null;
   state.catalogMovieLoaded = true;
+}
+
+async function loadCatalogAudiobook(path) {
+  const safePath = String(path || "").trim();
+  state.catalogAudiobook = null;
+  state.catalogAudiobookLoaded = false;
+  if (!safePath) {
+    state.catalogAudiobookLoaded = true;
+    return;
+  }
+  const response = await fetch(`/api/catalog/audiobook?path=${encodeURIComponent(safePath)}`, { cache: "no-store" });
+  const payload = await response.json().catch(() => ({}));
+  if (response.status === 404) {
+    state.catalogAudiobook = null;
+    state.catalogAudiobookLoaded = true;
+    return;
+  }
+  if (!response.ok) {
+    throw new Error(payload.error || `Audiobook detail returned HTTP ${response.status}`);
+  }
+  state.catalogAudiobook = payload.item || null;
+  state.catalogAudiobookLoaded = true;
 }
 
 async function loadCatalogShow(slug) {
@@ -4643,6 +4739,17 @@ async function loadRouteData() {
     await Promise.all([loadCatalogSummary(), loadCatalogMovie(state.route.path)]);
     return;
   }
+  if (state.route.name === "audiobooks") {
+    await Promise.all([
+      loadCatalogSummary(),
+      loadCatalogAudiobooks({ query: state.query, genre: currentGenreFilter("audiobooks") }),
+    ]);
+    return;
+  }
+  if (state.route.name === "audiobook") {
+    await Promise.all([loadCatalogSummary(), loadCatalogAudiobook(state.route.path)]);
+    return;
+  }
   if (state.route.name === "tv") {
     await Promise.all([loadCatalogSummary(), loadCatalogShows({ query: state.query, genre: currentGenreFilter("tv") })]);
     return;
@@ -4689,6 +4796,18 @@ async function loadMoreCatalogShows() {
     append: true,
     query: state.catalogShows.query || state.query,
     genre: state.catalogShows.genre || currentGenreFilter("tv"),
+  });
+  render();
+}
+
+async function loadMoreCatalogAudiobooks() {
+  if (!state.catalogAudiobooks.loaded || !state.catalogAudiobooks.hasMore || state.catalogAudiobooks.loadingMore) {
+    return;
+  }
+  await loadCatalogAudiobooks({
+    append: true,
+    query: state.catalogAudiobooks.query || state.query,
+    genre: state.catalogAudiobooks.genre || currentGenreFilter("audiobooks"),
   });
   render();
 }
@@ -5797,8 +5916,10 @@ function updatePageHeader(show, movie, season, audiobook, documentBrowser) {
         }
       : {
           eyebrow: "Audiobook Detail",
-          title: titleFromPath(state.route.path || "") || "Loading audiobook",
-          subtitle: "Loading audiobook details from the library...",
+          title: state.catalogAudiobookLoaded ? "Audiobook not found" : titleFromPath(state.route.path || "") || "Loading audiobook",
+          subtitle: state.catalogAudiobookLoaded
+            ? "This audiobook is not in the current media scan."
+            : "Loading audiobook details from the library...",
           searchPlaceholder: "Search audiobook details",
         };
   } else if (state.route.name === "documents") {
@@ -5951,12 +6072,15 @@ function updatePageActions(show, movie, season, documentBrowser) {
   if (state.route.name === "audiobooks") {
     els.actions.appendChild(
       createButton("Shuffle Audiobook", "primary-button", () => {
-        const items = filterMediaItems(librarySections().audiobooks);
-        if (!items.length) {
-          return;
-        }
-        const item = items[Math.floor(Math.random() * items.length)];
-        playItem(item);
+        loadRandomCatalogItem("audiobooks")
+          .then((item) => {
+            if (item) {
+              playItem(item);
+            }
+          })
+          .catch((error) => {
+            els.pageSubtitle.textContent = `Audiobook shuffle failed: ${error.message}`;
+          });
       }),
     );
     return;
@@ -6130,7 +6254,7 @@ function renderHero(show, movie, season, documentBrowser) {
       );
     }
   } else if (state.route.name === "audiobooks") {
-    const featured = filterMediaItems(sections.audiobooks)[0];
+    const featured = (state.catalogAudiobooks.items || [])[0] || null;
     eyebrow.textContent = "Audiobook Shelf";
     title.textContent = featured ? featured.title : "Audiobook library";
     subtitle.textContent = featured
@@ -6140,7 +6264,7 @@ function renderHero(show, movie, season, documentBrowser) {
     gradientKey = featured ? featured.path : "audiobooks";
     if (featured) {
       actionRow.appendChild(
-        createButton("Play Featured Audiobook", "primary-button", () => playItem(featured)),
+        createButton("Play Featured Audiobook", "primary-button", () => openAudiobookPage(featured, { autoplay: true })),
       );
     }
     actionRow.appendChild(
@@ -6535,7 +6659,13 @@ function renderMovieDetailPage(container, movie) {
 
 function renderAudiobookDetailPage(container, audiobook) {
   if (!audiobook) {
-    container.appendChild(createEmptyState("That audiobook is not available in the current media scan."));
+    container.appendChild(
+      createEmptyState(
+        state.catalogAudiobookLoaded
+          ? "That audiobook is not available in the current media scan."
+          : "Loading audiobook details from the Pi...",
+      ),
+    );
     return;
   }
 
@@ -6877,7 +7007,13 @@ function renderMusicPage(container) {
 }
 
 function renderAudiobookPage(container) {
-  const items = filterMediaItems(librarySections().audiobooks);
+  const page = state.catalogAudiobooks;
+  if (!page.loaded) {
+    container.appendChild(createEmptyState("Loading a page of audiobooks from the Pi..."));
+    return;
+  }
+
+  const items = Array.isArray(page.items) ? page.items : [];
   const collectionGroups = buildAudiobookBrowseGroups(items, "collection");
   const authorGroups = buildAudiobookBrowseGroups(items, "author");
   const selectedGenre = genreFilterLabel("audiobooks");
@@ -6909,23 +7045,68 @@ function renderAudiobookPage(container) {
     });
   }
 
-  appendGridSection(container, {
-    eyebrow: "Audiobooks",
-    title: "All Audiobooks",
-    subtitle: [
-      `${items.length} audiobook${items.length === 1 ? "" : "s"}${selectedGenre ? ` in ${selectedGenre}` : ""} in this page view.`,
-      !hasBrowseGroups && items.length
-        ? "Author and collection rows will appear automatically when that info is available from tags or folder names."
-        : "",
-    ]
-      .filter(Boolean)
-      .join(" "),
-    items,
-    renderItem: createAudiobookShelfCard,
-    emptyMessage: selectedGenre
-      ? `No audiobooks in ${selectedGenre} match this page yet.`
-      : "No audiobooks match this page yet.",
-  });
+  const section = document.createElement("section");
+  section.className = "content-section";
+  const subtitle = page.total
+    ? [
+        `Showing ${page.items.length} of ${page.total} audiobook${page.total === 1 ? "" : "s"}${selectedGenre ? ` in ${selectedGenre}` : ""}${page.query ? ` matching "${page.query}"` : ""}.`,
+        !hasBrowseGroups && items.length
+          ? "Author and collection rows will appear automatically when that info is available from tags or folder names."
+          : "",
+      ]
+        .filter(Boolean)
+        .join(" ")
+    : page.query
+      ? `No ${selectedGenre ? `${selectedGenre.toLowerCase()} ` : ""}audiobooks matched "${page.query}" yet.`
+      : selectedGenre
+        ? `No audiobooks are tagged as ${selectedGenre} yet.`
+        : "No audiobooks are in the catalog yet.";
+  section.appendChild(createSectionHeading("Audiobooks", "All Audiobooks", subtitle));
+
+  const grid = document.createElement("div");
+  grid.className = "poster-grid";
+  if (!page.items.length) {
+    grid.appendChild(
+      createEmptyState(
+        page.query
+          ? "No audiobooks match this page yet."
+          : selectedGenre
+            ? `No audiobooks in ${selectedGenre} are available yet.`
+            : "No audiobooks are available yet.",
+      ),
+    );
+  } else {
+    for (const item of page.items) {
+      grid.appendChild(createAudiobookShelfCard(item));
+    }
+  }
+  section.appendChild(grid);
+
+  if (page.hasMore || page.loadingMore) {
+    const actions = document.createElement("div");
+    actions.className = "info-actions";
+    const button = createButton(
+      page.loadingMore ? "Loading More..." : "Load More Audiobooks",
+      page.loadingMore ? "ghost-button" : "primary-button",
+      () => {
+        loadMoreCatalogAudiobooks().catch((error) => {
+          els.pageSubtitle.textContent = `Could not load more audiobooks: ${error.message}`;
+        });
+      },
+    );
+    button.disabled = page.loadingMore;
+    actions.appendChild(button);
+    if (page.hasMore && !page.loadingMore) {
+      const hint = document.createElement("p");
+      hint.className = "catalog-load-hint";
+      hint.textContent = "More audiobooks will load as you scroll, or you can tap here.";
+      actions.appendChild(hint);
+      observeCatalogAutoLoad(button, () => loadMoreCatalogAudiobooks());
+    }
+    section.appendChild(actions);
+  }
+
+  container.appendChild(section);
 }
 
 function renderDocumentPage(container, documentBrowser) {
@@ -7444,7 +7625,7 @@ function render() {
   disconnectCatalogAutoLoadObserver();
   els.content.innerHTML = "";
 
-  const requiresFullLibrary = ["music", "audiobooks", "audiobook", "documents", "device"].includes(state.route.name);
+  const requiresFullLibrary = ["music", "documents", "device"].includes(state.route.name);
   if (requiresFullLibrary && !state.library) {
     els.content.appendChild(createEmptyState("Loading library from the storage index..."));
     return;

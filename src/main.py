@@ -2690,6 +2690,53 @@ class AppState:
             ).fetchone()
         return self.serialize_catalog_item_row(row) if row is not None else None
 
+    def catalog_audiobooks_payload(self, offset: object, limit: object, query: object, genre: object) -> dict[str, object]:
+        safe_offset = normalize_catalog_offset(offset)
+        safe_limit = normalize_catalog_limit(limit)
+        safe_query = normalize_catalog_query(query)
+        safe_genre = normalize_catalog_genre(genre)
+        params: list[object] = ["audiobooks"]
+        where = "WHERE section = ?"
+        if safe_query:
+            where += " AND search_text LIKE ?"
+            params.append(catalog_like_pattern(safe_query))
+        if safe_genre:
+            where += " AND LOWER(',' || REPLACE(REPLACE(genres, ', ', ','), ' ,', ',') || ',') LIKE ?"
+            params.append(catalog_genre_pattern(safe_genre))
+        with self.catalog_connection() as connection:
+            total = int(connection.execute(f"SELECT COUNT(*) FROM items {where}", params).fetchone()[0])
+            rows = connection.execute(
+                f"""
+                SELECT *
+                FROM items
+                {where}
+                ORDER BY sort_key, path
+                LIMIT ? OFFSET ?
+                """,
+                [*params, safe_limit, safe_offset],
+            ).fetchall()
+        return {
+            "query": safe_query,
+            "genre": safe_genre,
+            "offset": safe_offset,
+            "limit": safe_limit,
+            "total": total,
+            "count": len(rows),
+            "hasMore": safe_offset + len(rows) < total,
+            "items": [self.serialize_catalog_item_row(row) for row in rows],
+        }
+
+    def catalog_audiobook_payload(self, path: object) -> dict[str, object] | None:
+        safe_path = normalize_virtual_path(str(path or ""))
+        if not safe_path:
+            return None
+        with self.catalog_connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM items WHERE path = ? AND section = 'audiobooks' LIMIT 1",
+                (safe_path,),
+            ).fetchone()
+        return self.serialize_catalog_item_row(row) if row is not None else None
+
     def catalog_shows_payload(self, offset: object, limit: object, query: object, genre: object) -> dict[str, object]:
         safe_offset = normalize_catalog_offset(offset)
         safe_limit = normalize_catalog_limit(limit)
@@ -3265,6 +3312,31 @@ def api_catalog_movie() -> Response:
     if movie is None:
         return no_store_json({"error": "Movie not found"}, 404)
     return no_store_json({"ok": True, "item": movie})
+
+
+@app.get("/api/catalog/audiobooks")
+def api_catalog_audiobooks() -> Response:
+    try:
+        payload = state.catalog_audiobooks_payload(
+            request.args.get("offset"),
+            request.args.get("limit"),
+            request.args.get("q"),
+            request.args.get("genre"),
+        )
+    except sqlite3.Error:
+        return no_store_json({"error": "Audiobook catalog is unavailable right now."}, 500)
+    return no_store_json({"ok": True, **payload})
+
+
+@app.get("/api/catalog/audiobook")
+def api_catalog_audiobook() -> Response:
+    try:
+        audiobook = state.catalog_audiobook_payload(request.args.get("path"))
+    except sqlite3.Error:
+        return no_store_json({"error": "Audiobook details are unavailable right now."}, 500)
+    if audiobook is None:
+        return no_store_json({"error": "Audiobook not found"}, 404)
+    return no_store_json({"ok": True, "item": audiobook})
 
 
 @app.get("/api/catalog/shows")
