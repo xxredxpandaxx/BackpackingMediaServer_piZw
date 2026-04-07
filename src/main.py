@@ -11,6 +11,7 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -217,6 +218,7 @@ def configure_sqlite_connection(connection: sqlite3.Connection) -> sqlite3.Conne
     connection.execute("PRAGMA journal_mode = WAL")
     connection.execute("PRAGMA synchronous = FULL")
     connection.execute("PRAGMA wal_autocheckpoint = 200")
+    connection.create_function("audiobook_collection_key", 3, audiobook_collection_key)
     return connection
 
 
@@ -289,6 +291,57 @@ def slugify(title: str) -> str:
             output.append("-")
             previous_dash = True
     return "".join(output).rstrip("-") or "library-item"
+
+
+def slugify_text(value: object, fallback: str = "unknown-show") -> str:
+    output = []
+    previous_dash = False
+    for character in unicodedata.normalize("NFKD", str(value or "")):
+        if unicodedata.combining(character):
+            continue
+        if character.isascii() and character.isalnum():
+            output.append(character.lower())
+            previous_dash = False
+        elif output and not previous_dash:
+            output.append("-")
+            previous_dash = True
+    return "".join(output).strip("-") or fallback
+
+
+def relative_media_path(path: object) -> str:
+    normalized = normalize_virtual_path(str(path or ""))
+    if normalized.startswith("/media/"):
+        return normalized[len("/media/") :]
+    return normalized.lstrip("/")
+
+
+def audiobook_path_segments(path: object) -> list[str]:
+    segments = [segment.strip() for segment in relative_media_path(path).split("/") if segment.strip()]
+    if segments and lowercase_copy(segments[0]) == "audiobooks":
+        return segments[1:]
+    return segments
+
+
+def audiobook_folder_segments(path: object) -> list[str]:
+    segments = audiobook_path_segments(path)
+    return segments[:-1] if len(segments) > 1 else []
+
+
+def audiobook_collection_name(series_name: object, album: object, path: object) -> str:
+    safe_series_name = normalize_catalog_query(series_name)
+    if safe_series_name:
+        return safe_series_name
+    safe_album = normalize_catalog_query(album)
+    if safe_album:
+        return safe_album
+    folders = audiobook_folder_segments(path)
+    if len(folders) >= 2:
+        return title_from_path(folders[1])
+    return ""
+
+
+def audiobook_collection_key(series_name: object, album: object, path: object) -> str:
+    return slugify_text(audiobook_collection_name(series_name, album, path))
 
 
 def classify_media_type(path: str) -> str:
@@ -2714,8 +2767,8 @@ class AppState:
             where += " AND LOWER(',' || REPLACE(REPLACE(genres, ', ', ','), ' ,', ',') || ',') LIKE ?"
             params.append(catalog_genre_pattern(safe_genre))
         if safe_collection:
-            where += " AND LOWER(COALESCE(NULLIF(TRIM(series_name), ''), NULLIF(TRIM(album), ''), '')) = ?"
-            params.append(lowercase_copy(safe_collection))
+            where += " AND audiobook_collection_key(series_name, album, path) = ?"
+            params.append(slugify_text(safe_collection))
         if safe_author:
             where += " AND LOWER(TRIM(artist)) = ?"
             params.append(lowercase_copy(safe_author))
