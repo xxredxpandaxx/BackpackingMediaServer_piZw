@@ -3023,15 +3023,15 @@ function audiobookSeriesName(item) {
 }
 
 function audiobookSeriesIndexValue(item) {
-  const directValue = String((item && item.seriesIndex) || "").trim();
-  if (directValue) {
-    return directValue;
-  }
-
-  const fallbackValue =
+  const embeddedValue =
     audiobookEmbeddedSeriesIndex(item && item.seriesName) ||
     audiobookEmbeddedSeriesIndex(item && item.album);
-  return String(fallbackValue || "").trim();
+  if (embeddedValue) {
+    return String(embeddedValue || "").trim();
+  }
+
+  const directValue = String((item && item.seriesIndex) || "").trim();
+  return directValue;
 }
 
 function audiobookBookNumberLabel(item) {

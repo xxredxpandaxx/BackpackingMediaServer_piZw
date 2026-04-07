@@ -325,12 +325,14 @@ def audiobook_embedded_series_index(value: object) -> str:
 
 
 def audiobook_series_index_value(series_index: object, series_name: object, album: object) -> str:
+    embedded_value = audiobook_embedded_series_index(series_name) or audiobook_embedded_series_index(album)
+    if embedded_value:
+        return normalize_catalog_query(embedded_value)
     direct_value = normalize_catalog_query(series_index)
     if direct_value:
         direct_match = re.search(r"(\d+(?:\.\d+)?)", direct_value)
         return normalize_catalog_query(direct_match.group(1)) if direct_match else direct_value
-    fallback_value = audiobook_embedded_series_index(series_name) or audiobook_embedded_series_index(album)
-    return normalize_catalog_query(fallback_value)
+    return ""
 
 
 def audiobook_series_sort_rank(series_index: object, series_name: object, album: object) -> int:

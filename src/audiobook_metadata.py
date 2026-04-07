@@ -240,6 +240,14 @@ def normalize_series_index(value: object) -> str:
     return ""
 
 
+def embedded_series_index(value: object) -> str:
+    for candidate in flatten_text_values(value):
+        match = re.search(r"#\s*(\d+(?:\.\d+)?)\s*$", candidate)
+        if match:
+            return normalize_series_index(match.group(1))
+    return ""
+
+
 def normalize_for_compare(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
 
@@ -370,6 +378,7 @@ def extract_audiobook_embedded_metadata(file_path: Path, metadata_root: Path) ->
         series_name = first_text(grouping)
     if not series_name and album and normalize_for_compare(album) != normalize_for_compare(title):
         series_name = album
+    embedded_index = embedded_series_index(series_name) or embedded_series_index(album)
 
     series_index = normalize_series_index(
         text_from_sources(
@@ -392,7 +401,9 @@ def extract_audiobook_embedded_metadata(file_path: Path, metadata_root: Path) ->
             ),
         )
     )
-    if not series_index:
+    if embedded_index:
+        series_index = embedded_index
+    elif not series_index:
         track_numbers = tags.get("trkn") if hasattr(tags, "get") else None
         if isinstance(track_numbers, list) and track_numbers:
             first_track = track_numbers[0]
