@@ -3658,26 +3658,30 @@ function audiobookCollectionName(item) {
   return "";
 }
 
+function compareAudiobookSeriesOrder(left, right) {
+  const leftValue = audiobookSeriesIndexValue(left);
+  const rightValue = audiobookSeriesIndexValue(right);
+  const leftIndex = Number.parseFloat(leftValue);
+  const rightIndex = Number.parseFloat(rightValue);
+  const leftHasIndex = leftValue !== "" && Number.isFinite(leftIndex);
+  const rightHasIndex = rightValue !== "" && Number.isFinite(rightIndex);
+
+  if (leftHasIndex && rightHasIndex && leftIndex !== rightIndex) {
+    return leftIndex - rightIndex;
+  }
+  if (leftHasIndex !== rightHasIndex) {
+    return leftHasIndex ? -1 : 1;
+  }
+
+  const titleOrder = compareText(left && (left.sortTitle || left.title), right && (right.sortTitle || right.title));
+  if (titleOrder !== 0) {
+    return titleOrder;
+  }
+  return compareText(left && left.path, right && right.path);
+}
+
 function firstAudiobookInCollection(items) {
-  return [...(items || [])].sort((left, right) => {
-    const leftIndex = Number.parseFloat(audiobookSeriesIndexValue(left));
-    const rightIndex = Number.parseFloat(audiobookSeriesIndexValue(right));
-    const leftHasIndex = Number.isFinite(leftIndex) && leftIndex > 0;
-    const rightHasIndex = Number.isFinite(rightIndex) && rightIndex > 0;
-
-    if (leftHasIndex && rightHasIndex && leftIndex !== rightIndex) {
-      return leftIndex - rightIndex;
-    }
-    if (leftHasIndex !== rightHasIndex) {
-      return leftHasIndex ? -1 : 1;
-    }
-
-    const titleOrder = compareText(left && (left.sortTitle || left.title), right && (right.sortTitle || right.title));
-    if (titleOrder !== 0) {
-      return titleOrder;
-    }
-    return compareText(left && left.path, right && right.path);
-  })[0] || null;
+  return [...(items || [])].sort(compareAudiobookSeriesOrder)[0] || null;
 }
 
 function buildAudiobookBrowseGroups(items, kind) {
@@ -7217,7 +7221,8 @@ function renderAudiobookPage(container) {
     return;
   }
 
-  const items = Array.isArray(page.items) ? page.items : [];
+  const baseItems = Array.isArray(page.items) ? page.items : [];
+  const items = browseTarget.kind === "collection" ? [...baseItems].sort(compareAudiobookSeriesOrder) : baseItems;
   const collectionGroups = buildAudiobookBrowseGroups(items, "collection");
   const authorGroups = buildAudiobookBrowseGroups(items, "author");
   const selectedGenre = genreFilterLabel("audiobooks");

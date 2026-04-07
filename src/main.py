@@ -220,6 +220,8 @@ def configure_sqlite_connection(connection: sqlite3.Connection) -> sqlite3.Conne
     connection.execute("PRAGMA synchronous = FULL")
     connection.execute("PRAGMA wal_autocheckpoint = 200")
     connection.create_function("audiobook_collection_key", 3, audiobook_collection_key)
+    connection.create_function("audiobook_series_sort_rank", 3, audiobook_series_sort_rank)
+    connection.create_function("audiobook_series_sort_number", 3, audiobook_series_sort_number)
     return connection
 
 
@@ -315,6 +317,34 @@ def normalize_audiobook_collection_label(value: object) -> str:
         return ""
     cleaned = normalize_catalog_query(re.sub(r"\s+#\d+(?:\.\d+)?\s*$", "", normalized))
     return cleaned or normalized
+
+
+def audiobook_embedded_series_index(value: object) -> str:
+    match = re.search(r"\s+#(\d+(?:\.\d+)?)\s*$", normalize_catalog_query(value))
+    return normalize_catalog_query(match.group(1)) if match else ""
+
+
+def audiobook_series_index_value(series_index: object, series_name: object, album: object) -> str:
+    direct_value = normalize_catalog_query(series_index)
+    if direct_value:
+        direct_match = re.search(r"(\d+(?:\.\d+)?)", direct_value)
+        return normalize_catalog_query(direct_match.group(1)) if direct_match else direct_value
+    fallback_value = audiobook_embedded_series_index(series_name) or audiobook_embedded_series_index(album)
+    return normalize_catalog_query(fallback_value)
+
+
+def audiobook_series_sort_rank(series_index: object, series_name: object, album: object) -> int:
+    return 0 if audiobook_series_index_value(series_index, series_name, album) else 1
+
+
+def audiobook_series_sort_number(series_index: object, series_name: object, album: object) -> float:
+    normalized = audiobook_series_index_value(series_index, series_name, album)
+    if not normalized:
+        return 0.0
+    try:
+        return float(normalized)
+    except ValueError:
+        return 0.0
 
 
 def relative_media_path(path: object) -> str:
@@ -2781,6 +2811,14 @@ class AppState:
         if safe_author:
             where += " AND LOWER(TRIM(artist)) = ?"
             params.append(lowercase_copy(safe_author))
+        order_by = "sort_key, path"
+        if safe_collection:
+            order_by = """
+                audiobook_series_sort_rank(series_index, series_name, album),
+                audiobook_series_sort_number(series_index, series_name, album),
+                sort_key,
+                path
+            """
         with self.catalog_connection() as connection:
             total = int(connection.execute(f"SELECT COUNT(*) FROM items {where}", params).fetchone()[0])
             rows = connection.execute(
@@ -2788,7 +2826,7 @@ class AppState:
                 SELECT *
                 FROM items
                 {where}
-                ORDER BY sort_key, path
+                ORDER BY {order_by}
                 LIMIT ? OFFSET ?
                 """,
                 [*params, safe_limit, safe_offset],
