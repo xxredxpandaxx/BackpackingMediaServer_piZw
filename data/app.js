@@ -1928,6 +1928,23 @@ function resumeEntryForShow(show) {
   return latest;
 }
 
+function resumeProgressForItem(item) {
+  if (!hasResumeProgressForItem(item)) {
+    return null;
+  }
+
+  const entry = playbackProgressForItem(item);
+  if (!entry) {
+    return null;
+  }
+
+  return {
+    entry,
+    percent: progressPercent(entry),
+    label: progressLabel(entry),
+  };
+}
+
 function completionDurationForItem(item, previousEntry) {
   const previousDuration = playbackDuration(previousEntry);
   if (previousDuration > 0) {
@@ -3484,6 +3501,7 @@ function createMediaCard(item, options = {}) {
   const includeYearInTitle = Boolean(options.includeYearInTitle);
   const title = includeYearInTitle ? titleWithYear(item.title, item.year) : item.title;
   const opensMovieDetail = item.section === "movies";
+  const resumeProgress = item.section === "movies" ? resumeProgressForItem(item) : null;
 
   return createCard("media", {
     badge: badgeMap[item.section] || item.type,
@@ -3496,6 +3514,12 @@ function createMediaCard(item, options = {}) {
     imageUrl: item.posterUrl || item.backdropUrl,
     cardClassName: options.cardClassName || "",
     rating: item.section === "movies" ? item.tmdbRating : 0,
+    progress: resumeProgress
+      ? {
+          percent: resumeProgress.percent,
+          label: compact ? "" : resumeProgress.label,
+        }
+      : null,
     watchState: movieOrEpisodeWatchState(item),
     onPrimary: opensMovieDetail ? () => openMoviePage(item) : () => playItem(item),
     onAction: opensMovieDetail ? () => openMoviePage(item, { autoplay: true }) : () => playItem(item),
@@ -5428,6 +5452,7 @@ function renderHero(show, movie, season, documentBrowser) {
       }),
     );
   } else if (state.route.name === "movie") {
+    const movieResumeProgress = movie ? resumeProgressForItem(movie) : null;
     eyebrow.textContent = "Movie Detail";
     title.textContent = movie ? titleWithYear(movie.title, movie.year) : titleFromPath(state.route.path || "") || "Movie";
     subtitle.textContent = movie
@@ -5441,7 +5466,7 @@ function renderHero(show, movie, season, documentBrowser) {
     gradientKey = movie ? movie.path : "movie";
     if (movie) {
       actionRow.appendChild(
-        createButton("Play Now", "primary-button", () => playItem(movie)),
+        createButton(movieResumeProgress ? "Resume" : "Play Now", "primary-button", () => playItem(movie)),
       );
     }
     actionRow.appendChild(
@@ -5764,6 +5789,7 @@ function renderMovieDetailPage(container, movie) {
     return;
   }
 
+  const movieResumeProgress = resumeProgressForItem(movie);
   const intro = document.createElement("section");
   intro.className = "movie-detail-header";
 
@@ -5801,8 +5827,29 @@ function renderMovieDetailPage(container, movie) {
 
   const actions = document.createElement("div");
   actions.className = "movie-detail-actions";
-  actions.appendChild(createButton("Play Now", "primary-button", () => playItem(movie)));
+  actions.appendChild(
+    createButton(movieResumeProgress ? "Resume" : "Play Now", "primary-button", () => playItem(movie)),
+  );
   actions.appendChild(createButton("Download", "ghost-button", () => downloadMediaItem(movie)));
+
+  let progressWrap = null;
+  if (movieResumeProgress) {
+    progressWrap = document.createElement("div");
+    progressWrap.className = "card-progress movie-detail-progress";
+
+    const progressLabelNode = document.createElement("p");
+    progressLabelNode.className = "card-progress-label movie-detail-progress-label";
+    progressLabelNode.textContent = movieResumeProgress.label;
+    progressWrap.appendChild(progressLabelNode);
+
+    const progressTrack = document.createElement("div");
+    progressTrack.className = "card-progress-track";
+    const progressFill = document.createElement("span");
+    progressFill.className = "card-progress-fill";
+    progressFill.style.width = `${Math.max(0, Math.min(100, Number(movieResumeProgress.percent || 0)))}%`;
+    progressTrack.appendChild(progressFill);
+    progressWrap.appendChild(progressTrack);
+  }
 
   const summary = document.createElement("p");
   summary.className = "movie-detail-copy";
@@ -5815,6 +5862,9 @@ function renderMovieDetailPage(container, movie) {
   intro.appendChild(posterFrame);
   intro.appendChild(titleRow);
   intro.appendChild(actions);
+  if (progressWrap) {
+    intro.appendChild(progressWrap);
+  }
   intro.appendChild(summary);
   container.appendChild(intro);
 
