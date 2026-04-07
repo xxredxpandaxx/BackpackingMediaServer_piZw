@@ -3001,8 +3001,30 @@ function normalizeAudiobookCollectionLabel(value) {
   return cleaned || raw;
 }
 
+function audiobookEmbeddedSeriesIndex(value) {
+  const match = String(value || "").trim().match(/\s+#(\d+(?:\.\d+)?)\s*$/i);
+  return match ? String(match[1] || "").trim() : "";
+}
+
 function audiobookSeriesName(item) {
   return normalizeAudiobookCollectionLabel(item && item.seriesName);
+}
+
+function audiobookSeriesIndexValue(item) {
+  const directValue = String((item && item.seriesIndex) || "").trim();
+  if (directValue) {
+    return directValue;
+  }
+
+  const fallbackValue =
+    audiobookEmbeddedSeriesIndex(item && item.seriesName) ||
+    audiobookEmbeddedSeriesIndex(item && item.album);
+  return String(fallbackValue || "").trim();
+}
+
+function audiobookBookNumberLabel(item) {
+  const seriesIndex = audiobookSeriesIndexValue(item);
+  return seriesIndex ? `Book ${seriesIndex}` : "";
 }
 
 function audiobookSeriesLabel(item) {
@@ -3011,7 +3033,7 @@ function audiobookSeriesLabel(item) {
   }
 
   const seriesName = audiobookSeriesName(item);
-  const seriesIndex = String(item.seriesIndex || "").trim();
+  const seriesIndex = audiobookSeriesIndexValue(item);
   if (seriesName && seriesIndex) {
     return `${seriesName} - Book ${seriesIndex}`;
   }
@@ -3638,8 +3660,8 @@ function audiobookCollectionName(item) {
 
 function firstAudiobookInCollection(items) {
   return [...(items || [])].sort((left, right) => {
-    const leftIndex = Number.parseFloat(String((left && left.seriesIndex) || "").trim());
-    const rightIndex = Number.parseFloat(String((right && right.seriesIndex) || "").trim());
+    const leftIndex = Number.parseFloat(audiobookSeriesIndexValue(left));
+    const rightIndex = Number.parseFloat(audiobookSeriesIndexValue(right));
     const leftHasIndex = Number.isFinite(leftIndex) && leftIndex > 0;
     const rightHasIndex = Number.isFinite(rightIndex) && rightIndex > 0;
 
@@ -3785,6 +3807,8 @@ function createAudiobookShelfCard(item) {
   return createMediaCard(item, {
     compact: true,
     includeYearInTitle: true,
+    compactMeta: audiobookBookNumberLabel(item),
+    showTopLineWhenCompact: Boolean(audiobookBookNumberLabel(item)),
     cardClassName: "movie-page-card",
   });
 }
@@ -3992,9 +4016,9 @@ function createCard(kind, config) {
   }
   if (config.compact) {
     node.classList.add("library-card--compact");
-    topLine.hidden = true;
-    subtitle.hidden = true;
   }
+  const showTopLine = !config.compact || Boolean(config.showTopLineWhenCompact);
+  const showSubtitle = !config.compact || Boolean(config.showSubtitleWhenCompact);
   art.classList.add(isShow ? "card-art--show" : "card-art--poster");
   art.style.background = coverGradient(config.gradientKey, variant);
   art.classList.remove("card-art--loaded");
@@ -4037,10 +4061,11 @@ function createCard(kind, config) {
   badge.textContent = config.badge;
   meta.textContent = config.meta;
   meta.hidden = !config.meta;
+  topLine.hidden = !showTopLine;
   topLine.classList.toggle("card-topline--badge-only", !config.meta);
   title.textContent = config.title;
   subtitle.textContent = config.subtitle;
-  subtitle.hidden = !config.subtitle;
+  subtitle.hidden = !config.subtitle || !showSubtitle;
 
   if (config.watchState && typeof config.watchState.onToggle === "function") {
     const watchButton = document.createElement("button");
@@ -4113,17 +4138,30 @@ function createMediaCard(item, options = {}) {
   const opensAudiobookDetail = item.section === "audiobooks";
   const resumeProgress =
     item.section === "movies" || item.section === "audiobooks" ? resumeProgressForItem(item) : null;
+  const compactMeta =
+    options.compactMeta != null
+      ? String(options.compactMeta || "").trim()
+      : compact && item.section === "audiobooks"
+        ? audiobookBookNumberLabel(item)
+        : "";
+  const cardClassName = [
+    item.section === "audiobooks" ? "audiobook-cover-card" : "",
+    options.cardClassName || "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   return createCard("media", {
     badge: badgeMap[item.section] || item.type,
-    meta: compact ? "" : mediaCardMeta(item),
+    meta: compact ? compactMeta : mediaCardMeta(item),
     title,
     subtitle: compact ? "" : itemSummary(item),
     compact,
+    showTopLineWhenCompact: Boolean(options.showTopLineWhenCompact) || Boolean(compactMeta),
     actionLabel: primaryActionLabelForItem(item),
     gradientKey: `${item.section}-${item.title}-${item.path}`,
     imageUrl: item.posterUrl || item.backdropUrl,
-    cardClassName: options.cardClassName || "",
+    cardClassName,
     rating: item.section === "movies" ? item.tmdbRating : 0,
     progress: resumeProgress
       ? {
@@ -6847,7 +6885,7 @@ function renderAudiobookDetailPage(container, audiobook) {
 
   if (audiobook.posterUrl || audiobook.backdropUrl) {
     const posterImage = document.createElement("img");
-    posterImage.className = "movie-detail-poster-image";
+    posterImage.className = "movie-detail-poster-image audiobook-detail-poster-image";
     posterImage.alt = `${audiobook.title} cover`;
     posterImage.loading = "eager";
     posterImage.decoding = "async";

@@ -440,6 +440,12 @@ button {
   object-fit: cover;
 }
 
+.audiobook-detail-poster-image {
+  box-sizing: border-box;
+  padding: 14px;
+  object-fit: contain;
+}
+
 .movie-detail-title {
   max-width: 18ch;
   font-size: clamp(1.8rem, 4vw, 2.4rem);
@@ -1088,6 +1094,13 @@ button {
   object-fit: cover;
   opacity: 0;
   transition: opacity 180ms ease;
+}
+
+.audiobook-cover-card .card-art-image,
+.audiobook-group-card .card-art-image {
+  box-sizing: border-box;
+  padding: 10px;
+  object-fit: contain;
 }
 
 .card-art-icon {
