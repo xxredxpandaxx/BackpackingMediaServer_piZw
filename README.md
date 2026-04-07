@@ -261,3 +261,4 @@ Typical metadata flow:
 - The frontend still exposes a "Device" page, but it now reports Raspberry Pi service status instead of onboard firmware state.
 - The Pi-side automatic rescan path uses `tools/nomadscreen_refresh_metadata.py`.
 - On Raspberry Pi OS Bookworm and newer, NetworkManager remembers known Wi-Fi networks and the project only creates its own hotspot when those networks are unavailable.
+- Config saves, metadata JSON writes, media-file finalization, and the SQLite catalog now use crash-safer write patterns so a sudden battery pull is much less likely to corrupt the library. An upload that is interrupted mid-transfer can still be lost, but it should stay isolated to a temporary staging file instead of damaging existing media.

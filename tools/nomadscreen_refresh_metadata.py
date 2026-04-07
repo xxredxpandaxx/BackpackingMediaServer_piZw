@@ -6,6 +6,7 @@ import os
 import re
 import sqlite3
 import subprocess
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -25,6 +26,51 @@ DOCUMENT_EXTENSIONS = {".pdf", ".txt", ".md", ".csv", ".gpx", ".kml", ".doc", ".
 
 def log(message: str) -> None:
     print(f"[nomadscreen-metadata] {message}")
+
+
+def fsync_directory(path: Path) -> None:
+    if os.name != "posix":
+        return
+    flags = getattr(os, "O_RDONLY", 0)
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    try:
+        descriptor = os.open(str(path), flags)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)
+
+
+def atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding=encoding, newline="\n") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+        fsync_directory(path.parent)
+    except Exception:
+        try:
+            temp_path.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def configure_sqlite_connection(connection: sqlite3.Connection) -> sqlite3.Connection:
+    connection.execute("PRAGMA busy_timeout = 5000")
+    connection.execute("PRAGMA journal_mode = WAL")
+    connection.execute("PRAGMA synchronous = FULL")
+    connection.execute("PRAGMA wal_autocheckpoint = 200")
+    return connection
 
 
 def normalize_virtual_path(raw_path: str) -> str:
@@ -993,6 +1039,7 @@ def write_movie_metadata_database(metadata_root: Path, items: list[dict[str, obj
     ]
 
     with sqlite3.connect(db_path) as connection:
+        configure_sqlite_connection(connection)
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS movie_metadata (
@@ -1090,6 +1137,7 @@ def write_show_metadata_database(metadata_root: Path, shows: list[dict[str, obje
     ]
 
     with sqlite3.connect(db_path) as connection:
+        configure_sqlite_connection(connection)
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS show_metadata (
@@ -1193,8 +1241,8 @@ def build_library(storage_root: Path, media_root: Path, verbose: bool) -> dict[s
         "shows": shows,
         "items": items,
     }
-    (metadata_root / "library.json").write_text(json.dumps(library, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    (metadata_root / "unmatched.json").write_text(json.dumps(unmatched, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    atomic_write_text(metadata_root / "library.json", json.dumps(library, indent=2, ensure_ascii=False) + "\n")
+    atomic_write_text(metadata_root / "unmatched.json", json.dumps(unmatched, indent=2, ensure_ascii=False) + "\n")
     return {
         "library": library,
         "unmatched": unmatched,

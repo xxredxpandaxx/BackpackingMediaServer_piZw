@@ -1895,6 +1895,39 @@ function hasResumeProgressForItem(item) {
   return hasResumeProgress(playbackEntryForPath(item.path));
 }
 
+function primaryActionLabelForItem(item) {
+  if (item.type === "image") {
+    return "Open Preview";
+  }
+  return hasResumeProgressForItem(item) ? "Resume" : "Play Now";
+}
+
+function resumeEntryForShow(show) {
+  const detailedShow = findShow(show && show.slug);
+  if (!detailedShow || !Array.isArray(detailedShow.seasons)) {
+    return null;
+  }
+
+  let latest = null;
+  for (const season of detailedShow.seasons || []) {
+    for (const episode of season.episodes || []) {
+      if (!hasResumeProgressForItem(episode)) {
+        continue;
+      }
+      const entry = playbackEntryForPath(episode.path);
+      if (!entry) {
+        continue;
+      }
+      const sortTime = Date.parse(entry.lastPlayedAt || 0) || 0;
+      if (!latest || sortTime > latest.sortTime) {
+        latest = { item: episode, entry, sortTime };
+      }
+    }
+  }
+
+  return latest;
+}
+
 function completionDurationForItem(item, previousEntry) {
   const previousDuration = playbackDuration(previousEntry);
   if (previousDuration > 0) {
@@ -2801,9 +2834,37 @@ function itemSummary(item) {
     if (item.type === "image") {
       return "Open this image or map directly from the portable file library.";
     }
+    if (isPdfDocument(item)) {
+      return "Open this PDF in a new browser tab for easier scrolling, paging, and zooming on mobile.";
+    }
     return "Open this document directly from library storage.";
   }
   return "Stream this title directly from library storage.";
+}
+
+function documentExtension(item) {
+  return String(item && item.extension ? item.extension : fileNameFromPath(item && item.path))
+    .toLowerCase()
+    .replace(/^\./, "")
+    .trim();
+}
+
+function isPdfDocument(item) {
+  return Boolean(item && item.type === "document" && documentExtension(item) === "pdf");
+}
+
+function openItemInNewTab(item) {
+  if (!item || !item.streamUrl) {
+    return;
+  }
+
+  const link = document.createElement("a");
+  link.href = item.streamUrl;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
 }
 
 function renderPlayerDetails(item, probe) {
@@ -2822,6 +2883,9 @@ function renderPlayerDetails(item, probe) {
   els.playerSummary.textContent = itemSummary(item);
   els.playerActions.hidden = !item.streamUrl;
   if (item.streamUrl) {
+    if (isPdfDocument(item)) {
+      els.playerActions.appendChild(createButton("Open PDF", "primary-button", () => openItemInNewTab(item)));
+    }
     els.playerActions.appendChild(createButton("Download", "ghost-button", () => downloadMediaItem(item)));
   }
 
@@ -2844,6 +2908,7 @@ function resetPlayers() {
   els.document.removeAttribute("src");
   els.document.src = "about:blank";
   els.image.removeAttribute("src");
+  els.empty.textContent = "Pick something from the library to start opening files from the server.";
   els.playerCard.style.background = "";
   els.playerCard.classList.remove("player-card--artwork");
   els.video.load();
@@ -2944,8 +3009,14 @@ async function playItem(item, options = {}) {
     els.audio.style.display = "block";
     els.audio.play().catch(() => {});
   } else if (item.type === "document") {
-    els.document.src = item.streamUrl;
-    els.document.style.display = "block";
+    if (isPdfDocument(item)) {
+      openItemInNewTab(item);
+      els.empty.style.display = "grid";
+      els.empty.textContent = "This PDF opened in a new tab so your browser can handle scrolling, paging, and zooming.";
+    } else {
+      els.document.src = item.streamUrl;
+      els.document.style.display = "block";
+    }
   } else {
     els.image.src = item.streamUrl;
     els.image.style.display = "block";
@@ -2955,6 +3026,7 @@ async function playItem(item, options = {}) {
     joinBits([
       item.extension || "",
       item.bytes ? `${item.bytes} bytes` : "",
+      isPdfDocument(item) ? "Opened in a new tab" : "",
       item.type === "video" || item.type === "audio" ? "Streaming now" : "",
     ]) || `${item.title} loaded`;
 
@@ -3419,7 +3491,7 @@ function createMediaCard(item, options = {}) {
     title,
     subtitle: compact ? "" : itemSummary(item),
     compact,
-    actionLabel: item.type === "image" ? "Open Preview" : "Play Now",
+    actionLabel: primaryActionLabelForItem(item),
     gradientKey: `${item.section}-${item.title}-${item.path}`,
     imageUrl: item.posterUrl || item.backdropUrl,
     cardClassName: options.cardClassName || "",
@@ -3438,7 +3510,7 @@ function createDocumentCard(item, options = {}) {
     title: item.title,
     subtitle: truncateText(documentRelativePath(item.path), 90) || itemSummary(item),
     compact: Boolean(options.compact),
-    actionLabel: item.type === "image" ? "Open Preview" : "Open File",
+    actionLabel: item.type === "image" ? "Open Preview" : isPdfDocument(item) ? "Open PDF" : "Open File",
     gradientKey: `document-${item.path}`,
     imageUrl: item.type === "image" ? buildAssetUrl(item.path) : item.posterUrl || item.backdropUrl,
     cardClassName,
@@ -3513,6 +3585,8 @@ function createShowCard(show, options = {}) {
   const posterLayout = Boolean(options.posterLayout);
   const includeYearInTitle = Boolean(options.includeYearInTitle);
   const title = includeYearInTitle ? titleWithYear(show.title, show.year) : show.title;
+  const resumeEntry = resumeEntryForShow(show);
+  const detailRoute = show.detailUrl || buildRoutePath({ name: "show", slug: show.slug });
 
   return createCard(posterLayout ? "media" : "show", {
     badge: "Series",
@@ -3520,13 +3594,14 @@ function createShowCard(show, options = {}) {
     title,
     subtitle: compact ? "" : showCardSubtitle(show),
     compact,
-    actionLabel: "Open Show",
+    actionLabel: resumeEntry ? "Resume" : "Open Show",
     gradientKey: `show-${show.slug}`,
     imageUrl: posterLayout ? show.posterUrl || show.backdropUrl : show.backdropUrl || show.posterUrl,
     cardClassName: options.cardClassName || "",
     rating: show.tmdbRating,
     watchState: showWatchState(show),
-    onPrimary: () => openRoute(show.detailUrl || buildRoutePath({ name: "show", slug: show.slug })),
+    onPrimary: () => openRoute(detailRoute),
+    onAction: resumeEntry ? () => playItem(resumeEntry.item) : () => openRoute(detailRoute),
   });
 }
 
@@ -3553,7 +3628,7 @@ function createEpisodeCard(item) {
     title: episodeCardTitle(item),
     subtitle: "",
     compact: true,
-    actionLabel: "Play Now",
+    actionLabel: primaryActionLabelForItem(item),
     gradientKey: `episode-${item.path}`,
     imageUrl: item.posterUrl || item.backdropUrl,
     cardClassName: "movie-page-card",

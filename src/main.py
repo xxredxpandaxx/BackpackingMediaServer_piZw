@@ -162,6 +162,51 @@ def read_runtime_config_file(config_path: Path) -> tuple[dict[str, object], str]
     return raw_config, config_source
 
 
+def fsync_directory(path: Path) -> None:
+    if os.name != "posix":
+        return
+    flags = getattr(os, "O_RDONLY", 0)
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    try:
+        descriptor = os.open(str(path), flags)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)
+
+
+def atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding=encoding, newline="\n") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+        fsync_directory(path.parent)
+    except Exception:
+        try:
+            temp_path.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def configure_sqlite_connection(connection: sqlite3.Connection) -> sqlite3.Connection:
+    connection.execute("PRAGMA busy_timeout = 5000")
+    connection.execute("PRAGMA journal_mode = WAL")
+    connection.execute("PRAGMA synchronous = FULL")
+    connection.execute("PRAGMA wal_autocheckpoint = 200")
+    return connection
+
+
 def normalize_virtual_path(raw_path: str) -> str:
     normalized = str(raw_path or "").strip().replace("\\", "/")
     if not normalized:
@@ -460,6 +505,27 @@ def iso_timestamp_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def atomic_save_upload(uploaded_file: object, destination_path: Path, staging_root: Path) -> Path:
+    staging_root.mkdir(parents=True, exist_ok=True)
+    descriptor, temp_name = tempfile.mkstemp(prefix=".nomadscreen-upload-", suffix=".part", dir=str(staging_root))
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            uploaded_file.save(handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        final_path = ensure_unique_path(destination_path)
+        os.replace(temp_path, final_path)
+        fsync_directory(final_path.parent)
+        return final_path
+    except Exception:
+        try:
+            temp_path.unlink()
+        except OSError:
+            pass
+        raise
+
+
 def playback_client_key(remote_address: str | None) -> str:
     safe_address = str(remote_address or "").strip()
     return f"device-ip:{safe_address}" if safe_address else "device-ip:unknown"
@@ -664,6 +730,7 @@ class AppState:
         self.show_count = 0
         self.upload_status = self.default_upload_status()
         self.metadata_refresh_status = self.default_metadata_refresh_status()
+        self.prepare_upload_staging_directory()
         self.scan_library()
 
     def default_upload_status(self) -> dict[str, object]:
@@ -1047,6 +1114,12 @@ class AppState:
     def media_root_path(self) -> Path:
         return Path(self.settings["media_directory"]).resolve(strict=False)
 
+    def metadata_root_path(self) -> Path:
+        return (self.media_root_path() / ".nomadscreen").resolve(strict=False)
+
+    def upload_staging_root_path(self) -> Path:
+        return (self.metadata_root_path() / "uploads").resolve(strict=False)
+
     def upload_temp_root_path(self) -> Path:
         return Path(self.settings["upload_tmp_directory"]).resolve(strict=False)
 
@@ -1058,6 +1131,18 @@ class AppState:
             self.upload_temp_ready = True
         except OSError:
             self.upload_temp_ready = False
+
+    def prepare_upload_staging_directory(self) -> None:
+        staging_root = self.upload_staging_root_path()
+        try:
+            staging_root.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return
+        for candidate in staging_root.glob(".nomadscreen-upload-*.part"):
+            try:
+                candidate.unlink()
+            except OSError:
+                continue
 
     def metadata_refresh_script_path(self) -> Path:
         return Path(self.settings["metadata_refresh_script"]).resolve(strict=False)
@@ -1894,6 +1979,7 @@ class AppState:
         ]
 
         with sqlite3.connect(db_path) as connection:
+            configure_sqlite_connection(connection)
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS items (
@@ -1983,7 +2069,8 @@ class AppState:
             connection.commit()
 
     def catalog_connection(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.catalog_db_path())
+        connection = sqlite3.connect(self.catalog_db_path(), timeout=5.0)
+        configure_sqlite_connection(connection)
         connection.row_factory = sqlite3.Row
         return connection
 
@@ -2747,9 +2834,10 @@ class AppState:
                 wifi_block["password"] = safe_wifi_password
                 raw_config["wifi"] = wifi_block
             config_path.parent.mkdir(parents=True, exist_ok=True)
-            config_path.write_text(json.dumps(raw_config, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            atomic_write_text(config_path, json.dumps(raw_config, indent=2, ensure_ascii=False) + "\n")
             self.settings = load_settings()
             self.configure_upload_temp_directory()
+            self.prepare_upload_staging_directory()
 
         return {
             "ok": True,
@@ -3163,8 +3251,7 @@ def api_upload() -> Response:
 
         try:
             actual_path.parent.mkdir(parents=True, exist_ok=True)
-            final_path = ensure_unique_path(actual_path)
-            uploaded.save(final_path)
+            final_path = atomic_save_upload(uploaded, actual_path, state.upload_staging_root_path())
             saved_bytes += final_path.stat().st_size
             final_virtual_path = state.virtual_media_path(final_path)
             if not final_virtual_path:
