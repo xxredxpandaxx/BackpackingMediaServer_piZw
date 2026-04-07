@@ -7,6 +7,7 @@ DEFAULT_WIFI_INTERFACE="wlan0"
 DEFAULT_CONNECT_TIMEOUT_SECONDS="20"
 DEFAULT_ACCESS_POINT_PASSWORD="backpackingmedia"
 DEFAULT_ACCESS_POINT_CONNECTION_NAME="Nomad Screen Hotspot"
+DEFAULT_ACCESS_POINT_ADDRESS="10.0.0.1/24"
 
 STORAGE_ROOT="${NOMADSCREEN_STORAGE_ROOT:-${DEFAULT_STORAGE_ROOT}}"
 CONFIG_PATH="${NOMADSCREEN_CONFIG_PATH:-${STORAGE_ROOT}/nomadscreen.config.json}"
@@ -163,6 +164,7 @@ ensure_hotspot_profile() {
     wifi.ssid "${ACCESS_POINT_SSID}" \
     wifi-sec.key-mgmt wpa-psk \
     wifi-sec.psk "${ACCESS_POINT_PASSWORD}" \
+    ipv4.addresses "${DEFAULT_ACCESS_POINT_ADDRESS}" \
     ipv4.method shared \
     ipv6.method ignore >/dev/null
 }

@@ -208,6 +208,7 @@ The fallback hotspot uses:
 
 - `deviceName` to derive the hotspot SSID shown in the UI
 - `wifiPassword` as the hotspot password
+- `10.0.0.1/24` as the fixed hotspot address on the Pi, with clients joining the `10.0.0.x` range
 - `fallbackAccessPointEnabled` to turn the fallback behavior on or off
 - `wifiInterface` if your wireless adapter is not `wlan0`
 

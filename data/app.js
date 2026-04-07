@@ -3508,6 +3508,37 @@ function mediaCardMeta(item) {
   return joinBits(bits);
 }
 
+function audiobookPathSegments(item) {
+  const relative = relativeMediaPath(item && item.path);
+  const segments = String(relative || "")
+    .split("/")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (segments[0] && segments[0].toLowerCase() === "audiobooks") {
+    segments.shift();
+  }
+  return segments;
+}
+
+function audiobookFolderSegments(item) {
+  const segments = audiobookPathSegments(item);
+  return segments.length > 1 ? segments.slice(0, -1) : [];
+}
+
+function audiobookAuthorName(item) {
+  if (!item) {
+    return "";
+  }
+
+  const artist = String(item.artist || "").trim();
+  if (artist) {
+    return artist;
+  }
+
+  const folders = audiobookFolderSegments(item);
+  return folders.length ? titleFromPath(folders[0]) : "";
+}
+
 function audiobookCollectionName(item) {
   if (!item) {
     return "";
@@ -3523,6 +3554,11 @@ function audiobookCollectionName(item) {
     return album;
   }
 
+  const folders = audiobookFolderSegments(item);
+  if (folders.length >= 2) {
+    return titleFromPath(folders[1]);
+  }
+
   return "";
 }
 
@@ -3532,13 +3568,13 @@ function buildAudiobookBrowseGroups(items, kind) {
   for (const item of items) {
     const label =
       kind === "author"
-        ? String(item.artist || "").trim()
+        ? audiobookAuthorName(item)
         : audiobookCollectionName(item);
     if (!label) {
       continue;
     }
 
-    const author = String(item.artist || "").trim();
+    const author = audiobookAuthorName(item);
     const key =
       kind === "author"
         ? slugifyText(label)
@@ -4002,7 +4038,7 @@ function createMediaCard(item, options = {}) {
 }
 
 function createDocumentCard(item, options = {}) {
-  const cardClassName = ["file-card", options.cardClassName].filter(Boolean).join(" ");
+  const cardClassName = ["movie-page-card", "file-card", options.cardClassName].filter(Boolean).join(" ");
   const pdfItem = isPdfDocument(item);
   return createCard("media", {
     badge: item.type === "image" ? "Image" : item.extension || "File",
@@ -4034,7 +4070,7 @@ function createFolderCard(folder) {
     gradientKey: `folder-${folder.path}`,
     imageUrl: "",
     artIcon: "folder",
-    cardClassName: "folder-card",
+    cardClassName: "movie-page-card folder-card",
     onPrimary: () => openRoute(documentRoute(folder.path)),
   });
 }
@@ -6837,29 +6873,25 @@ function renderAudiobookPage(container) {
   const authorGroups = buildAudiobookBrowseGroups(items, "author");
   const selectedGenre = genreFilterLabel("audiobooks");
 
-  if (collectionGroups.length) {
-    appendCarouselSection(container, {
-      eyebrow: "Collections",
-      title: "Browse By Collection",
-      subtitle: "Swipe through audiobook collections, then tap one to narrow the shelf below.",
-      items: collectionGroups,
-      renderItem: createAudiobookGroupCard,
-      itemClassName: "episode-carousel-card",
-      emptyMessage: "No audiobook collections match this page yet.",
-    });
-  }
+  appendCarouselSection(container, {
+    eyebrow: "Collections",
+    title: "Browse By Collection",
+    subtitle: "Swipe through audiobook collections, then tap one to narrow the shelf below.",
+    items: collectionGroups,
+    renderItem: createAudiobookGroupCard,
+    itemClassName: "episode-carousel-card",
+    emptyMessage: "No audiobook collections match this page yet.",
+  });
 
-  if (authorGroups.length) {
-    appendCarouselSection(container, {
-      eyebrow: "Authors",
-      title: "Browse By Author",
-      subtitle: "Swipe through authors, then tap one to focus on their audiobooks.",
-      items: authorGroups,
-      renderItem: createAudiobookGroupCard,
-      itemClassName: "episode-carousel-card",
-      emptyMessage: "No audiobook authors match this page yet.",
-    });
-  }
+  appendCarouselSection(container, {
+    eyebrow: "Authors",
+    title: "Browse By Author",
+    subtitle: "Swipe through authors, then tap one to focus on their audiobooks.",
+    items: authorGroups,
+    renderItem: createAudiobookGroupCard,
+    itemClassName: "episode-carousel-card",
+    emptyMessage: "No audiobook authors match this page yet.",
+  });
 
   appendGridSection(container, {
     eyebrow: "Audiobooks",
@@ -6901,7 +6933,7 @@ function renderDocumentPage(container, documentBrowser) {
         : "Browse storage by folder first, then open files within each location.",
       items: browser.folders,
       renderItem: createFolderCard,
-      gridClass: "file-browser-grid",
+      gridClass: "poster-grid",
       emptyMessage: "No folders match this view yet.",
     });
   }
@@ -6913,7 +6945,7 @@ function renderDocumentPage(container, documentBrowser) {
       subtitle: `${browser.files.length} file${browser.files.length === 1 ? "" : "s"} in this page view.`,
       items: browser.files,
       renderItem: createDocumentCard,
-      gridClass: "file-browser-grid",
+      gridClass: "poster-grid",
       emptyMessage: "No files match this view yet.",
     });
   }
