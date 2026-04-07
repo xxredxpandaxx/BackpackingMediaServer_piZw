@@ -75,6 +75,8 @@ const state = {
   catalogAudiobooks: {
     query: "",
     genre: "",
+    collection: "",
+    author: "",
     total: 0,
     offset: 0,
     limit: 40,
@@ -229,6 +231,12 @@ function parseRoute(pathname) {
     if (parts[2] === "detail" && parts[3]) {
       return { name: "audiobook", path: decodeURIComponent(parts.slice(3).join("/")) };
     }
+    if (parts[2] === "collection" && parts[3]) {
+      return { name: "audiobookCollection", label: decodeURIComponent(parts.slice(3).join("/")) };
+    }
+    if (parts[2] === "author" && parts[3]) {
+      return { name: "audiobookAuthor", label: decodeURIComponent(parts.slice(3).join("/")) };
+    }
     return { name: "audiobooks" };
   }
 
@@ -256,6 +264,8 @@ function buildRoutePath(route) {
   if (route.name === "show") return `/app/tv/${encodeURIComponent(route.slug)}`;
   if (route.name === "music") return "/app/music";
   if (route.name === "audiobook") return `/app/audiobooks/detail/${encodeURIComponent(route.path)}`;
+  if (route.name === "audiobookCollection") return `/app/audiobooks/collection/${encodeURIComponent(route.label || "")}`;
+  if (route.name === "audiobookAuthor") return `/app/audiobooks/author/${encodeURIComponent(route.label || "")}`;
   if (route.name === "audiobooks") return "/app/audiobooks";
   if (route.name === "documents") {
     const folder = normalizeDocumentFolder(route.folder);
@@ -265,6 +275,20 @@ function buildRoutePath(route) {
   }
   if (route.name === "device") return "/app/device";
   return "/app";
+}
+
+function currentAudiobookBrowseTarget(route = state.route) {
+  if (route && route.name === "audiobookCollection") {
+    return { kind: "collection", label: String(route.label || "").trim() };
+  }
+  if (route && route.name === "audiobookAuthor") {
+    return { kind: "author", label: String(route.label || "").trim() };
+  }
+  return { kind: "", label: "" };
+}
+
+function isAudiobookBrowseRoute(route = state.route) {
+  return ["audiobooks", "audiobookCollection", "audiobookAuthor"].includes(route && route.name);
 }
 
 function lowerPath(value) {
@@ -2594,7 +2618,7 @@ function routeGenreSection() {
   if (state.route.name === "tv") {
     return "tv";
   }
-  if (state.route.name === "audiobooks") {
+  if (isAudiobookBrowseRoute()) {
     return "audiobooks";
   }
   return "";
@@ -2639,11 +2663,22 @@ function genreFilterLabel(section = routeGenreSection()) {
 }
 
 function routeUsesCatalogSummary() {
-  return ["home", "movies", "movie", "tv", "show", "season", "audiobooks", "audiobook"].includes(state.route.name);
+  return [
+    "home",
+    "movies",
+    "movie",
+    "tv",
+    "show",
+    "season",
+    "audiobooks",
+    "audiobookCollection",
+    "audiobookAuthor",
+    "audiobook",
+  ].includes(state.route.name);
 }
 
 function routeUsesServerSearch() {
-  return ["home", "movies", "tv", "audiobooks"].includes(state.route.name);
+  return ["home", "movies", "tv", "audiobooks", "audiobookCollection", "audiobookAuthor"].includes(state.route.name);
 }
 
 function homeSections() {
@@ -3695,6 +3730,10 @@ function buildAudiobookBrowseGroups(items, kind) {
 
 function createAudiobookGroupCard(group) {
   const previewItem = group.previewItem || (group.items.length ? group.items[0] : null);
+  const targetRoute =
+    group.kind === "collection"
+      ? { name: "audiobookCollection", label: group.label }
+      : { name: "audiobookAuthor", label: group.label };
   const subtitle =
     group.kind === "collection"
       ? joinBits([
@@ -3715,11 +3754,11 @@ function createAudiobookGroupCard(group) {
         : countLabel(group.count, "audiobook"),
     title: group.label,
     subtitle,
-    actionLabel: group.kind === "collection" ? "Browse Collection" : "Browse Author",
+    actionLabel: group.kind === "collection" ? "Open Collection" : "Open Author",
     gradientKey: `audiobook-group-${group.kind}-${group.key}`,
     imageUrl: previewItem ? previewItem.posterUrl || previewItem.backdropUrl : "",
     cardClassName: "movie-page-card audiobook-group-card",
-    onPrimary: () => setSearchQuery(group.filterQuery),
+    onPrimary: () => openRoute(targetRoute),
   });
 }
 
@@ -4448,7 +4487,7 @@ function prepareRouteDataForLoading() {
     state.library = null;
     return;
   }
-  if (state.route.name === "audiobooks") {
+  if (isAudiobookBrowseRoute()) {
     state.catalogAudiobooks = createEmptyCatalogPageState();
     state.catalogAudiobooks.query = state.query;
     state.catalogAudiobooks.genre = currentGenreFilter("audiobooks");
@@ -4634,6 +4673,9 @@ async function loadCatalogAudiobooks(options = {}) {
   const append = Boolean(options.append);
   const safeQuery = String(options.query != null ? options.query : state.query).trim();
   const safeGenre = String(options.genre != null ? options.genre : currentGenreFilter("audiobooks")).trim();
+  const browseTarget = currentAudiobookBrowseTarget();
+  const safeCollection = String(options.collection != null ? options.collection : browseTarget.kind === "collection" ? browseTarget.label : "").trim();
+  const safeAuthor = String(options.author != null ? options.author : browseTarget.kind === "author" ? browseTarget.label : "").trim();
   const existing = state.catalogAudiobooks || createEmptyCatalogPageState();
   const limit = Number(options.limit || existing.limit || CATALOG_PAGE_SIZE) || CATALOG_PAGE_SIZE;
   const offset = append ? Number(existing.offset || 0) : Number(options.offset || 0);
@@ -4642,6 +4684,8 @@ async function loadCatalogAudiobooks(options = {}) {
       ...createEmptyCatalogPageState(limit),
       query: safeQuery,
       genre: safeGenre,
+      collection: safeCollection,
+      author: safeAuthor,
     };
   } else {
     state.catalogAudiobooks = {
@@ -4650,12 +4694,14 @@ async function loadCatalogAudiobooks(options = {}) {
     };
   }
   const payload = await fetchCatalogJson(
-    `/api/catalog/audiobooks?offset=${offset}&limit=${limit}&q=${encodeURIComponent(safeQuery)}&genre=${encodeURIComponent(safeGenre)}`,
+    `/api/catalog/audiobooks?offset=${offset}&limit=${limit}&q=${encodeURIComponent(safeQuery)}&genre=${encodeURIComponent(safeGenre)}&collection=${encodeURIComponent(safeCollection)}&author=${encodeURIComponent(safeAuthor)}`,
     "Audiobooks",
   );
   state.catalogAudiobooks = {
     query: safeQuery,
     genre: String(payload.genre != null ? payload.genre : safeGenre).trim(),
+    collection: String(payload.collection != null ? payload.collection : safeCollection).trim(),
+    author: String(payload.author != null ? payload.author : safeAuthor).trim(),
     total: Number(payload.total || 0),
     offset: Number(payload.offset || 0) + Number(payload.count || 0),
     limit: Number(payload.limit || limit),
@@ -4767,10 +4813,13 @@ async function loadRouteData() {
     await Promise.all([loadCatalogSummary(), loadCatalogMovie(state.route.path)]);
     return;
   }
-  if (state.route.name === "audiobooks") {
+  if (isAudiobookBrowseRoute()) {
     await Promise.all([
       loadCatalogSummary(),
-      loadCatalogAudiobooks({ query: state.query, genre: currentGenreFilter("audiobooks") }),
+      loadCatalogAudiobooks({
+        query: state.query,
+        genre: currentGenreFilter("audiobooks"),
+      }),
     ]);
     return;
   }
@@ -4832,10 +4881,17 @@ async function loadMoreCatalogAudiobooks() {
   if (!state.catalogAudiobooks.loaded || !state.catalogAudiobooks.hasMore || state.catalogAudiobooks.loadingMore) {
     return;
   }
+  const browseTarget = currentAudiobookBrowseTarget();
   await loadCatalogAudiobooks({
     append: true,
     query: state.catalogAudiobooks.query || state.query,
     genre: state.catalogAudiobooks.genre || currentGenreFilter("audiobooks"),
+    collection:
+      String(state.catalogAudiobooks.collection || "").trim() ||
+      (browseTarget.kind === "collection" ? browseTarget.label : ""),
+    author:
+      String(state.catalogAudiobooks.author || "").trim() ||
+      (browseTarget.kind === "author" ? browseTarget.label : ""),
   });
   render();
 }
@@ -5761,6 +5817,7 @@ function createUploadCard() {
 
 function renderBreadcrumbs(show, movie, season, audiobook, documentBrowser) {
   const crumbs = [{ label: "Home", href: "/app" }];
+  const audiobookBrowseTarget = currentAudiobookBrowseTarget();
 
   if (state.route.name === "movies") {
     crumbs.push({ label: "Movies", href: "/app/movies" });
@@ -5780,6 +5837,14 @@ function renderBreadcrumbs(show, movie, season, audiobook, documentBrowser) {
     crumbs.push({ label: "Music", href: "/app/music" });
   } else if (state.route.name === "audiobooks") {
     crumbs.push({ label: "Audiobooks", href: "/app/audiobooks" });
+  } else if (state.route.name === "audiobookCollection") {
+    crumbs.push({ label: "Audiobooks", href: "/app/audiobooks" });
+    crumbs.push({ label: "Collections" });
+    crumbs.push({ label: audiobookBrowseTarget.label || "Collection" });
+  } else if (state.route.name === "audiobookAuthor") {
+    crumbs.push({ label: "Audiobooks", href: "/app/audiobooks" });
+    crumbs.push({ label: "Authors" });
+    crumbs.push({ label: audiobookBrowseTarget.label || "Author" });
   } else if (state.route.name === "audiobook") {
     crumbs.push({ label: "Audiobooks", href: "/app/audiobooks" });
     crumbs.push({ label: audiobook ? audiobook.title : titleFromPath(state.route.path || "") || "Audiobook" });
@@ -5843,6 +5908,8 @@ function counts() {
 
 function updatePageHeader(show, movie, season, audiobook, documentBrowser) {
   const summary = counts();
+  const audiobookBrowseTarget = currentAudiobookBrowseTarget();
+  const audiobookPage = state.catalogAudiobooks || createEmptyCatalogPageState();
   let meta = {
     eyebrow: "Home",
     title: "",
@@ -5930,6 +5997,24 @@ function updatePageHeader(show, movie, season, audiobook, documentBrowser) {
       title: "Audiobook library",
       subtitle: `${summary.audiobooks} audiobook${summary.audiobooks === 1 ? "" : "s"} ready for offline listening.`,
       searchPlaceholder: "Search audiobooks",
+    };
+  } else if (state.route.name === "audiobookCollection") {
+    meta = {
+      eyebrow: "Collection",
+      title: audiobookBrowseTarget.label || "Collection",
+      subtitle: audiobookPage.loaded
+        ? `${audiobookPage.total} audiobook${audiobookPage.total === 1 ? "" : "s"} in this collection.`
+        : "Loading this audiobook collection from the library...",
+      searchPlaceholder: "Search this collection",
+    };
+  } else if (state.route.name === "audiobookAuthor") {
+    meta = {
+      eyebrow: "Author",
+      title: audiobookBrowseTarget.label || "Author",
+      subtitle: audiobookPage.loaded
+        ? `${audiobookPage.total} audiobook${audiobookPage.total === 1 ? "" : "s"} by this author.`
+        : "Loading this audiobook author from the library...",
+      searchPlaceholder: "Search this author",
     };
   } else if (state.route.name === "audiobook") {
     meta = audiobook
@@ -6110,6 +6195,13 @@ function updatePageActions(show, movie, season, documentBrowser) {
             els.pageSubtitle.textContent = `Audiobook shuffle failed: ${error.message}`;
           });
       }),
+    );
+    return;
+  }
+
+  if (state.route.name === "audiobookCollection" || state.route.name === "audiobookAuthor") {
+    els.actions.appendChild(
+      createButton("Back To Audiobooks", "ghost-button", () => openRoute({ name: "audiobooks" })),
     );
     return;
   }
@@ -6299,6 +6391,29 @@ function renderHero(show, movie, season, documentBrowser) {
       createButton("Jump To Grid", "ghost-button", () => {
         els.content.scrollIntoView({ behavior: "smooth", block: "start" });
       }),
+    );
+  } else if (state.route.name === "audiobookCollection" || state.route.name === "audiobookAuthor") {
+    const featured = (state.catalogAudiobooks.items || [])[0] || null;
+    const browseTarget = currentAudiobookBrowseTarget();
+    const count = Number((state.catalogAudiobooks && state.catalogAudiobooks.total) || 0);
+    const kindLabel = browseTarget.kind === "collection" ? "Collection" : "Author";
+    eyebrow.textContent = `Audiobook ${kindLabel}`;
+    title.textContent = browseTarget.label || kindLabel;
+    subtitle.textContent =
+      !state.catalogAudiobooks.loaded
+        ? `Loading this audiobook ${browseTarget.kind || "browse"} page from the library...`
+        : count > 0
+        ? `${count} audiobook${count === 1 ? "" : "s"} ${browseTarget.kind === "collection" ? "in this collection" : "by this author"}.`
+        : `No audiobooks in this ${browseTarget.kind || "browse"} view match the current filters yet.`;
+    artUrl = featured ? featured.posterUrl || featured.backdropUrl : "";
+    gradientKey = featured ? featured.path : `audiobook-${browseTarget.kind || "browse"}`;
+    if (featured) {
+      actionRow.appendChild(
+        createButton("Play Featured Audiobook", "primary-button", () => openAudiobookPage(featured, { autoplay: true })),
+      );
+    }
+    actionRow.appendChild(
+      createButton("Back To Audiobooks", "ghost-button", () => openRoute({ name: "audiobooks" })),
     );
   } else if (state.route.name === "documents") {
     const browser = documentBrowser || buildDocumentBrowserState(state.route.folder);
@@ -7036,6 +7151,8 @@ function renderMusicPage(container) {
 
 function renderAudiobookPage(container) {
   const page = state.catalogAudiobooks;
+  const browseTarget = currentAudiobookBrowseTarget();
+  const isFilteredBrowse = Boolean(browseTarget.kind);
   if (!page.loaded) {
     container.appendChild(createEmptyState("Loading a page of audiobooks from the Pi..."));
     return;
@@ -7049,7 +7166,7 @@ function renderAudiobookPage(container) {
   const hasAuthorGroups = authorGroups.length > 0;
   const hasBrowseGroups = hasCollectionGroups || hasAuthorGroups;
 
-  if (hasCollectionGroups) {
+  if (!isFilteredBrowse && hasCollectionGroups) {
     appendCarouselSection(container, {
       eyebrow: "Collections",
       title: "Browse By Collection",
@@ -7061,7 +7178,7 @@ function renderAudiobookPage(container) {
     });
   }
 
-  if (hasAuthorGroups) {
+  if (!isFilteredBrowse && hasAuthorGroups) {
     appendCarouselSection(container, {
       eyebrow: "Authors",
       title: "Browse By Author",
@@ -7075,21 +7192,35 @@ function renderAudiobookPage(container) {
 
   const section = document.createElement("section");
   section.className = "content-section";
+  const sectionHeading =
+    browseTarget.kind === "collection"
+      ? "Books In Collection"
+      : browseTarget.kind === "author"
+        ? "Books By Author"
+        : "All Audiobooks";
+  const browseSubject =
+    browseTarget.kind === "collection"
+      ? `this collection${browseTarget.label ? ` (${browseTarget.label})` : ""}`
+      : browseTarget.kind === "author"
+        ? `this author${browseTarget.label ? ` (${browseTarget.label})` : ""}`
+        : "";
   const subtitle = page.total
     ? [
         `Showing ${page.items.length} of ${page.total} audiobook${page.total === 1 ? "" : "s"}${selectedGenre ? ` in ${selectedGenre}` : ""}${page.query ? ` matching "${page.query}"` : ""}.`,
-        !hasBrowseGroups && items.length
+        !isFilteredBrowse && !hasBrowseGroups && items.length
           ? "Author and collection rows will appear automatically when that info is available from tags or folder names."
           : "",
       ]
         .filter(Boolean)
         .join(" ")
     : page.query
-      ? `No ${selectedGenre ? `${selectedGenre.toLowerCase()} ` : ""}audiobooks matched "${page.query}" yet.`
+      ? `No ${selectedGenre ? `${selectedGenre.toLowerCase()} ` : ""}audiobooks${browseSubject ? ` in ${browseSubject}` : ""} matched "${page.query}" yet.`
       : selectedGenre
-        ? `No audiobooks are tagged as ${selectedGenre} yet.`
-        : "No audiobooks are in the catalog yet.";
-  section.appendChild(createSectionHeading("Audiobooks", "All Audiobooks", subtitle));
+        ? `No audiobooks${browseSubject ? ` in ${browseSubject}` : ""} are tagged as ${selectedGenre} yet.`
+        : browseSubject
+          ? `No audiobooks are available in ${browseSubject} yet.`
+          : "No audiobooks are in the catalog yet.";
+  section.appendChild(createSectionHeading("Audiobooks", sectionHeading, subtitle));
 
   const grid = document.createElement("div");
   grid.className = "poster-grid";
@@ -7097,10 +7228,12 @@ function renderAudiobookPage(container) {
     grid.appendChild(
       createEmptyState(
         page.query
-          ? "No audiobooks match this page yet."
+          ? `No audiobooks${browseSubject ? ` in ${browseSubject}` : ""} match this page yet.`
           : selectedGenre
-            ? `No audiobooks in ${selectedGenre} are available yet.`
-            : "No audiobooks are available yet.",
+            ? `No audiobooks${browseSubject ? ` in ${browseSubject}` : ""} in ${selectedGenre} are available yet.`
+            : browseSubject
+              ? `No audiobooks are available in ${browseSubject} yet.`
+              : "No audiobooks are available yet.",
       ),
     );
   } else {
@@ -7624,7 +7757,8 @@ function renderNav() {
       (route.name === "tv" && state.route.name === "show") ||
       (route.name === "tv" && state.route.name === "season") ||
       (route.name === "movies" && state.route.name === "movie") ||
-      (route.name === "audiobooks" && state.route.name === "audiobook");
+      (route.name === "audiobooks" &&
+        ["audiobook", "audiobookCollection", "audiobookAuthor"].includes(state.route.name));
     if (isActive) {
       link.classList.add("is-active");
     }
@@ -7671,7 +7805,7 @@ function render() {
     renderSeasonPage(els.content, show, season);
   } else if (state.route.name === "music") {
     renderMusicPage(els.content);
-  } else if (state.route.name === "audiobooks") {
+  } else if (isAudiobookBrowseRoute()) {
     renderAudiobookPage(els.content);
   } else if (state.route.name === "audiobook") {
     renderAudiobookDetailPage(els.content, audiobook);

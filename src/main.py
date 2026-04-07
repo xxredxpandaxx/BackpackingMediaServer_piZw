@@ -2690,11 +2690,21 @@ class AppState:
             ).fetchone()
         return self.serialize_catalog_item_row(row) if row is not None else None
 
-    def catalog_audiobooks_payload(self, offset: object, limit: object, query: object, genre: object) -> dict[str, object]:
+    def catalog_audiobooks_payload(
+        self,
+        offset: object,
+        limit: object,
+        query: object,
+        genre: object,
+        collection: object,
+        author: object,
+    ) -> dict[str, object]:
         safe_offset = normalize_catalog_offset(offset)
         safe_limit = normalize_catalog_limit(limit)
         safe_query = normalize_catalog_query(query)
         safe_genre = normalize_catalog_genre(genre)
+        safe_collection = normalize_catalog_query(collection)
+        safe_author = normalize_catalog_query(author)
         params: list[object] = ["audiobooks"]
         where = "WHERE section = ?"
         if safe_query:
@@ -2703,6 +2713,12 @@ class AppState:
         if safe_genre:
             where += " AND LOWER(',' || REPLACE(REPLACE(genres, ', ', ','), ' ,', ',') || ',') LIKE ?"
             params.append(catalog_genre_pattern(safe_genre))
+        if safe_collection:
+            where += " AND LOWER(COALESCE(NULLIF(TRIM(series_name), ''), NULLIF(TRIM(album), ''), '')) = ?"
+            params.append(lowercase_copy(safe_collection))
+        if safe_author:
+            where += " AND LOWER(TRIM(artist)) = ?"
+            params.append(lowercase_copy(safe_author))
         with self.catalog_connection() as connection:
             total = int(connection.execute(f"SELECT COUNT(*) FROM items {where}", params).fetchone()[0])
             rows = connection.execute(
@@ -2718,6 +2734,8 @@ class AppState:
         return {
             "query": safe_query,
             "genre": safe_genre,
+            "collection": safe_collection,
+            "author": safe_author,
             "offset": safe_offset,
             "limit": safe_limit,
             "total": total,
@@ -3322,6 +3340,8 @@ def api_catalog_audiobooks() -> Response:
             request.args.get("limit"),
             request.args.get("q"),
             request.args.get("genre"),
+            request.args.get("collection"),
+            request.args.get("author"),
         )
     except sqlite3.Error:
         return no_store_json({"error": "Audiobook catalog is unavailable right now."}, 500)
