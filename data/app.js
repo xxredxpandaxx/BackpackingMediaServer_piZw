@@ -2508,9 +2508,9 @@ function formatTmdbRating(value) {
   return `${number.toFixed(1)}/10`;
 }
 
-function createRatingChip(value, options = {}) {
-  const rating = formatTmdbRating(value);
-  if (!rating) {
+function createInfoChip(labelText, value, options = {}) {
+  const safeValue = String(value || "").trim();
+  if (!safeValue) {
     return null;
   }
 
@@ -2519,16 +2519,28 @@ function createRatingChip(value, options = {}) {
 
   const label = document.createElement("span");
   label.className = "rating-chip-label";
-  label.textContent = options.label || "TMDb";
+  label.textContent = String(labelText || "").trim();
 
   const score = document.createElement("strong");
   score.className = "rating-chip-value";
-  score.textContent = rating;
+  score.textContent = safeValue;
 
   chip.appendChild(label);
   chip.appendChild(score);
-  chip.setAttribute("aria-label", `${options.label || "TMDb"} rating ${rating}`);
+  chip.setAttribute("aria-label", options.ariaLabel || [String(labelText || "").trim(), safeValue].filter(Boolean).join(" "));
   return chip;
+}
+
+function createRatingChip(value, options = {}) {
+  const rating = formatTmdbRating(value);
+  if (!rating) {
+    return null;
+  }
+
+  return createInfoChip(options.label || "TMDb", rating, {
+    ...options,
+    ariaLabel: `${options.label || "TMDb"} rating ${rating}`,
+  });
 }
 
 function createCardArtIcon(icon) {
@@ -3811,8 +3823,6 @@ function createAudiobookShelfCard(item) {
   return createMediaCard(item, {
     compact: true,
     includeYearInTitle: true,
-    compactMeta: audiobookBookNumberLabel(item),
-    showTopLineWhenCompact: Boolean(audiobookBookNumberLabel(item)),
     cardClassName: "movie-page-card",
   });
 }
@@ -4055,11 +4065,17 @@ function createCard(kind, config) {
     art.appendChild(createCardArtIcon(config.artIcon));
   }
 
-  if (config.rating) {
-    const ratingChip = createRatingChip(config.rating, { className: "rating-chip--overlay" });
-    if (ratingChip) {
-      art.appendChild(ratingChip);
-    }
+  const overlayChip =
+    config.overlayChip && config.overlayChip.value
+      ? createInfoChip(config.overlayChip.label || "", config.overlayChip.value, {
+          className: ["rating-chip--overlay", config.overlayChip.className].filter(Boolean).join(" "),
+          ariaLabel: config.overlayChip.ariaLabel,
+        })
+      : config.rating
+        ? createRatingChip(config.rating, { className: "rating-chip--overlay" })
+        : null;
+  if (overlayChip) {
+    art.appendChild(overlayChip);
   }
 
   badge.textContent = config.badge;
@@ -4142,12 +4158,8 @@ function createMediaCard(item, options = {}) {
   const opensAudiobookDetail = item.section === "audiobooks";
   const resumeProgress =
     item.section === "movies" || item.section === "audiobooks" ? resumeProgressForItem(item) : null;
-  const compactMeta =
-    options.compactMeta != null
-      ? String(options.compactMeta || "").trim()
-      : compact && item.section === "audiobooks"
-        ? audiobookBookNumberLabel(item)
-        : "";
+  const compactMeta = options.compactMeta != null ? String(options.compactMeta || "").trim() : "";
+  const audiobookBookNumber = item.section === "audiobooks" ? audiobookSeriesIndexValue(item) : "";
   const cardClassName = [
     item.section === "audiobooks" ? "audiobook-cover-card" : "",
     options.cardClassName || "",
@@ -4166,6 +4178,14 @@ function createMediaCard(item, options = {}) {
     gradientKey: `${item.section}-${item.title}-${item.path}`,
     imageUrl: item.posterUrl || item.backdropUrl,
     cardClassName,
+    overlayChip:
+      audiobookBookNumber
+        ? {
+            label: "Book",
+            value: audiobookBookNumber,
+            ariaLabel: `Book ${audiobookBookNumber}`,
+          }
+        : null,
     rating: item.section === "movies" ? item.tmdbRating : 0,
     progress: resumeProgress
       ? {
