@@ -6139,6 +6139,11 @@ function renderHero(show, movie, season, documentBrowser) {
         createButton("Play Featured Audiobook", "primary-button", () => playItem(featured)),
       );
     }
+    actionRow.appendChild(
+      createButton("Jump To Grid", "ghost-button", () => {
+        els.content.scrollIntoView({ behavior: "smooth", block: "start" });
+      }),
+    );
   } else if (state.route.name === "documents") {
     const browser = documentBrowser || buildDocumentBrowserState(state.route.folder);
     const featured = browser.previewItem;
@@ -6872,31 +6877,45 @@ function renderAudiobookPage(container) {
   const collectionGroups = buildAudiobookBrowseGroups(items, "collection");
   const authorGroups = buildAudiobookBrowseGroups(items, "author");
   const selectedGenre = genreFilterLabel("audiobooks");
+  const hasCollectionGroups = collectionGroups.length > 0;
+  const hasAuthorGroups = authorGroups.length > 0;
+  const hasBrowseGroups = hasCollectionGroups || hasAuthorGroups;
 
-  appendCarouselSection(container, {
-    eyebrow: "Collections",
-    title: "Browse By Collection",
-    subtitle: "Swipe through audiobook collections, then tap one to narrow the shelf below.",
-    items: collectionGroups,
-    renderItem: createAudiobookGroupCard,
-    itemClassName: "episode-carousel-card",
-    emptyMessage: "No audiobook collections match this page yet.",
-  });
+  if (hasCollectionGroups) {
+    appendCarouselSection(container, {
+      eyebrow: "Collections",
+      title: "Browse By Collection",
+      subtitle: "Swipe through audiobook collections, then tap one to narrow the shelf below.",
+      items: collectionGroups,
+      renderItem: createAudiobookGroupCard,
+      itemClassName: "episode-carousel-card",
+      emptyMessage: "No audiobook collections match this page yet.",
+    });
+  }
 
-  appendCarouselSection(container, {
-    eyebrow: "Authors",
-    title: "Browse By Author",
-    subtitle: "Swipe through authors, then tap one to focus on their audiobooks.",
-    items: authorGroups,
-    renderItem: createAudiobookGroupCard,
-    itemClassName: "episode-carousel-card",
-    emptyMessage: "No audiobook authors match this page yet.",
-  });
+  if (hasAuthorGroups) {
+    appendCarouselSection(container, {
+      eyebrow: "Authors",
+      title: "Browse By Author",
+      subtitle: "Swipe through authors, then tap one to focus on their audiobooks.",
+      items: authorGroups,
+      renderItem: createAudiobookGroupCard,
+      itemClassName: "episode-carousel-card",
+      emptyMessage: "No audiobook authors match this page yet.",
+    });
+  }
 
   appendGridSection(container, {
     eyebrow: "Audiobooks",
     title: "All Audiobooks",
-    subtitle: `${items.length} audiobook${items.length === 1 ? "" : "s"}${selectedGenre ? ` in ${selectedGenre}` : ""} in this page view.`,
+    subtitle: [
+      `${items.length} audiobook${items.length === 1 ? "" : "s"}${selectedGenre ? ` in ${selectedGenre}` : ""} in this page view.`,
+      !hasBrowseGroups && items.length
+        ? "Author and collection rows will appear automatically when that info is available from tags or folder names."
+        : "",
+    ]
+      .filter(Boolean)
+      .join(" "),
     items,
     renderItem: createMediaCard,
     emptyMessage: selectedGenre
