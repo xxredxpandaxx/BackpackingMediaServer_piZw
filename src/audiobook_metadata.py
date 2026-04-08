@@ -289,7 +289,7 @@ def save_embedded_cover(metadata_root: Path, cover: object) -> str:
     actual_path = metadata_root / "posters" / file_name
     if not actual_path.exists():
         atomic_write_bytes(actual_path, image_data)
-    return normalize_virtual_path(f"/media/.nomadscreen/posters/{file_name}")
+    return normalize_virtual_path(f"/media/.backcountry-broadcast/posters/{file_name}")
 
 
 def extract_audiobook_embedded_metadata(file_path: Path, metadata_root: Path) -> dict[str, object]:

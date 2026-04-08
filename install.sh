@@ -2,19 +2,22 @@
 
 set -Eeuo pipefail
 
-SERVICE_NAME="${NOMADSCREEN_SERVICE_NAME:-nomadscreen}"
-NETWORK_SERVICE_NAME="${NOMADSCREEN_NETWORK_SERVICE_NAME:-nomadscreen-network}"
-FILEBROWSER_SERVICE_NAME="${NOMADSCREEN_FILEBROWSER_SERVICE_NAME:-nomadscreen-filebrowser}"
-INSTALL_DIR="${NOMADSCREEN_INSTALL_DIR:-/opt/nomadscreen}"
-STORAGE_ROOT="${NOMADSCREEN_STORAGE_ROOT:-/srv/nomadscreen}"
+LEGACY_SERVICE_NAME="nomadscreen"
+LEGACY_NETWORK_SERVICE_NAME="nomadscreen-network"
+LEGACY_FILEBROWSER_SERVICE_NAME="nomadscreen-filebrowser"
+SERVICE_NAME="${NOMADSCREEN_SERVICE_NAME:-backcountry-broadcast}"
+NETWORK_SERVICE_NAME="${NOMADSCREEN_NETWORK_SERVICE_NAME:-backcountry-broadcast-network}"
+FILEBROWSER_SERVICE_NAME="${NOMADSCREEN_FILEBROWSER_SERVICE_NAME:-backcountry-broadcast-filebrowser}"
+INSTALL_DIR="${NOMADSCREEN_INSTALL_DIR:-/opt/backcountry-broadcast}"
+STORAGE_ROOT="${NOMADSCREEN_STORAGE_ROOT:-/srv/backcountry-broadcast}"
 MEDIA_ROOT="${NOMADSCREEN_MEDIA_ROOT:-}"
 REPO_URL="${NOMADSCREEN_REPO_URL:-https://github.com/xxredxpandaxx/BackpackingMediaServer_piZw.git}"
 REPO_REF="${NOMADSCREEN_REPO_REF:-main}"
 GITHUB_SLUG="${NOMADSCREEN_GITHUB_SLUG:-xxredxpandaxx/BackpackingMediaServer_piZw}"
 HTTP_PORT="${NOMADSCREEN_PORT:-80}"
 FILEBROWSER_PORT="${NOMADSCREEN_FILEBROWSER_PORT:-8081}"
-TMP_DIR="${NOMADSCREEN_TMP_DIR:-/var/tmp/nomadscreen-install}"
-UPLOAD_TMP_DIR="${NOMADSCREEN_UPLOAD_TMP_DIR:-/var/tmp/nomadscreen-upload}"
+TMP_DIR="${NOMADSCREEN_TMP_DIR:-/var/tmp/backcountry-broadcast-install}"
+UPLOAD_TMP_DIR="${NOMADSCREEN_UPLOAD_TMP_DIR:-/var/tmp/backcountry-broadcast-upload}"
 
 usage() {
   cat <<'EOF'
@@ -29,12 +32,12 @@ Options:
   --repo URL              Public git clone URL to install from
   --github owner/repo     GitHub repo shorthand for public repos
   --ref REF               Branch, tag, or ref to install (default: main)
-  --install-dir PATH      App install path (default: /opt/nomadscreen)
-  --storage-root PATH     Runtime storage root (default: /srv/nomadscreen)
+  --install-dir PATH      App install path (default: /opt/backcountry-broadcast)
+  --storage-root PATH     Runtime storage root (default: /srv/backcountry-broadcast)
   --media-root PATH       Media library path (default: ~/media for the install user)
   --port PORT             HTTP port for the service (default: 80)
-  --tmp-dir PATH          Temp build dir for venv/pip work (default: /var/tmp/nomadscreen-install)
-  --upload-tmp-dir PATH   Temp dir for large web uploads (default: /var/tmp/nomadscreen-upload)
+  --tmp-dir PATH          Temp build dir for venv/pip work (default: /var/tmp/backcountry-broadcast-install)
+  --upload-tmp-dir PATH   Temp dir for large web uploads (default: /var/tmp/backcountry-broadcast-upload)
   -h, --help              Show this help
 
 If no repo is provided, the installer uses:
@@ -221,14 +224,17 @@ prepare_repo() {
   if [[ -f "${INSTALL_DIR}/update.sh" ]]; then
     run_root chmod 0755 "${INSTALL_DIR}/update.sh"
   fi
-  run_root chmod 0755 "${INSTALL_DIR}/deploy/network/nomadscreen-network.sh"
+  run_root chmod 0755 "${INSTALL_DIR}/deploy/network/backcountry-broadcast-network.sh"
 }
 
 seed_storage() {
   log "Preparing runtime storage at ${STORAGE_ROOT}"
   run_root mkdir -p "${STORAGE_ROOT}"
-  if [[ -f "${INSTALL_DIR}/nomadscreen.config.example.json" ]]; then
-    run_root cp -a -n "${INSTALL_DIR}/nomadscreen.config.example.json" "${STORAGE_ROOT}/nomadscreen.config.json"
+  if [[ -f "${STORAGE_ROOT}/nomadscreen.config.json" && ! -f "${STORAGE_ROOT}/backcountry-broadcast.config.json" ]]; then
+    run_root mv "${STORAGE_ROOT}/nomadscreen.config.json" "${STORAGE_ROOT}/backcountry-broadcast.config.json"
+  fi
+  if [[ -f "${INSTALL_DIR}/backcountry-broadcast.config.example.json" ]]; then
+    run_root cp -a -n "${INSTALL_DIR}/backcountry-broadcast.config.example.json" "${STORAGE_ROOT}/backcountry-broadcast.config.json"
   fi
   log "Preparing media library at ${MEDIA_ROOT}"
   run_root mkdir -p \
@@ -314,7 +320,7 @@ Before=${SERVICE_NAME}.service
 [Service]
 Type=oneshot
 Environment=NOMADSCREEN_STORAGE_ROOT=${STORAGE_ROOT}
-ExecStart=${INSTALL_DIR}/deploy/network/nomadscreen-network.sh
+ExecStart=${INSTALL_DIR}/deploy/network/backcountry-broadcast-network.sh
 RemainAfterExit=yes
 
 [Install]
@@ -400,6 +406,24 @@ EOF
   log "Writing systemd service to ${service_path}"
   run_root install -m 0644 "${tmp_service}" "${service_path}"
   rm -f "${tmp_service}"
+}
+
+cleanup_legacy_service_units() {
+  local legacy_service
+
+  for legacy_service in \
+    "${LEGACY_SERVICE_NAME}" \
+    "${LEGACY_NETWORK_SERVICE_NAME}" \
+    "${LEGACY_FILEBROWSER_SERVICE_NAME}"; do
+    if [[ "${legacy_service}" == "${SERVICE_NAME}" || "${legacy_service}" == "${NETWORK_SERVICE_NAME}" || "${legacy_service}" == "${FILEBROWSER_SERVICE_NAME}" ]]; then
+      continue
+    fi
+    if [[ -f "/etc/systemd/system/${legacy_service}.service" ]]; then
+      log "Removing legacy service alias ${legacy_service}.service"
+      run_root systemctl disable --now "${legacy_service}.service" >/dev/null 2>&1 || true
+      run_root rm -f "/etc/systemd/system/${legacy_service}.service"
+    fi
+  done
 }
 
 restart_service_unit() {
@@ -509,5 +533,6 @@ install_filebrowser_binary
 write_network_service
 write_service
 write_filebrowser_service
+cleanup_legacy_service_units
 start_service
 print_success

@@ -2,7 +2,7 @@
 
 A Raspberry Pi Zero W portable media server branded as Backcountry Broadcast. It keeps the existing media-library layout and metadata format while replacing the old microcontroller firmware with a Pi-native Python service.
 
-The visible product name is now Backcountry Broadcast. For compatibility with existing installs, internal paths, service filenames, and environment variables still use the historical `nomadscreen` identifiers for now.
+The project now uses Backcountry Broadcast naming for the repo files, default service units, runtime config file, and generated metadata folder. During upgrades, the Pi still accepts older legacy config and metadata locations so existing installs can roll forward cleanly.
 
 ## What changed
 
@@ -15,28 +15,28 @@ The visible product name is now Backcountry Broadcast. For compatibility with ex
   - `/api/stream`
   - `/api/asset`
   - `/api/rescan`
-- The Pi still uses a simple `nomadscreen.config.json` plus `media/` layout, and it keeps `library.json` compatibility while also building a SQLite catalog for paged browsing.
+- The Pi still uses a simple `backcountry-broadcast.config.json` plus `media/` layout, and it keeps `library.json` compatibility while also building a SQLite catalog for paged browsing.
 
 ## Project layout
 
 - `install.sh`: idempotent Pi installer for public GitHub repos
 - `src/main.py`: Pi-native HTTP server, media scan logic, metadata merge, and streaming endpoints
 - `data/`: static web app shell, styles, and client-side browsing logic
-- `tools/nomadscreen_refresh_metadata.py`: Pi-native metadata builder used during online rescans
-- `nomadscreen.config.example.json`: sample runtime config for `/srv/nomadscreen/nomadscreen.config.json`
+- `tools/backcountry_broadcast_refresh_metadata.py`: Pi-native metadata builder used during online rescans
+- `backcountry-broadcast.config.example.json`: sample runtime config for `/srv/backcountry-broadcast/backcountry-broadcast.config.json`
 - `deploy/network/`: fallback Wi-Fi script and `systemd` unit for known-network-first hotspot mode
-- `deploy/nomadscreen.service`: example `systemd` unit
+- `deploy/backcountry-broadcast.service`: example `systemd` unit
 
 ## Storage layout
 
 The server expects a storage root that contains:
 
-- `nomadscreen.config.json`
+- `backcountry-broadcast.config.json`
 - `media/`
-- `media/.nomadscreen/library.json` when metadata has been generated
-- `media/.nomadscreen/library.db` after the Pi scans the library
+- `media/.backcountry-broadcast/library.json` when metadata has been generated
+- `media/.backcountry-broadcast/library.db` after the Pi scans the library
 
-For local development, the app now keeps its default runtime files under `.nomadscreen-runtime/` inside the repo so test media and generated metadata do not clutter the project root. On the Pi, `NOMADSCREEN_STORAGE_ROOT` holds config/runtime files such as `nomadscreen.config.json`, while `NOMADSCREEN_MEDIA_ROOT` can point at the real media library path. The installer now defaults that media path to `~/media`. Large web uploads are staged under `/var/tmp/nomadscreen-upload` so they do not fill the Pi Zero W's small `/tmp` RAM disk.
+For local development, the app now keeps its default runtime files under `.backcountry-broadcast-runtime/` inside the repo so test media and generated metadata do not clutter the project root. On the Pi, `NOMADSCREEN_STORAGE_ROOT` holds config/runtime files such as `backcountry-broadcast.config.json`, while `NOMADSCREEN_MEDIA_ROOT` can point at the real media library path. The installer now defaults that media path to `~/media`. Large web uploads are staged under `/var/tmp/backcountry-broadcast-upload` so they do not fill the Pi Zero W's small `/tmp` RAM disk.
 
 ### Recommended media layout
 
@@ -50,7 +50,7 @@ Nested folders inside `media/documents` show up as clickable folders in the Docu
 
 ### Runtime config notes
 
-Keep `nomadscreen.config.json` in your runtime storage root, for example `/srv/nomadscreen`. You can keep that storage on:
+Keep `backcountry-broadcast.config.json` in your runtime storage root, for example `/srv/backcountry-broadcast`. You can keep that storage on:
 
 - the Pi filesystem
 - an external USB drive
@@ -108,16 +108,16 @@ curl -fsSL https://raw.githubusercontent.com/xxredxpandaxx/BackpackingMediaServe
 What that installer does:
 
 - installs `curl`, `git`, `python3`, `python3-venv`, and `NetworkManager`
-- clones or updates the repo into `/opt/nomadscreen`
-- seeds `/srv/nomadscreen/nomadscreen.config.json` from `nomadscreen.config.example.json` if needed
+- clones or updates the repo into `/opt/backcountry-broadcast`
+- seeds `/srv/backcountry-broadcast/backcountry-broadcast.config.json` from `backcountry-broadcast.config.example.json` if needed
 - creates the standard `~/media` folder layout without overwriting existing files
-- creates `/opt/nomadscreen/.venv` and installs Python dependencies
+- creates `/opt/backcountry-broadcast/.venv` and installs Python dependencies
 - installs File Browser into `/usr/local/bin/filebrowser`
-- prepares `/srv/nomadscreen/filebrowser` for the File Browser database and captured password
-- prepares `/var/tmp/nomadscreen-upload` for large browser uploads
-- writes and enables `nomadscreen-network.service`
-- writes and enables `nomadscreen.service`
-- writes and enables `nomadscreen-filebrowser.service`
+- prepares `/srv/backcountry-broadcast/filebrowser` for the File Browser database and captured password
+- prepares `/var/tmp/backcountry-broadcast-upload` for large browser uploads
+- writes and enables `backcountry-broadcast-network.service`
+- writes and enables `backcountry-broadcast.service`
+- writes and enables `backcountry-broadcast-filebrowser.service`
 - captures the initial File Browser admin password so the Device page can show it
 
 For normal updates after the first install, use the updater instead of the full installer:
@@ -128,15 +128,15 @@ curl -fsSL https://raw.githubusercontent.com/xxredxpandaxx/BackpackingMediaServe
 
 That updater:
 
-- pulls the latest code into `/opt/nomadscreen`
+- pulls the latest code into `/opt/backcountry-broadcast`
 - refreshes Python dependencies
 - makes sure File Browser is installed
 - rewrites the service units with your current paths
-- refreshes `nomadscreen-filebrowser.service`
-- keeps large web uploads pointed at `/var/tmp/nomadscreen-upload`
-- restarts `nomadscreen`
-- restarts `nomadscreen-filebrowser`
-- leaves `nomadscreen-network` alone by default so you do not get kicked off the Pi's Wi-Fi mid-update
+- refreshes `backcountry-broadcast-filebrowser.service`
+- keeps large web uploads pointed at `/var/tmp/backcountry-broadcast-upload`
+- restarts `backcountry-broadcast`
+- restarts `backcountry-broadcast-filebrowser`
+- leaves `backcountry-broadcast-network` alone by default so you do not get kicked off the Pi's Wi-Fi mid-update
 
 If you know you want to apply network-service changes immediately too, run:
 
@@ -156,17 +156,17 @@ curl -fsSL https://raw.githubusercontent.com/xxredxpandaxx/BackpackingMediaServe
 2. Clone the repo onto the Pi:
 
    ```bash
-   sudo git clone <your-repo-url> /opt/nomadscreen
-   sudo chown -R $USER:$USER /opt/nomadscreen
+   sudo git clone <your-repo-url> /opt/backcountry-broadcast
+   sudo chown -R $USER:$USER /opt/backcountry-broadcast
    ```
 
-3. Copy `nomadscreen.config.example.json` to your runtime storage root as `nomadscreen.config.json`, for example `/srv/nomadscreen/nomadscreen.config.json`.
+3. Copy `backcountry-broadcast.config.example.json` to your runtime storage root as `backcountry-broadcast.config.json`, for example `/srv/backcountry-broadcast/backcountry-broadcast.config.json`.
 4. Create your media folders under the real media path, for example `~/media/{movies,tv,music,audiobooks,documents}`.
 5. Create a virtual environment and install the dependency:
 
    ```bash
-   python3 -m venv /opt/nomadscreen/.venv
-   /opt/nomadscreen/.venv/bin/pip install -r /opt/nomadscreen/requirements.txt
+   python3 -m venv /opt/backcountry-broadcast/.venv
+   /opt/backcountry-broadcast/.venv/bin/pip install -r /opt/backcountry-broadcast/requirements.txt
    ```
 
 6. Install File Browser and create its state directory:
@@ -174,45 +174,45 @@ curl -fsSL https://raw.githubusercontent.com/xxredxpandaxx/BackpackingMediaServe
    ```bash
    curl -fsSL https://raw.githubusercontent.com/filebrowser/get/master/get.sh | bash
    sudo install filebrowser /usr/local/bin/filebrowser
-   sudo mkdir -p /srv/nomadscreen/filebrowser
-   sudo chown -R $USER:$USER /srv/nomadscreen/filebrowser
+   sudo mkdir -p /srv/backcountry-broadcast/filebrowser
+   sudo chown -R $USER:$USER /srv/backcountry-broadcast/filebrowser
    ```
 
 7. Start the server manually once to confirm the library loads:
 
    ```bash
-   NOMADSCREEN_STORAGE_ROOT=/srv/nomadscreen NOMADSCREEN_MEDIA_ROOT=/home/pi/media /opt/nomadscreen/.venv/bin/python /opt/nomadscreen/src/main.py
+   NOMADSCREEN_STORAGE_ROOT=/srv/backcountry-broadcast NOMADSCREEN_MEDIA_ROOT=/home/pi/media /opt/backcountry-broadcast/.venv/bin/python /opt/backcountry-broadcast/src/main.py
    ```
 
 8. Install the example services if you want them to start on boot:
 
    ```bash
-   sudo cp /opt/nomadscreen/deploy/network/nomadscreen-network.service /etc/systemd/system/nomadscreen-network.service
-   # If your Pi login is not "pi", edit User=, Group=, and NOMADSCREEN_MEDIA_ROOT= in nomadscreen.service and nomadscreen-filebrowser.service first.
-   sudo cp /opt/nomadscreen/deploy/nomadscreen.service /etc/systemd/system/nomadscreen.service
-   sudo cp /opt/nomadscreen/deploy/nomadscreen-filebrowser.service /etc/systemd/system/nomadscreen-filebrowser.service
+   sudo cp /opt/backcountry-broadcast/deploy/network/backcountry-broadcast-network.service /etc/systemd/system/backcountry-broadcast-network.service
+   # If your Pi login is not "pi", edit User=, Group=, and NOMADSCREEN_MEDIA_ROOT= in backcountry-broadcast.service and backcountry-broadcast-filebrowser.service first.
+   sudo cp /opt/backcountry-broadcast/deploy/backcountry-broadcast.service /etc/systemd/system/backcountry-broadcast.service
+   sudo cp /opt/backcountry-broadcast/deploy/backcountry-broadcast-filebrowser.service /etc/systemd/system/backcountry-broadcast-filebrowser.service
    sudo systemctl daemon-reload
    sudo systemctl enable --now NetworkManager.service
-   sudo systemctl enable --now nomadscreen-network.service
-   sudo systemctl enable --now nomadscreen.service
-   sudo systemctl enable --now nomadscreen-filebrowser.service
+   sudo systemctl enable --now backcountry-broadcast-network.service
+   sudo systemctl enable --now backcountry-broadcast.service
+   sudo systemctl enable --now backcountry-broadcast-filebrowser.service
    ```
 
-   To let the Device page show File Browser's initial admin password too, save the generated password into `/srv/nomadscreen/filebrowser/admin-password.txt` after the first File Browser start:
+   To let the Device page show File Browser's initial admin password too, save the generated password into `/srv/backcountry-broadcast/filebrowser/admin-password.txt` after the first File Browser start:
 
    ```bash
-   sudo sh -c "journalctl -u nomadscreen-filebrowser.service -n 80 --no-pager | sed -n -E 's/.*randomly generated password: ([^[:space:]]+).*/\\1/p' | tail -n 1 > /srv/nomadscreen/filebrowser/admin-password.txt"
-   sudo chown $USER:$USER /srv/nomadscreen/filebrowser/admin-password.txt
-   sudo chmod 600 /srv/nomadscreen/filebrowser/admin-password.txt
+   sudo sh -c "journalctl -u backcountry-broadcast-filebrowser.service -n 80 --no-pager | sed -n -E 's/.*randomly generated password: ([^[:space:]]+).*/\\1/p' | tail -n 1 > /srv/backcountry-broadcast/filebrowser/admin-password.txt"
+   sudo chown $USER:$USER /srv/backcountry-broadcast/filebrowser/admin-password.txt
+   sudo chmod 600 /srv/backcountry-broadcast/filebrowser/admin-password.txt
    ```
 
 9. Open `/app/device` and use the built-in upload panel to send files over Wi-Fi, or open the File Management card there to launch File Browser and log in with the captured initial admin password.
 
 ## Loading content over Wi-Fi
 
-Once the Pi is online, the fastest path is the upload panel on `/app/device`, which saves files into the library and rescans automatically. Big uploads stage through `/var/tmp/nomadscreen-upload` first, so free space there matters too even though the finished media lands in `~/media`.
+Once the Pi is online, the fastest path is the upload panel on `/app/device`, which saves files into the library and rescans automatically. Big uploads stage through `/var/tmp/backcountry-broadcast-upload` first, so free space there matters too even though the finished media lands in `~/media`.
 
-When you tap `Rescan Library` on the Device page, the Pi now checks for internet access first. If it is online and TMDb credentials are configured, it runs `tools/nomadscreen_refresh_metadata.py` before the normal library scan so movie metadata and downloaded artwork stay fresh. If the Pi is offline, it falls back to the normal local rescan without failing the request.
+When you tap `Rescan Library` on the Device page, the Pi now checks for internet access first. If it is online and TMDb credentials are configured, it runs `tools/backcountry_broadcast_refresh_metadata.py` before the normal library scan so movie metadata and downloaded artwork stay fresh. If the Pi is offline, it falls back to the normal local rescan without failing the request.
 
 You can still move media into `~/media` with whatever network workflow fits your setup, then run `/api/rescan` or use the Device page in the web UI.
 
@@ -227,7 +227,7 @@ Common choices are:
 
 On Raspberry Pi OS Bookworm and newer, the project uses NetworkManager for Wi-Fi handling.
 
-The built-in `nomadscreen-network.service` does this on boot:
+The built-in `backcountry-broadcast-network.service` does this on boot:
 
 - tries to join a known Wi-Fi network on `wlan0`
 - waits `knownWifiTimeoutSeconds` for that connection to come up
@@ -245,7 +245,7 @@ To preload known networks, use Raspberry Pi Imager advanced settings before firs
 
 ## Runtime config
 
-`nomadscreen.config.json` still supports the metadata-builder fields and now also supports:
+`backcountry-broadcast.config.json` still supports the metadata-builder fields and now also supports:
 
 - `httpPort`
 - `bindAddress`
@@ -267,17 +267,17 @@ The Device page is password-protected. If `devicePassword` is set, that unlocks 
 
 ## Metadata workflow
 
-Nothing about the metadata format changed, but the default Pi-side metadata refresh path is now the Python tool in `tools/nomadscreen_refresh_metadata.py`.
+Nothing about the metadata format changed, but the default Pi-side metadata refresh path is now the Python tool in `tools/backcountry_broadcast_refresh_metadata.py`.
 
 - Put your media under `media/`
 - Run the bundled metadata builder manually if you want:
 
   ```bash
-  /opt/nomadscreen/.venv/bin/python /opt/nomadscreen/tools/nomadscreen_refresh_metadata.py --storage-root /srv/nomadscreen --media-root /home/pi/media
+  /opt/backcountry-broadcast/.venv/bin/python /opt/backcountry-broadcast/tools/backcountry_broadcast_refresh_metadata.py --storage-root /srv/backcountry-broadcast --media-root /home/pi/media
   ```
 
-- The Pi backend still reads `media/.nomadscreen/library.json` when present for metadata compatibility
-- Each rescan also rebuilds `media/.nomadscreen/library.db`, which powers the paged movie/show catalog APIs used by the web UI
+- The Pi backend still reads `media/.backcountry-broadcast/library.json` when present for metadata compatibility
+- Each rescan also rebuilds `media/.backcountry-broadcast/library.db`, which powers the paged movie/show catalog APIs used by the web UI
 - The metadata refresh step now also writes richer `movie_metadata` and `show_metadata` tables inside that same SQLite file using the smarter TMDb detail fetch logic
 - If the JSON file is missing, the backend falls back to a direct filesystem scan and still rebuilds the live library plus the SQLite catalog
 
@@ -285,13 +285,13 @@ Typical metadata flow:
 
 1. Copy media into the `media/` folders.
 2. Optionally run the metadata tool directly on the Pi.
-3. Let it rebuild `media/.nomadscreen/library.json` and any downloaded artwork.
+3. Let it rebuild `media/.backcountry-broadcast/library.json` and any downloaded artwork.
 4. Transfer the updated media tree to the Pi if needed.
 5. Trigger `Rescan Library` from `/app/device`.
 
 ## Notes
 
 - The frontend still exposes a "Device" page, but it now reports Raspberry Pi service status instead of onboard firmware state.
-- The Pi-side automatic rescan path uses `tools/nomadscreen_refresh_metadata.py`.
+- The Pi-side automatic rescan path uses `tools/backcountry_broadcast_refresh_metadata.py`.
 - On Raspberry Pi OS Bookworm and newer, NetworkManager remembers known Wi-Fi networks and the project only creates its own hotspot when those networks are unavailable.
 - Config saves, metadata JSON writes, media-file finalization, and the SQLite catalog now use crash-safer write patterns so a sudden battery pull is much less likely to corrupt the library. An upload that is interrupted mid-transfer can still be lost, but it should stay isolated to a temporary staging file instead of damaging existing media.

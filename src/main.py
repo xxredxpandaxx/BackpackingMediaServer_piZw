@@ -26,7 +26,8 @@ from audiobook_metadata import extract_audiobook_embedded_metadata
 
 APP_ROOT = Path(__file__).resolve().parents[1]
 STATIC_ROOT = APP_ROOT / "data"
-DEFAULT_STORAGE_ROOT = APP_ROOT / ".nomadscreen-runtime"
+DEFAULT_STORAGE_ROOT = APP_ROOT / ".backcountry-broadcast-runtime"
+LEGACY_STORAGE_ROOT = APP_ROOT / ".nomadscreen-runtime"
 
 DEFAULT_DEVICE_NAME = "Backcountry Broadcast"
 DEFAULT_MDNS_HOST = "backcountrybroadcast"
@@ -36,11 +37,20 @@ DEFAULT_WIFI_INTERFACE = "wlan0"
 DEFAULT_KNOWN_WIFI_TIMEOUT_SECONDS = 20
 DEFAULT_APP_PATH = "/app"
 DEFAULT_MEDIA_ROOT = "/media"
-DEFAULT_METADATA_ROOT = "/media/.nomadscreen"
-DEFAULT_METADATA_INDEX_PATH = "/media/.nomadscreen/library.json"
-DEFAULT_CATALOG_DB_PATH = "/media/.nomadscreen/library.db"
-DEFAULT_RUNTIME_CONFIG_PATH = "/nomadscreen.config.json"
-DEFAULT_METADATA_REFRESH_SCRIPT = APP_ROOT / "tools" / "nomadscreen_refresh_metadata.py"
+DEFAULT_METADATA_DIRECTORY_NAME = ".backcountry-broadcast"
+LEGACY_METADATA_DIRECTORY_NAME = ".nomadscreen"
+DEFAULT_METADATA_ROOT = f"/media/{DEFAULT_METADATA_DIRECTORY_NAME}"
+LEGACY_METADATA_ROOT = f"/media/{LEGACY_METADATA_DIRECTORY_NAME}"
+DEFAULT_METADATA_INDEX_PATH = f"{DEFAULT_METADATA_ROOT}/library.json"
+LEGACY_METADATA_INDEX_PATH = f"{LEGACY_METADATA_ROOT}/library.json"
+DEFAULT_CATALOG_DB_PATH = f"{DEFAULT_METADATA_ROOT}/library.db"
+LEGACY_CATALOG_DB_PATH = f"{LEGACY_METADATA_ROOT}/library.db"
+DEFAULT_RUNTIME_CONFIG_NAME = "backcountry-broadcast.config.json"
+LEGACY_RUNTIME_CONFIG_NAME = "nomadscreen.config.json"
+DEFAULT_RUNTIME_CONFIG_PATH = f"/{DEFAULT_RUNTIME_CONFIG_NAME}"
+LEGACY_RUNTIME_CONFIG_PATH = f"/{LEGACY_RUNTIME_CONFIG_NAME}"
+DEFAULT_METADATA_REFRESH_SCRIPT = APP_ROOT / "tools" / "backcountry_broadcast_refresh_metadata.py"
+LEGACY_METADATA_REFRESH_SCRIPT = APP_ROOT / "tools" / "nomadscreen_refresh_metadata.py"
 DEFAULT_BIND_ADDRESS = "0.0.0.0"
 DEFAULT_HTTP_PORT = 80
 DEFAULT_MAX_CLIENTS = 6
@@ -48,7 +58,16 @@ DEFAULT_MAX_STREAMS = 12
 DEFAULT_CLIENT_WINDOW_SECONDS = 300
 DEFAULT_METADATA_REFRESH_TIMEOUT_SECONDS = 1800
 DEFAULT_FILEBROWSER_PORT = 8081
-DEVICE_AUTH_COOKIE_NAME = "nomadscreen_device_auth"
+DEFAULT_UPLOAD_TMP_DIRECTORY_NAME = "backcountry-broadcast-upload"
+LEGACY_UPLOAD_TMP_DIRECTORY_NAME = "nomadscreen-upload"
+DEFAULT_UPLOAD_STAGING_PREFIX = ".backcountry-broadcast-upload-"
+LEGACY_UPLOAD_STAGING_PREFIX = ".nomadscreen-upload-"
+METADATA_HIDDEN_DIRECTORY_NAMES = {
+    DEFAULT_METADATA_DIRECTORY_NAME.casefold(),
+    LEGACY_METADATA_DIRECTORY_NAME.casefold(),
+}
+DEVICE_AUTH_COOKIE_NAME = "backcountry_broadcast_device_auth"
+LEGACY_DEVICE_AUTH_COOKIE_NAME = "nomadscreen_device_auth"
 DEVICE_AUTH_SESSION_SECONDS = 12 * 60 * 60
 MIN_DEVICE_PAGE_PASSWORD_LENGTH = 4
 MAX_DEVICE_PAGE_PASSWORD_LENGTH = 128
@@ -169,17 +188,34 @@ def configured_access_point_ssid(raw_config: dict[str, object], device_name: str
     return normalize_hotspot_ssid(str(raw_value)) or derived_access_point_ssid(device_name)
 
 
-def read_runtime_config_file(config_path: Path) -> tuple[dict[str, object], str]:
-    raw_config: dict[str, object] = {}
-    config_source = "defaults"
-    if config_path.exists():
+def runtime_config_candidates(storage_root: Path) -> list[Path]:
+    return [
+        storage_root / DEFAULT_RUNTIME_CONFIG_NAME,
+        storage_root / LEGACY_RUNTIME_CONFIG_NAME,
+    ]
+
+
+def first_existing_path(candidates: list[Path]) -> Path | None:
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def read_runtime_config_file(config_path: Path | list[Path] | tuple[Path, ...]) -> tuple[dict[str, object], str]:
+    candidates = list(config_path) if isinstance(config_path, (list, tuple)) else [config_path]
+    if not candidates:
+        return {}, "defaults"
+
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
         try:
-            raw_config = json.loads(config_path.read_text(encoding="utf-8"))
-            config_source = str(config_path)
+            return json.loads(candidate.read_text(encoding="utf-8")), str(candidate)
         except (OSError, json.JSONDecodeError):
-            raw_config = {}
-            config_source = f"{config_path} (unreadable)"
-    return raw_config, config_source
+            return {}, f"{candidate} (unreadable)"
+
+    return {}, str(candidates[0])
 
 
 def fsync_directory(path: Path) -> None:
@@ -515,8 +551,8 @@ def safe_float(value: object, default: float, minimum: float = 0.0) -> float:
 
 def default_upload_temp_directory() -> Path:
     if os.name == "posix":
-        return Path("/var/tmp/nomadscreen-upload")
-    return Path(tempfile.gettempdir()) / "nomadscreen-upload"
+        return Path(f"/var/tmp/{DEFAULT_UPLOAD_TMP_DIRECTORY_NAME}")
+    return Path(tempfile.gettempdir()) / DEFAULT_UPLOAD_TMP_DIRECTORY_NAME
 
 
 def sanitize_upload_filename(raw_filename: str) -> str:
@@ -630,7 +666,11 @@ def iso_timestamp_now() -> str:
 
 def atomic_save_upload(uploaded_file: object, destination_path: Path, staging_root: Path) -> Path:
     staging_root.mkdir(parents=True, exist_ok=True)
-    descriptor, temp_name = tempfile.mkstemp(prefix=".nomadscreen-upload-", suffix=".part", dir=str(staging_root))
+    descriptor, temp_name = tempfile.mkstemp(
+        prefix=DEFAULT_UPLOAD_STAGING_PREFIX,
+        suffix=".part",
+        dir=str(staging_root),
+    )
     temp_path = Path(temp_name)
     try:
         with os.fdopen(descriptor, "wb") as handle:
@@ -737,8 +777,12 @@ def load_settings() -> dict[str, object]:
     storage_root_value = os.environ.get("NOMADSCREEN_STORAGE_ROOT", "").strip()
     storage_root = Path(storage_root_value) if storage_root_value else DEFAULT_STORAGE_ROOT
     storage_root = storage_root.expanduser()
-    config_path = storage_root / DEFAULT_RUNTIME_CONFIG_PATH.lstrip("/")
-    raw_config, config_source = read_runtime_config_file(config_path)
+    if not storage_root_value and not storage_root.exists() and LEGACY_STORAGE_ROOT.exists():
+        storage_root = LEGACY_STORAGE_ROOT
+    config_candidates = runtime_config_candidates(storage_root)
+    config_path = config_candidates[0]
+    config_source_path = first_existing_path(config_candidates) or config_path
+    raw_config, config_source = read_runtime_config_file(config_candidates)
 
     raw_name = raw_config.get("deviceName") or raw_config.get("serverName") or DEFAULT_DEVICE_NAME
     device_name = normalize_device_name(str(raw_name))[:MAX_DEVICE_NAME_LENGTH] or DEFAULT_DEVICE_NAME
@@ -779,6 +823,8 @@ def load_settings() -> dict[str, object]:
             metadata_refresh_script = APP_ROOT / metadata_refresh_script
     else:
         metadata_refresh_script = DEFAULT_METADATA_REFRESH_SCRIPT
+        if not metadata_refresh_script.exists() and LEGACY_METADATA_REFRESH_SCRIPT.exists():
+            metadata_refresh_script = LEGACY_METADATA_REFRESH_SCRIPT
     metadata_refresh_script = metadata_refresh_script.expanduser()
     upload_tmp_value = os.environ.get("NOMADSCREEN_UPLOAD_TMP_DIR", "").strip()
     if upload_tmp_value:
@@ -842,6 +888,7 @@ def load_settings() -> dict[str, object]:
         "metadata_refresh_timeout_seconds": metadata_refresh_timeout_seconds,
         "upload_tmp_directory": upload_tmp_directory,
         "config_path": config_path,
+        "config_source_path": config_source_path,
         "device_name": device_name,
         "ssid": hotspot_ssid,
         "wifi_password": wifi_password,
@@ -1355,7 +1402,7 @@ class AppState:
         return Path(self.settings["media_directory"]).resolve(strict=False)
 
     def metadata_root_path(self) -> Path:
-        return (self.media_root_path() / ".nomadscreen").resolve(strict=False)
+        return (self.media_root_path() / DEFAULT_METADATA_DIRECTORY_NAME).resolve(strict=False)
 
     def upload_staging_root_path(self) -> Path:
         return (self.metadata_root_path() / "uploads").resolve(strict=False)
@@ -1378,11 +1425,12 @@ class AppState:
             staging_root.mkdir(parents=True, exist_ok=True)
         except OSError:
             return
-        for candidate in staging_root.glob(".nomadscreen-upload-*.part"):
-            try:
-                candidate.unlink()
-            except OSError:
-                continue
+        for prefix in (DEFAULT_UPLOAD_STAGING_PREFIX, LEGACY_UPLOAD_STAGING_PREFIX):
+            for candidate in staging_root.glob(f"{prefix}*.part"):
+                try:
+                    candidate.unlink()
+                except OSError:
+                    continue
 
     def metadata_refresh_script_path(self) -> Path:
         return Path(self.settings["metadata_refresh_script"]).resolve(strict=False)
@@ -1735,13 +1783,33 @@ class AppState:
             return None
         return candidate
 
+    def resolve_first_virtual_path(self, *virtual_paths: str) -> Path | None:
+        unresolved: list[Path] = []
+        for virtual_path in virtual_paths:
+            resolved = self.resolve_virtual_path(virtual_path)
+            if resolved is None:
+                continue
+            if resolved.exists():
+                return resolved
+            unresolved.append(resolved)
+        return unresolved[0] if unresolved else None
+
+    def metadata_index_virtual_path(self) -> str:
+        preferred = self.resolve_virtual_path(DEFAULT_METADATA_INDEX_PATH)
+        if preferred is not None and preferred.exists():
+            return DEFAULT_METADATA_INDEX_PATH
+        legacy = self.resolve_virtual_path(LEGACY_METADATA_INDEX_PATH)
+        if legacy is not None and legacy.exists():
+            return LEGACY_METADATA_INDEX_PATH
+        return DEFAULT_METADATA_INDEX_PATH
+
     def load_metadata(self) -> tuple[list[dict[str, object]], dict[str, dict[str, object]], str, str]:
         item_entries: list[dict[str, object]] = []
         show_entries: dict[str, dict[str, object]] = {}
         generated_at = ""
         generator = ""
 
-        metadata_index = self.resolve_virtual_path(DEFAULT_METADATA_INDEX_PATH)
+        metadata_index = self.resolve_first_virtual_path(DEFAULT_METADATA_INDEX_PATH, LEGACY_METADATA_INDEX_PATH)
         if metadata_index is None or not metadata_index.exists():
             return item_entries, show_entries, generated_at, generator
 
@@ -1933,7 +2001,7 @@ class AppState:
 
         if storage_ready:
             for root, dirs, files in os.walk(media_directory):
-                dirs[:] = [directory for directory in dirs if directory.lower() != ".nomadscreen"]
+                dirs[:] = [directory for directory in dirs if directory.casefold() not in METADATA_HIDDEN_DIRECTORY_NAMES]
                 for file_name in files:
                     actual_path = Path(root) / file_name
                     virtual_path = self.virtual_media_path(actual_path)
@@ -2152,10 +2220,10 @@ class AppState:
         return [self.serialize_show_detail(show) for show in self.group_show_records()]
 
     def catalog_db_path(self) -> Path:
-        resolved = self.resolve_virtual_path(DEFAULT_CATALOG_DB_PATH)
+        resolved = self.resolve_first_virtual_path(DEFAULT_CATALOG_DB_PATH, LEGACY_CATALOG_DB_PATH)
         if resolved is not None:
             return resolved
-        return (self.media_root_path() / ".nomadscreen" / "library.db").resolve(strict=False)
+        return (self.media_root_path() / DEFAULT_METADATA_DIRECTORY_NAME / "library.db").resolve(strict=False)
 
     def catalog_item_search_text(self, item: dict[str, object]) -> str:
         return catalog_search_text(
@@ -3153,7 +3221,7 @@ class AppState:
                 continue
 
             for root, dirs, _files in os.walk(actual_root):
-                dirs[:] = [directory for directory in dirs if directory.lower() != ".nomadscreen"]
+                dirs[:] = [directory for directory in dirs if directory.casefold() not in METADATA_HIDDEN_DIRECTORY_NAMES]
                 virtual_path = self.virtual_media_path(Path(root))
                 if not virtual_path:
                     continue
@@ -3258,6 +3326,7 @@ class AppState:
             "metadataAvailable": self.metadata_available,
             "metadataGeneratedAt": self.metadata_generated_at,
             "metadataGenerator": self.metadata_generator,
+            "metadataIndexPath": self.metadata_index_virtual_path(),
             "metadataItemCount": len(self.item_metadata),
             "metadataShowCount": len(self.show_metadata),
             "preferServerLibrary": self.metadata_index_stale,
@@ -3302,7 +3371,8 @@ class AppState:
 
         with self.lock:
             config_path = Path(self.settings["config_path"])
-            raw_config, _ = read_runtime_config_file(config_path)
+            config_source_path = Path(self.settings.get("config_source_path") or config_path)
+            raw_config, _ = read_runtime_config_file([config_source_path, config_path])
             raw_config["deviceName"] = safe_device_name
             raw_config.pop("serverName", None)
             raw_config["hotspotSsid"] = safe_hotspot_ssid
@@ -3388,7 +3458,11 @@ def record_request_client() -> None:
 
 
 def current_device_auth_token() -> str:
-    return str(request.cookies.get(DEVICE_AUTH_COOKIE_NAME) or "").strip()
+    return str(
+        request.cookies.get(DEVICE_AUTH_COOKIE_NAME)
+        or request.cookies.get(LEGACY_DEVICE_AUTH_COOKIE_NAME)
+        or ""
+    ).strip()
 
 
 def request_has_device_access() -> bool:
@@ -3410,6 +3484,13 @@ def set_device_auth_cookie(response: Response, token: str, max_age: int) -> Resp
 
 def clear_device_auth_cookie(response: Response) -> Response:
     response.delete_cookie(DEVICE_AUTH_COOKIE_NAME, path="/", httponly=True, secure=request.is_secure, samesite="Lax")
+    response.delete_cookie(
+        LEGACY_DEVICE_AUTH_COOKIE_NAME,
+        path="/",
+        httponly=True,
+        secure=request.is_secure,
+        samesite="Lax",
+    )
     return response
 
 

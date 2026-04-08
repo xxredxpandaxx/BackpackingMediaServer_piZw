@@ -105,8 +105,13 @@ const state = {
   uploadDestinations: [],
 };
 
-const NOMAD_STORAGE_PREFIX = "nomadscreen-";
-const PLAYBACK_BACKUP_KEY = `${NOMAD_STORAGE_PREFIX}playback-cache-v1`;
+const BACKCOUNTRY_STORAGE_PREFIX = "backcountry-broadcast-";
+const LEGACY_STORAGE_PREFIX = "nomadscreen-";
+const STORAGE_PREFIXES = [BACKCOUNTRY_STORAGE_PREFIX, LEGACY_STORAGE_PREFIX];
+const PLAYBACK_BACKUP_KEY = `${BACKCOUNTRY_STORAGE_PREFIX}playback-cache-v1`;
+const LEGACY_PLAYBACK_BACKUP_KEY = `${LEGACY_STORAGE_PREFIX}playback-cache-v1`;
+const DEFAULT_LIBRARY_INDEX_PATH = "/media/.backcountry-broadcast/library.json";
+const LEGACY_LIBRARY_INDEX_PATH = "/media/.nomadscreen/library.json";
 const PROGRESS_SAVE_INTERVAL_MS = 5000;
 const RESUME_MIN_SECONDS = 30;
 const CATALOG_PAGE_SIZE = 40;
@@ -375,7 +380,10 @@ function libraryIndexUrl() {
     (state.status && state.status.metadataGeneratedAt) ||
     (state.library && state.library.metadata && state.library.metadata.generatedAt) ||
     "";
-  return absoluteUrl(buildAssetUrl("/media/.nomadscreen/library.json", versionToken));
+  const indexPath =
+    (state.status && state.status.metadataIndexPath) ||
+    DEFAULT_LIBRARY_INDEX_PATH;
+  return absoluteUrl(buildAssetUrl(indexPath, versionToken));
 }
 
 function appDisplayName() {
@@ -1490,7 +1498,9 @@ function normalizePlaybackEntrySnapshot(entry) {
 function readLocalPlaybackBackup() {
   const empty = { playback: {}, watched: {} };
   try {
-    const raw = window.localStorage.getItem(PLAYBACK_BACKUP_KEY);
+    const raw =
+      window.localStorage.getItem(PLAYBACK_BACKUP_KEY) ||
+      window.localStorage.getItem(LEGACY_PLAYBACK_BACKUP_KEY);
     if (!raw) {
       return empty;
     }
@@ -1784,7 +1794,10 @@ function clearNomadStorageBucket(storage, preservedKeys = []) {
   const keep = new Set(preservedKeys);
   for (let index = storage.length - 1; index >= 0; index -= 1) {
     const key = storage.key(index);
-    if (!key || !key.startsWith(NOMAD_STORAGE_PREFIX) || keep.has(key)) {
+    if (!key || keep.has(key)) {
+      continue;
+    }
+    if (!STORAGE_PREFIXES.some((prefix) => key.startsWith(prefix))) {
       continue;
     }
     storage.removeItem(key);
@@ -8253,15 +8266,32 @@ async function loadUploadDestinations() {
 
 async function loadLibraryFromIndex() {
   const versionToken = state.status && state.status.metadataGeneratedAt ? state.status.metadataGeneratedAt : "";
-  const response = await fetch(buildAssetUrl("/media/.nomadscreen/library.json", versionToken), {
-    cache: versionToken ? "force-cache" : "default",
-  });
-
-  if (!response.ok) {
-    throw new Error(`Static library index returned HTTP ${response.status}`);
+  const candidates = [];
+  const preferredPath = state.status && state.status.metadataIndexPath ? state.status.metadataIndexPath : "";
+  if (preferredPath) {
+    candidates.push(preferredPath);
+  }
+  for (const path of [DEFAULT_LIBRARY_INDEX_PATH, LEGACY_LIBRARY_INDEX_PATH]) {
+    if (!candidates.includes(path)) {
+      candidates.push(path);
+    }
   }
 
-  return buildLibraryFromIndex(await response.json());
+  let lastError = null;
+  for (const indexPath of candidates) {
+    const response = await fetch(buildAssetUrl(indexPath, versionToken), {
+      cache: versionToken ? "force-cache" : "default",
+    });
+    if (response.ok) {
+      return buildLibraryFromIndex(await response.json());
+    }
+    lastError = new Error(`Static library index returned HTTP ${response.status} for ${indexPath}`);
+    if (response.status !== 404) {
+      throw lastError;
+    }
+  }
+
+  throw lastError || new Error("Static library index is unavailable.");
 }
 
 async function loadLibrary() {

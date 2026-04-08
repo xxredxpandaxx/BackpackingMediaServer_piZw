@@ -2,15 +2,19 @@
 
 set -Eeuo pipefail
 
-SERVICE_NAME="${NOMADSCREEN_SERVICE_NAME:-nomadscreen}"
-NETWORK_SERVICE_NAME="${NOMADSCREEN_NETWORK_SERVICE_NAME:-nomadscreen-network}"
-FILEBROWSER_SERVICE_NAME="${NOMADSCREEN_FILEBROWSER_SERVICE_NAME:-nomadscreen-filebrowser}"
-INSTALL_DIR="${NOMADSCREEN_INSTALL_DIR:-/opt/nomadscreen}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LEGACY_SERVICE_NAME="nomadscreen"
+LEGACY_NETWORK_SERVICE_NAME="nomadscreen-network"
+LEGACY_FILEBROWSER_SERVICE_NAME="nomadscreen-filebrowser"
+SERVICE_NAME="${NOMADSCREEN_SERVICE_NAME:-backcountry-broadcast}"
+NETWORK_SERVICE_NAME="${NOMADSCREEN_NETWORK_SERVICE_NAME:-backcountry-broadcast-network}"
+FILEBROWSER_SERVICE_NAME="${NOMADSCREEN_FILEBROWSER_SERVICE_NAME:-backcountry-broadcast-filebrowser}"
+INSTALL_DIR="${NOMADSCREEN_INSTALL_DIR:-${SCRIPT_DIR}}"
 STORAGE_ROOT="${NOMADSCREEN_STORAGE_ROOT:-}"
 MEDIA_ROOT="${NOMADSCREEN_MEDIA_ROOT:-}"
 HTTP_PORT="${NOMADSCREEN_PORT:-}"
 FILEBROWSER_PORT="${NOMADSCREEN_FILEBROWSER_PORT:-}"
-TMP_DIR="${NOMADSCREEN_TMP_DIR:-/var/tmp/nomadscreen-install}"
+TMP_DIR="${NOMADSCREEN_TMP_DIR:-/var/tmp/backcountry-broadcast-install}"
 UPLOAD_TMP_DIR="${NOMADSCREEN_UPLOAD_TMP_DIR:-}"
 REPO_REF="${NOMADSCREEN_REPO_REF:-}"
 RESTART_NETWORK=0
@@ -24,15 +28,15 @@ Usage:
   update.sh [options]
 
 Options:
-  --install-dir PATH      App install path (default: /opt/nomadscreen)
-  --service-name NAME     systemd service name (default: nomadscreen)
-  --network-service NAME  Wi-Fi fallback service name (default: nomadscreen-network)
+  --install-dir PATH      App install path (default: current checkout directory)
+  --service-name NAME     systemd service name (default: backcountry-broadcast)
+  --network-service NAME  Wi-Fi fallback service name (default: backcountry-broadcast-network)
   --storage-root PATH     Runtime storage root (default: preserved from installed service)
   --media-root PATH       Media library path (default: preserved from installed service)
   --port PORT             HTTP port for the service (default: preserved from installed service)
   --ref REF               Branch or ref to update to (default: current checked-out branch)
-  --tmp-dir PATH          Temp build dir for pip work (default: /var/tmp/nomadscreen-install)
-  --upload-tmp-dir PATH   Temp dir for large web uploads (default: preserved from installed service or /var/tmp/nomadscreen-upload)
+  --tmp-dir PATH          Temp build dir for pip work (default: /var/tmp/backcountry-broadcast-install)
+  --upload-tmp-dir PATH   Temp dir for large web uploads (default: preserved from installed service or /var/tmp/backcountry-broadcast-upload)
   --restart-network       Restart the Wi-Fi fallback service too
   -h, --help              Show this help
 EOF
@@ -106,6 +110,21 @@ read_unit_environment() {
   grep -E "^Environment=${key}=" "${file_path}" | tail -n 1 | sed "s/^Environment=${key}=//"
 }
 
+resolve_existing_service_path() {
+  local preferred_name="$1"
+  local legacy_name="$2"
+
+  if [[ -f "/etc/systemd/system/${preferred_name}.service" ]]; then
+    printf '/etc/systemd/system/%s.service\n' "${preferred_name}"
+    return
+  fi
+  if [[ -f "/etc/systemd/system/${legacy_name}.service" ]]; then
+    printf '/etc/systemd/system/%s.service\n' "${legacy_name}"
+    return
+  fi
+  printf '/etc/systemd/system/%s.service\n' "${preferred_name}"
+}
+
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -174,7 +193,7 @@ ensure_install_context() {
   local unit_user
   local unit_group
 
-  service_path="/etc/systemd/system/${SERVICE_NAME}.service"
+  service_path="$(resolve_existing_service_path "${SERVICE_NAME}" "${LEGACY_SERVICE_NAME}")"
   unit_user="$(read_unit_value "${service_path}" "User" || true)"
   unit_group="$(read_unit_value "${service_path}" "Group" || true)"
 
@@ -202,9 +221,9 @@ ensure_install_context() {
   [[ -n "${HTTP_PORT}" ]] || HTTP_PORT="$(read_unit_environment "${service_path}" "NOMADSCREEN_PORT" || true)"
   [[ -n "${FILEBROWSER_PORT}" ]] || FILEBROWSER_PORT="$(read_unit_environment "${service_path}" "NOMADSCREEN_FILEBROWSER_PORT" || true)"
 
-  [[ -n "${STORAGE_ROOT}" ]] || STORAGE_ROOT="/srv/nomadscreen"
+  [[ -n "${STORAGE_ROOT}" ]] || STORAGE_ROOT="/srv/backcountry-broadcast"
   [[ -n "${MEDIA_ROOT}" ]] || MEDIA_ROOT="${INSTALL_HOME}/media"
-  [[ -n "${UPLOAD_TMP_DIR}" ]] || UPLOAD_TMP_DIR="/var/tmp/nomadscreen-upload"
+  [[ -n "${UPLOAD_TMP_DIR}" ]] || UPLOAD_TMP_DIR="/var/tmp/backcountry-broadcast-upload"
   [[ -n "${HTTP_PORT}" ]] || HTTP_PORT="80"
   [[ -n "${FILEBROWSER_PORT}" ]] || FILEBROWSER_PORT="8081"
 }
@@ -224,6 +243,13 @@ prepare_filebrowser_storage() {
   log "Preparing File Browser state directory at ${state_dir}"
   run_root mkdir -p "${state_dir}"
   run_root chown -R "${INSTALL_USER}:${INSTALL_GROUP}" "${state_dir}"
+}
+
+migrate_legacy_runtime_names() {
+  if [[ -f "${STORAGE_ROOT}/nomadscreen.config.json" && ! -f "${STORAGE_ROOT}/backcountry-broadcast.config.json" ]]; then
+    log "Renaming runtime config to backcountry-broadcast.config.json"
+    run_root mv "${STORAGE_ROOT}/nomadscreen.config.json" "${STORAGE_ROOT}/backcountry-broadcast.config.json"
+  fi
 }
 
 ensure_repo() {
@@ -257,7 +283,7 @@ update_repo() {
   if [[ -f "${INSTALL_DIR}/update.sh" ]]; then
     run_root chmod 0755 "${INSTALL_DIR}/update.sh"
   fi
-  run_root chmod 0755 "${INSTALL_DIR}/deploy/network/nomadscreen-network.sh"
+  run_root chmod 0755 "${INSTALL_DIR}/deploy/network/backcountry-broadcast-network.sh"
 }
 
 install_python_deps() {
@@ -325,7 +351,7 @@ Before=${SERVICE_NAME}.service
 [Service]
 Type=oneshot
 Environment=NOMADSCREEN_STORAGE_ROOT=${STORAGE_ROOT}
-ExecStart=${INSTALL_DIR}/deploy/network/nomadscreen-network.sh
+ExecStart=${INSTALL_DIR}/deploy/network/backcountry-broadcast-network.sh
 RemainAfterExit=yes
 
 [Install]
@@ -413,6 +439,27 @@ EOF
   rm -f "${tmp_service}"
 }
 
+cleanup_legacy_service_units() {
+  local legacy_service
+
+  for legacy_service in \
+    "${LEGACY_SERVICE_NAME}" \
+    "${LEGACY_NETWORK_SERVICE_NAME}" \
+    "${LEGACY_FILEBROWSER_SERVICE_NAME}"; do
+    if [[ "${legacy_service}" == "${SERVICE_NAME}" || "${legacy_service}" == "${NETWORK_SERVICE_NAME}" || "${legacy_service}" == "${FILEBROWSER_SERVICE_NAME}" ]]; then
+      continue
+    fi
+    if [[ "${legacy_service}" == "${LEGACY_NETWORK_SERVICE_NAME}" && "${RESTART_NETWORK}" != "1" ]]; then
+      continue
+    fi
+    if [[ -f "/etc/systemd/system/${legacy_service}.service" ]]; then
+      log "Removing legacy service alias ${legacy_service}.service"
+      run_root systemctl disable --now "${legacy_service}.service" >/dev/null 2>&1 || true
+      run_root rm -f "/etc/systemd/system/${legacy_service}.service"
+    fi
+  done
+}
+
 capture_filebrowser_password() {
   local state_dir
   local password_file
@@ -448,15 +495,25 @@ capture_filebrowser_password() {
 }
 
 restart_services() {
+  local defer_network_migration=0
+
+  if [[ "${RESTART_NETWORK}" != "1" && "${NETWORK_SERVICE_NAME}" != "${LEGACY_NETWORK_SERVICE_NAME}" && -f "/etc/systemd/system/${LEGACY_NETWORK_SERVICE_NAME}.service" ]]; then
+    defer_network_migration=1
+  fi
+
   log "Reloading systemd"
   run_root systemctl daemon-reload
   run_root systemctl enable "${SERVICE_NAME}.service" >/dev/null
-  run_root systemctl enable "${NETWORK_SERVICE_NAME}.service" >/dev/null
   run_root systemctl enable "${FILEBROWSER_SERVICE_NAME}.service" >/dev/null
+  if [[ "${defer_network_migration}" != "1" ]]; then
+    run_root systemctl enable "${NETWORK_SERVICE_NAME}.service" >/dev/null
+  fi
 
   if [[ "${RESTART_NETWORK}" == "1" ]]; then
     log "Restarting ${NETWORK_SERVICE_NAME}.service"
     run_root systemctl restart "${NETWORK_SERVICE_NAME}.service"
+  elif [[ "${defer_network_migration}" == "1" ]]; then
+    log "Leaving ${LEGACY_NETWORK_SERVICE_NAME}.service enabled for now to avoid interrupting active Wi-Fi sessions"
   else
     log "Leaving ${NETWORK_SERVICE_NAME}.service running to avoid interrupting active Wi-Fi sessions"
   fi
@@ -470,7 +527,11 @@ restart_services() {
 
 print_success() {
   local head_commit
+  local legacy_network_pending=0
   head_commit="$(run_as_install_user git -C "${INSTALL_DIR}" rev-parse --short HEAD 2>/dev/null || true)"
+  if [[ "${RESTART_NETWORK}" != "1" && "${NETWORK_SERVICE_NAME}" != "${LEGACY_NETWORK_SERVICE_NAME}" && -f "/etc/systemd/system/${LEGACY_NETWORK_SERVICE_NAME}.service" ]]; then
+    legacy_network_pending=1
+  fi
 
   log "Update complete"
   [[ -n "${head_commit}" ]] && log "Current commit: ${head_commit}"
@@ -482,7 +543,11 @@ print_success() {
   log "File Browser service: ${FILEBROWSER_SERVICE_NAME}.service"
   log "File Browser password file: ${STORAGE_ROOT}/filebrowser/admin-password.txt"
   if [[ "${RESTART_NETWORK}" != "1" ]]; then
-    log "Run 'sudo systemctl restart ${NETWORK_SERVICE_NAME}.service' later if you need hotspot/network script changes applied immediately."
+    if [[ "${legacy_network_pending}" == "1" ]]; then
+      log "Run 'sudo ./update.sh --restart-network' later to finish renaming the Wi-Fi fallback service without breaking the current session."
+    else
+      log "Run 'sudo systemctl restart ${NETWORK_SERVICE_NAME}.service' later if you need hotspot/network script changes applied immediately."
+    fi
   fi
 }
 
@@ -490,6 +555,7 @@ parse_args "$@"
 ensure_install_context
 prepare_tmp_dir
 prepare_filebrowser_storage
+migrate_legacy_runtime_names
 ensure_repo
 update_repo
 install_python_deps
@@ -497,5 +563,6 @@ install_filebrowser_binary
 write_network_service
 write_service
 write_filebrowser_service
+cleanup_legacy_service_units
 restart_services
 print_success

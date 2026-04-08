@@ -25,6 +25,12 @@ from audiobook_metadata import extract_audiobook_embedded_metadata
 GENERATOR_NAME = "Backcountry Broadcast Python Metadata Builder"
 TMDB_API_ROOT = "https://api.themoviedb.org/3"
 TMDB_IMAGE_ROOT = "https://image.tmdb.org/t/p"
+DEFAULT_STORAGE_ROOT = SCRIPT_ROOT / ".backcountry-broadcast-runtime"
+LEGACY_STORAGE_ROOT = SCRIPT_ROOT / ".nomadscreen-runtime"
+DEFAULT_RUNTIME_CONFIG_NAME = "backcountry-broadcast.config.json"
+LEGACY_RUNTIME_CONFIG_NAME = "nomadscreen.config.json"
+DEFAULT_METADATA_DIRECTORY_NAME = ".backcountry-broadcast"
+LEGACY_METADATA_DIRECTORY_NAME = ".nomadscreen"
 
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".mov", ".webm", ".m4v", ".avi"}
 AUDIO_EXTENSIONS = {".mp3", ".m4a", ".m4b", ".aac", ".wav", ".flac", ".ogg"}
@@ -301,6 +307,18 @@ def read_runtime_config(config_path: Path) -> dict[str, object]:
     merged = dict(defaults)
     merged.update(raw)
     return merged
+
+
+def runtime_config_path(storage_root: Path) -> Path:
+    preferred = storage_root / DEFAULT_RUNTIME_CONFIG_NAME
+    legacy = storage_root / LEGACY_RUNTIME_CONFIG_NAME
+    if preferred.exists() or not legacy.exists():
+        return preferred
+    return legacy
+
+
+def metadata_root_path(media_root: Path) -> Path:
+    return media_root / DEFAULT_METADATA_DIRECTORY_NAME
 
 
 class TmdbClient:
@@ -615,7 +633,7 @@ def build_base_item(file_path: Path, media_root: Path) -> dict[str, object]:
         elif len(parts) >= 3:
             item["artist"] = prettify_name(parts[2])
     if section == "audiobooks":
-        embedded = extract_audiobook_embedded_metadata(file_path, media_root / ".nomadscreen")
+        embedded = extract_audiobook_embedded_metadata(file_path, metadata_root_path(media_root))
         for key, value in embedded.items():
             if isinstance(value, str):
                 if value:
@@ -815,7 +833,7 @@ def enrich_movie_item(
             client,
             str(best_details.get("poster_path") or ""),
             metadata_root / "posters",
-            "/media/.nomadscreen/posters",
+            "/media/.backcountry-broadcast/posters",
             f"movie-{movie_id}",
             "w500",
         )
@@ -823,7 +841,7 @@ def enrich_movie_item(
             client,
             str(best_details.get("backdrop_path") or ""),
             metadata_root / "backdrops",
-            "/media/.nomadscreen/backdrops",
+            "/media/.backcountry-broadcast/backdrops",
             f"movie-{movie_id}",
             "w780",
         )
@@ -920,7 +938,7 @@ def enrich_show_record(
             client,
             str(best_details.get("poster_path") or ""),
             metadata_root / "posters",
-            "/media/.nomadscreen/posters",
+            "/media/.backcountry-broadcast/posters",
             f"show-{show_id}",
             "w500",
         )
@@ -928,7 +946,7 @@ def enrich_show_record(
             client,
             str(best_details.get("backdrop_path") or ""),
             metadata_root / "backdrops",
-            "/media/.nomadscreen/backdrops",
+            "/media/.backcountry-broadcast/backdrops",
             f"show-{show_id}",
             "w780",
         )
@@ -1220,9 +1238,9 @@ def isoformat_now() -> str:
 
 
 def build_library(storage_root: Path, media_root: Path, verbose: bool) -> dict[str, object]:
-    config = read_runtime_config(storage_root / "nomadscreen.config.json")
+    config = read_runtime_config(runtime_config_path(storage_root))
     client = TmdbClient(config)
-    metadata_root = media_root / ".nomadscreen"
+    metadata_root = metadata_root_path(media_root)
     metadata_root.mkdir(parents=True, exist_ok=True)
     (metadata_root / "posters").mkdir(parents=True, exist_ok=True)
     (metadata_root / "backdrops").mkdir(parents=True, exist_ok=True)
@@ -1233,7 +1251,8 @@ def build_library(storage_root: Path, media_root: Path, verbose: bool) -> dict[s
     for file_path in sorted(media_root.rglob("*")):
         if not file_path.is_file():
             continue
-        if ".nomadscreen" in file_path.parts:
+        hidden_parts = {part.casefold() for part in file_path.parts}
+        if DEFAULT_METADATA_DIRECTORY_NAME.casefold() in hidden_parts or LEGACY_METADATA_DIRECTORY_NAME.casefold() in hidden_parts:
             continue
         media_type = get_media_type(file_path)
         if not media_type:
@@ -1278,7 +1297,11 @@ def build_library(storage_root: Path, media_root: Path, verbose: bool) -> dict[s
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build Backcountry Broadcast metadata and library.json.")
-    parser.add_argument("--storage-root", default="", help="Path to the runtime storage root containing nomadscreen.config.json")
+    parser.add_argument(
+        "--storage-root",
+        default="",
+        help="Path to the runtime storage root containing backcountry-broadcast.config.json.",
+    )
     parser.add_argument("--media-root", default="", help="Path to the real media root")
     parser.add_argument("--verbose", action="store_true", help="Print each indexed path")
     return parser.parse_args()
@@ -1286,8 +1309,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    script_root = Path(__file__).resolve().parents[1]
-    default_storage_root = script_root / ".nomadscreen-runtime"
+    default_storage_root = DEFAULT_STORAGE_ROOT
+    if not args.storage_root and not default_storage_root.exists() and LEGACY_STORAGE_ROOT.exists():
+        default_storage_root = LEGACY_STORAGE_ROOT
     storage_root = Path(args.storage_root).expanduser() if args.storage_root else default_storage_root
     media_root = Path(args.media_root).expanduser() if args.media_root else storage_root / "media"
     storage_root = storage_root.resolve(strict=False)
@@ -1300,11 +1324,11 @@ def main() -> int:
     result = build_library(storage_root, media_root, bool(args.verbose))
     library = result["library"]
     unmatched = result["unmatched"]
-    log(f"Metadata written to {media_root / '.nomadscreen' / 'library.json'}")
+    log(f"Metadata written to {metadata_root_path(media_root) / 'library.json'}")
     log(f"Movie and show metadata written to {result['metadataDbPath']}")
     log(f"Indexed {len(library['items'])} item(s) and {len(library['shows'])} show record(s).")
     if unmatched:
-        log(f"{len(unmatched)} movie item(s) need review. See {media_root / '.nomadscreen' / 'unmatched.json'}.")
+        log(f"{len(unmatched)} movie item(s) need review. See {metadata_root_path(media_root) / 'unmatched.json'}.")
     return 0
 
 
