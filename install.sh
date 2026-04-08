@@ -4,6 +4,7 @@ set -Eeuo pipefail
 
 SERVICE_NAME="${NOMADSCREEN_SERVICE_NAME:-nomadscreen}"
 NETWORK_SERVICE_NAME="${NOMADSCREEN_NETWORK_SERVICE_NAME:-nomadscreen-network}"
+FILEBROWSER_SERVICE_NAME="${NOMADSCREEN_FILEBROWSER_SERVICE_NAME:-nomadscreen-filebrowser}"
 INSTALL_DIR="${NOMADSCREEN_INSTALL_DIR:-/opt/nomadscreen}"
 STORAGE_ROOT="${NOMADSCREEN_STORAGE_ROOT:-/srv/nomadscreen}"
 MEDIA_ROOT="${NOMADSCREEN_MEDIA_ROOT:-}"
@@ -11,6 +12,7 @@ REPO_URL="${NOMADSCREEN_REPO_URL:-https://github.com/xxredxpandaxx/BackpackingMe
 REPO_REF="${NOMADSCREEN_REPO_REF:-main}"
 GITHUB_SLUG="${NOMADSCREEN_GITHUB_SLUG:-xxredxpandaxx/BackpackingMediaServer_piZw}"
 HTTP_PORT="${NOMADSCREEN_PORT:-80}"
+FILEBROWSER_PORT="${NOMADSCREEN_FILEBROWSER_PORT:-8081}"
 TMP_DIR="${NOMADSCREEN_TMP_DIR:-/var/tmp/nomadscreen-install}"
 UPLOAD_TMP_DIR="${NOMADSCREEN_UPLOAD_TMP_DIR:-/var/tmp/nomadscreen-upload}"
 
@@ -150,7 +152,7 @@ ensure_install_user() {
 install_packages() {
   log "Installing required packages"
   run_root apt-get update
-  run_root apt-get install -y git python3 python3-venv ca-certificates network-manager
+  run_root apt-get install -y curl git python3 python3-venv ca-certificates network-manager
 }
 
 clean_generated_checkout_files() {
@@ -249,6 +251,14 @@ prepare_tmp_dir() {
   run_root chown -R "${INSTALL_USER}:${INSTALL_GROUP}" "${UPLOAD_TMP_DIR}"
 }
 
+prepare_filebrowser_storage() {
+  local state_dir
+  state_dir="${STORAGE_ROOT}/filebrowser"
+  log "Preparing File Browser state directory at ${state_dir}"
+  run_root mkdir -p "${state_dir}"
+  run_root chown -R "${INSTALL_USER}:${INSTALL_GROUP}" "${state_dir}"
+}
+
 install_python_deps() {
   log "Creating virtual environment"
   run_as_install_user env TMPDIR="${TMP_DIR}" python3 -m venv "${INSTALL_DIR}/.venv"
@@ -258,6 +268,33 @@ install_python_deps() {
     "${INSTALL_DIR}/.venv/bin/pip" install --no-cache-dir --upgrade pip
   run_as_install_user env TMPDIR="${TMP_DIR}" PIP_DISABLE_PIP_VERSION_CHECK=1 \
     "${INSTALL_DIR}/.venv/bin/pip" install --no-cache-dir -r "${INSTALL_DIR}/requirements.txt"
+}
+
+install_filebrowser_binary() {
+  local binary_path
+  local download_dir
+  local installer_path
+
+  binary_path="$(command -v filebrowser || true)"
+  if [[ -n "${binary_path}" ]]; then
+    log "File Browser already installed at ${binary_path}"
+    return
+  fi
+
+  log "Installing File Browser"
+  download_dir="${TMP_DIR}/filebrowser-download"
+  installer_path="${TMP_DIR}/filebrowser-get.sh"
+  run_root rm -rf "${download_dir}"
+  run_root mkdir -p "${download_dir}"
+  run_root chown -R "${INSTALL_USER}:${INSTALL_GROUP}" "${download_dir}"
+  run_as_install_user curl -fsSL https://raw.githubusercontent.com/filebrowser/get/master/get.sh -o "${installer_path}"
+  run_root chmod 0755 "${installer_path}"
+  (
+    cd "${download_dir}"
+    run_as_install_user env TMPDIR="${TMP_DIR}" bash "${installer_path}"
+  )
+  [[ -x "${download_dir}/filebrowser" ]] || die "File Browser install did not produce the expected binary"
+  run_root install -m 0755 "${download_dir}/filebrowser" /usr/local/bin/filebrowser
 }
 
 write_network_service() {
@@ -312,11 +349,48 @@ Environment=NOMADSCREEN_STORAGE_ROOT=${STORAGE_ROOT}
 Environment=NOMADSCREEN_MEDIA_ROOT=${MEDIA_ROOT}
 Environment=NOMADSCREEN_UPLOAD_TMP_DIR=${UPLOAD_TMP_DIR}
 Environment=NOMADSCREEN_PORT=${HTTP_PORT}
+Environment=NOMADSCREEN_FILEBROWSER_PORT=${FILEBROWSER_PORT}
 Environment=TMPDIR=${UPLOAD_TMP_DIR}
 ExecStart=${INSTALL_DIR}/.venv/bin/python ${INSTALL_DIR}/src/main.py
 Restart=on-failure
 RestartSec=5
 AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  log "Writing systemd service to ${service_path}"
+  run_root install -m 0644 "${tmp_service}" "${service_path}"
+  rm -f "${tmp_service}"
+}
+
+write_filebrowser_service() {
+  local tmp_service
+  local service_path
+  local state_dir
+  local database_path
+
+  state_dir="${STORAGE_ROOT}/filebrowser"
+  database_path="${state_dir}/filebrowser.db"
+  service_path="/etc/systemd/system/${FILEBROWSER_SERVICE_NAME}.service"
+  tmp_service="$(mktemp)"
+
+  cat >"${tmp_service}" <<EOF
+[Unit]
+Description=Nomad Screen File Browser
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=${INSTALL_USER}
+Group=${INSTALL_GROUP}
+WorkingDirectory=${state_dir}
+ExecStart=/usr/local/bin/filebrowser --address 0.0.0.0 --port ${FILEBROWSER_PORT} --root ${MEDIA_ROOT} --database ${database_path}
+Restart=on-failure
+RestartSec=5
 NoNewPrivileges=true
 
 [Install]
@@ -349,11 +423,47 @@ restart_service_unit() {
   fi
 }
 
+capture_filebrowser_password() {
+  local state_dir
+  local password_file
+  local password
+  local tmp_password
+  local attempt
+
+  state_dir="${STORAGE_ROOT}/filebrowser"
+  password_file="${state_dir}/admin-password.txt"
+  if [[ -s "${password_file}" ]]; then
+    return
+  fi
+
+  log "Capturing the initial File Browser password from ${FILEBROWSER_SERVICE_NAME}.service logs"
+  for attempt in 1 2 3 4 5 6; do
+    password="$(
+      run_root journalctl -u "${FILEBROWSER_SERVICE_NAME}.service" -n 80 --no-pager 2>/dev/null \
+        | sed -n -E "s/.*randomly generated password: ([^[:space:]]+).*/\\1/p" \
+        | tail -n 1
+    )"
+    if [[ -n "${password}" ]]; then
+      tmp_password="$(mktemp)"
+      printf '%s\n' "${password}" >"${tmp_password}"
+      run_root install -m 0600 -o "${INSTALL_USER}" -g "${INSTALL_GROUP}" "${tmp_password}" "${password_file}"
+      rm -f "${tmp_password}"
+      log "Saved the initial File Browser password to ${password_file}"
+      return
+    fi
+    sleep 1
+  done
+
+  log "Could not capture the initial File Browser password from the journal yet"
+}
+
 start_service() {
   log "Ensuring NetworkManager is active"
   run_root systemctl enable --now NetworkManager.service
   restart_service_unit "${NETWORK_SERVICE_NAME}"
   restart_service_unit "${SERVICE_NAME}"
+  restart_service_unit "${FILEBROWSER_SERVICE_NAME}"
+  capture_filebrowser_password
 }
 
 print_success() {
@@ -367,10 +477,13 @@ print_success() {
   log "Upload temp dir: ${UPLOAD_TMP_DIR}"
   log "Network service: ${NETWORK_SERVICE_NAME}.service"
   log "Service name: ${SERVICE_NAME}.service"
+  log "File Browser service: ${FILEBROWSER_SERVICE_NAME}.service"
+  log "File Browser password file: ${STORAGE_ROOT}/filebrowser/admin-password.txt"
   log "Copy your media into ${MEDIA_ROOT} and then use the Device page to rescan."
 
   if [[ -n "${host_ip}" ]]; then
     log "Open http://${host_ip}/app"
+    log "Open File Browser at http://${host_ip}:${FILEBROWSER_PORT}"
   fi
 }
 
@@ -390,8 +503,11 @@ install_packages
 prepare_repo
 seed_storage
 prepare_tmp_dir
+prepare_filebrowser_storage
 install_python_deps
+install_filebrowser_binary
 write_network_service
 write_service
+write_filebrowser_service
 start_service
 print_success

@@ -104,14 +104,18 @@ curl -fsSL https://raw.githubusercontent.com/xxredxpandaxx/BackpackingMediaServe
 
 What that installer does:
 
-- installs `git`, `python3`, `python3-venv`, and `NetworkManager`
+- installs `curl`, `git`, `python3`, `python3-venv`, and `NetworkManager`
 - clones or updates the repo into `/opt/nomadscreen`
 - seeds `/srv/nomadscreen/nomadscreen.config.json` from `nomadscreen.config.example.json` if needed
 - creates the standard `~/media` folder layout without overwriting existing files
 - creates `/opt/nomadscreen/.venv` and installs Python dependencies
+- installs File Browser into `/usr/local/bin/filebrowser`
+- prepares `/srv/nomadscreen/filebrowser` for the File Browser database and captured password
 - prepares `/var/tmp/nomadscreen-upload` for large browser uploads
 - writes and enables `nomadscreen-network.service`
 - writes and enables `nomadscreen.service`
+- writes and enables `nomadscreen-filebrowser.service`
+- captures the initial File Browser admin password so the Device page can show it
 
 For normal updates after the first install, use the updater instead of the full installer:
 
@@ -123,9 +127,12 @@ That updater:
 
 - pulls the latest code into `/opt/nomadscreen`
 - refreshes Python dependencies
+- makes sure File Browser is installed
 - rewrites the service units with your current paths
+- refreshes `nomadscreen-filebrowser.service`
 - keeps large web uploads pointed at `/var/tmp/nomadscreen-upload`
 - restarts `nomadscreen`
+- restarts `nomadscreen-filebrowser`
 - leaves `nomadscreen-network` alone by default so you do not get kicked off the Pi's Wi-Fi mid-update
 
 If you know you want to apply network-service changes immediately too, run:
@@ -140,7 +147,7 @@ curl -fsSL https://raw.githubusercontent.com/xxredxpandaxx/BackpackingMediaServe
 
    ```bash
    sudo apt update
-   sudo apt install -y git python3 python3-venv
+   sudo apt install -y curl git python3 python3-venv network-manager
    ```
 
 2. Clone the repo onto the Pi:
@@ -159,25 +166,44 @@ curl -fsSL https://raw.githubusercontent.com/xxredxpandaxx/BackpackingMediaServe
    /opt/nomadscreen/.venv/bin/pip install -r /opt/nomadscreen/requirements.txt
    ```
 
-6. Start the server manually once to confirm the library loads:
+6. Install File Browser and create its state directory:
+
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/filebrowser/get/master/get.sh | bash
+   sudo install filebrowser /usr/local/bin/filebrowser
+   sudo mkdir -p /srv/nomadscreen/filebrowser
+   sudo chown -R $USER:$USER /srv/nomadscreen/filebrowser
+   ```
+
+7. Start the server manually once to confirm the library loads:
 
    ```bash
    NOMADSCREEN_STORAGE_ROOT=/srv/nomadscreen NOMADSCREEN_MEDIA_ROOT=/home/pi/media /opt/nomadscreen/.venv/bin/python /opt/nomadscreen/src/main.py
    ```
 
-7. Install the example service if you want it to start on boot:
+8. Install the example services if you want them to start on boot:
 
    ```bash
    sudo cp /opt/nomadscreen/deploy/network/nomadscreen-network.service /etc/systemd/system/nomadscreen-network.service
-   # If your Pi login is not "pi", edit User=, Group=, and NOMADSCREEN_MEDIA_ROOT= in nomadscreen.service first.
+   # If your Pi login is not "pi", edit User=, Group=, and NOMADSCREEN_MEDIA_ROOT= in nomadscreen.service and nomadscreen-filebrowser.service first.
    sudo cp /opt/nomadscreen/deploy/nomadscreen.service /etc/systemd/system/nomadscreen.service
+   sudo cp /opt/nomadscreen/deploy/nomadscreen-filebrowser.service /etc/systemd/system/nomadscreen-filebrowser.service
    sudo systemctl daemon-reload
    sudo systemctl enable --now NetworkManager.service
    sudo systemctl enable --now nomadscreen-network.service
    sudo systemctl enable --now nomadscreen.service
+   sudo systemctl enable --now nomadscreen-filebrowser.service
    ```
 
-8. Open `/app/device` and use the built-in upload panel to send files over Wi-Fi, or copy media into `~/media` manually if you prefer.
+   To let the Device page show File Browser's initial admin password too, save the generated password into `/srv/nomadscreen/filebrowser/admin-password.txt` after the first File Browser start:
+
+   ```bash
+   sudo sh -c "journalctl -u nomadscreen-filebrowser.service -n 80 --no-pager | sed -n -E 's/.*randomly generated password: ([^[:space:]]+).*/\\1/p' | tail -n 1 > /srv/nomadscreen/filebrowser/admin-password.txt"
+   sudo chown $USER:$USER /srv/nomadscreen/filebrowser/admin-password.txt
+   sudo chmod 600 /srv/nomadscreen/filebrowser/admin-password.txt
+   ```
+
+9. Open `/app/device` and use the built-in upload panel to send files over Wi-Fi, or open the File Management card there to launch File Browser and log in with the captured initial admin password.
 
 ## Loading content over Wi-Fi
 

@@ -45,6 +45,7 @@ DEFAULT_MAX_CLIENTS = 6
 DEFAULT_MAX_STREAMS = 12
 DEFAULT_CLIENT_WINDOW_SECONDS = 300
 DEFAULT_METADATA_REFRESH_TIMEOUT_SECONDS = 1800
+DEFAULT_FILEBROWSER_PORT = 8081
 MAX_DEVICE_NAME_LENGTH = 80
 MAX_HOTSPOT_SSID_LENGTH = 32
 MIN_HOTSPOT_PASSWORD_LENGTH = 8
@@ -777,6 +778,11 @@ def load_settings() -> dict[str, object]:
         DEFAULT_HTTP_PORT,
         1,
     )
+    filebrowser_port = safe_int(
+        os.environ.get("NOMADSCREEN_FILEBROWSER_PORT") or raw_config.get("fileBrowserPort"),
+        DEFAULT_FILEBROWSER_PORT,
+        1,
+    )
     wifi_interface = (
         os.environ.get("NOMADSCREEN_WIFI_INTERFACE", "").strip()
         or str(
@@ -826,6 +832,7 @@ def load_settings() -> dict[str, object]:
         "mdns_enabled": env_bool("NOMADSCREEN_MDNS", bool(raw_config.get("mdnsEnabled", False))),
         "bind_address": bind_address,
         "http_port": http_port,
+        "filebrowser_port": filebrowser_port,
         "max_clients": safe_int(raw_config.get("maxClients"), DEFAULT_MAX_CLIENTS, 1),
         "max_streams": safe_int(raw_config.get("maxStreams"), DEFAULT_MAX_STREAMS, 1),
         "client_window_seconds": safe_int(
@@ -1241,6 +1248,38 @@ class AppState:
         if port in {80, 443}:
             return f"http://{safe_host}{safe_suffix}"
         return f"http://{safe_host}:{port}{safe_suffix}"
+
+    def file_manager_password_path(self) -> Path:
+        return (Path(self.settings["storage_root"]) / "filebrowser" / "admin-password.txt").resolve(strict=False)
+
+    def file_manager_password(self) -> str:
+        password_path = self.file_manager_password_path()
+        try:
+            with password_path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    value = line.strip()
+                    if value:
+                        return value
+        except OSError:
+            return ""
+        return ""
+
+    def file_manager_status_payload(self, local_ip: str, mdns_host: str) -> dict[str, object]:
+        port = safe_int(self.settings.get("filebrowser_port"), DEFAULT_FILEBROWSER_PORT, 1)
+        ip_url = self.compose_url(local_ip, port)
+        mdns_url = self.compose_url(mdns_host, port)
+        password = self.file_manager_password()
+        return {
+            "username": "admin",
+            "password": password,
+            "passwordAvailable": bool(password),
+            "passwordPath": str(self.file_manager_password_path()) if password else "",
+            "port": port,
+            "url": mdns_url if self.settings["mdns_enabled"] else ip_url,
+            "ipUrl": ip_url,
+            "mdnsUrl": mdns_url,
+            "root": str(self.media_root_path()),
+        }
 
     def media_root_path(self) -> Path:
         return Path(self.settings["media_directory"]).resolve(strict=False)
@@ -3115,6 +3154,7 @@ class AppState:
             "preferServerLibrary": self.metadata_index_stale,
             "upload": self.upload_status_payload(),
             "metadataRefresh": self.metadata_refresh_status_payload(),
+            "fileManager": self.file_manager_status_payload(local_ip, mdns_host),
             "platform": "raspberry-pi-zero-w",
         }
 

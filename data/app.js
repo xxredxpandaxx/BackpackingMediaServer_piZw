@@ -5703,7 +5703,10 @@ function createUploadCard() {
     }
 
     breadcrumbRow.innerHTML = "";
-    for (const crumb of uploadDestinationBreadcrumbs(selectedDestination)) {
+    const breadcrumbs = uploadDestinationBreadcrumbs(selectedDestination);
+    const nestedBreadcrumbs = breadcrumbs.slice(1);
+    breadcrumbRow.hidden = nestedBreadcrumbs.length === 0;
+    for (const crumb of nestedBreadcrumbs) {
       const button = createButton(crumb.label, "ghost-button upload-breadcrumb-button", () => {
         selectedDestination = crumb.path;
         state.uploadDraft.destination = selectedDestination;
@@ -7479,6 +7482,21 @@ function renderDevicePage(container) {
   const currentNetworkName = activeNetworkName(status);
   const hotspotName = hotspotNetworkName(status);
   const hotspotPassword = status.hotspotPassword || (status.networkMode === "hotspot" ? status.password : "");
+  const fileManager = status.fileManager || {};
+  const fileManagerPassword = String(fileManager.password || "").trim();
+  let fileManagerUrl = String(fileManager.url || "").trim();
+  if (Number(fileManager.port || 0) > 0) {
+    try {
+      const currentUrl = new URL(window.location.href);
+      currentUrl.port = String(fileManager.port);
+      currentUrl.pathname = "/";
+      currentUrl.search = "";
+      currentUrl.hash = "";
+      fileManagerUrl = currentUrl.toString();
+    } catch (error) {
+      // Fall back to the server-provided URL if the current location cannot be rewritten.
+    }
+  }
   const posterDebug = posterDebugDetails();
   const indexUrl = libraryIndexUrl();
   const librarySourceLabel =
@@ -7539,6 +7557,54 @@ function renderDevicePage(container) {
       copy: "Send files or whole folders to any existing media path, or create a new folder as you upload.",
       renderCard: () => createUploadCard(),
       searchText: "upload media files folders wifi device panel add media over wifi browse choose files choose folder season show destination path rescan",
+    },
+    {
+      eyebrow: "Files",
+      title: "File Management",
+      copy:
+        "Open the bundled File Browser to rename, move, or remove media directly on the Pi. The password shown here is the initial admin password captured from File Browser's first-start logs.",
+      rows: [
+        { label: "User", value: fileManager.username || "admin" },
+        {
+          label: "Initial admin password",
+          value: fileManagerPassword || "Unavailable. Rerun update.sh on the Pi to recapture it.",
+        },
+        { label: "URL", value: fileManagerUrl || "Unavailable" },
+        { label: "Root", value: fileManager.root || status.mediaRoot || "/media" },
+      ],
+      actions: [
+        {
+          label: "Open File Browser",
+          className: "primary-button",
+          onClick: () => {
+            if (!fileManagerUrl) {
+              els.pageSubtitle.textContent = "File Browser URL is unavailable right now.";
+              return;
+            }
+            window.open(fileManagerUrl, "_blank", "noopener,noreferrer");
+          },
+        },
+        ...(fileManagerPassword
+          ? [
+              {
+                label: "Copy Password",
+                className: "ghost-button",
+                onClick: () => {
+                  copyTextToClipboard(fileManagerPassword)
+                    .then((copied) => {
+                      els.pageSubtitle.textContent = copied
+                        ? "File Browser password copied to the clipboard."
+                        : fileManagerPassword;
+                    })
+                    .catch(() => {
+                      els.pageSubtitle.textContent = fileManagerPassword;
+                    });
+                },
+              },
+            ]
+          : []),
+      ],
+      searchText: `file browser file management admin login ${fileManagerUrl || ""} ${fileManager.root || status.mediaRoot || ""}`,
     },
     {
       eyebrow: "Network",
