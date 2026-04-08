@@ -22,7 +22,7 @@ if str(SOURCE_ROOT) not in sys.path:
 from audiobook_metadata import extract_audiobook_embedded_metadata
 
 
-GENERATOR_NAME = "Nomad Screen Python Metadata Builder"
+GENERATOR_NAME = "Backcountry Broadcast Python Metadata Builder"
 TMDB_API_ROOT = "https://api.themoviedb.org/3"
 TMDB_IMAGE_ROOT = "https://image.tmdb.org/t/p"
 
@@ -33,7 +33,7 @@ DOCUMENT_EXTENSIONS = {".pdf", ".txt", ".md", ".csv", ".gpx", ".kml", ".doc", ".
 
 
 def log(message: str) -> None:
-    print(f"[nomadscreen-metadata] {message}")
+    print(f"[backcountry-broadcast-metadata] {message}")
 
 
 def fsync_directory(path: Path) -> None:
@@ -1277,7 +1277,7 @@ def build_library(storage_root: Path, media_root: Path, verbose: bool) -> dict[s
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build Nomad Screen metadata and library.json.")
+    parser = argparse.ArgumentParser(description="Build Backcountry Broadcast metadata and library.json.")
     parser.add_argument("--storage-root", default="", help="Path to the runtime storage root containing nomadscreen.config.json")
     parser.add_argument("--media-root", default="", help="Path to the real media root")
     parser.add_argument("--verbose", action="store_true", help="Print each indexed path")

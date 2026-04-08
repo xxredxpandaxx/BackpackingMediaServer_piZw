@@ -1,5 +1,5 @@
 [Unit]
-Description=Nomad Screen File Browser
+Description=Backcountry Broadcast File Browser
 After=network.target
 Wants=network.target
 

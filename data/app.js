@@ -379,7 +379,7 @@ function libraryIndexUrl() {
 }
 
 function appDisplayName() {
-  return (state.status && state.status.device) || "Media Server";
+  return (state.status && state.status.device) || "Backcountry Broadcast";
 }
 
 function appNetworkName() {

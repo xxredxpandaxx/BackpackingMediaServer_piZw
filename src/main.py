@@ -28,9 +28,9 @@ APP_ROOT = Path(__file__).resolve().parents[1]
 STATIC_ROOT = APP_ROOT / "data"
 DEFAULT_STORAGE_ROOT = APP_ROOT / ".nomadscreen-runtime"
 
-DEFAULT_DEVICE_NAME = "Nomad Screen"
-DEFAULT_MDNS_HOST = "nomadscreen"
-DEFAULT_ACCESS_POINT_SSID = "NomadScreen"
+DEFAULT_DEVICE_NAME = "Backcountry Broadcast"
+DEFAULT_MDNS_HOST = "backcountrybroadcast"
+DEFAULT_ACCESS_POINT_SSID = "BackcountryBroadcast"
 DEFAULT_ACCESS_POINT_PASSWORD = "backpackingmedia"
 DEFAULT_WIFI_INTERFACE = "wlan0"
 DEFAULT_KNOWN_WIFI_TIMEOUT_SECONDS = 20

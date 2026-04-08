@@ -18,7 +18,7 @@ UPLOAD_TMP_DIR="${NOMADSCREEN_UPLOAD_TMP_DIR:-/var/tmp/nomadscreen-upload}"
 
 usage() {
   cat <<'EOF'
-Nomad Screen installer
+Backcountry Broadcast installer
 
 Usage:
   install.sh
@@ -43,11 +43,11 @@ EOF
 }
 
 log() {
-  printf '[nomadscreen-install] %s\n' "$*"
+  printf '[backcountry-broadcast-install] %s\n' "$*"
 }
 
 die() {
-  printf '[nomadscreen-install] Error: %s\n' "$*" >&2
+  printf '[backcountry-broadcast-install] Error: %s\n' "$*" >&2
   exit 1
 }
 
@@ -197,7 +197,7 @@ prepare_repo() {
     clean_generated_checkout_files
     if print_checkout_status | grep -q .; then
       log "Existing checkout still has local changes:"
-      print_checkout_status | sed 's/^/[nomadscreen-install]   /'
+      print_checkout_status | sed 's/^/[backcountry-broadcast-install]   /'
       die "Existing checkout has local changes. Commit or discard them before rerunning the installer."
     fi
 
@@ -306,7 +306,7 @@ write_network_service() {
 
   cat >"${tmp_service}" <<EOF
 [Unit]
-Description=Nomad Screen Wi-Fi fallback
+Description=Backcountry Broadcast Wi-Fi fallback
 Wants=NetworkManager.service
 After=NetworkManager.service
 Before=${SERVICE_NAME}.service
@@ -335,7 +335,7 @@ write_service() {
 
   cat >"${tmp_service}" <<EOF
 [Unit]
-Description=Nomad Screen media server
+Description=Backcountry Broadcast media server
 After=network.target ${NETWORK_SERVICE_NAME}.service
 Wants=${NETWORK_SERVICE_NAME}.service
 
@@ -379,7 +379,7 @@ write_filebrowser_service() {
 
   cat >"${tmp_service}" <<EOF
 [Unit]
-Description=Nomad Screen File Browser
+Description=Backcountry Broadcast File Browser
 After=network.target
 Wants=network.target
 

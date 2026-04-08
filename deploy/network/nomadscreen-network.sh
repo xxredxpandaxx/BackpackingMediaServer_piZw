@@ -6,18 +6,18 @@ DEFAULT_STORAGE_ROOT="/srv/nomadscreen"
 DEFAULT_WIFI_INTERFACE="wlan0"
 DEFAULT_CONNECT_TIMEOUT_SECONDS="20"
 DEFAULT_ACCESS_POINT_PASSWORD="backpackingmedia"
-DEFAULT_ACCESS_POINT_CONNECTION_NAME="Nomad Screen Hotspot"
+DEFAULT_ACCESS_POINT_CONNECTION_NAME="Backcountry Broadcast Hotspot"
 DEFAULT_ACCESS_POINT_ADDRESS="10.0.0.1/24"
 
 STORAGE_ROOT="${NOMADSCREEN_STORAGE_ROOT:-${DEFAULT_STORAGE_ROOT}}"
 CONFIG_PATH="${NOMADSCREEN_CONFIG_PATH:-${STORAGE_ROOT}/nomadscreen.config.json}"
 
 log() {
-  printf '[nomadscreen-network] %s\n' "$*"
+  printf '[backcountry-broadcast-network] %s\n' "$*"
 }
 
 die() {
-  printf '[nomadscreen-network] Error: %s\n' "$*" >&2
+  printf '[backcountry-broadcast-network] Error: %s\n' "$*" >&2
   exit 1
 }
 
@@ -28,11 +28,11 @@ import json
 import sys
 from pathlib import Path
 
-DEFAULT_DEVICE_NAME = "Nomad Screen"
+DEFAULT_DEVICE_NAME = "Backcountry Broadcast"
 DEFAULT_WIFI_INTERFACE = "wlan0"
 DEFAULT_CONNECT_TIMEOUT_SECONDS = 20
 DEFAULT_ACCESS_POINT_PASSWORD = "backpackingmedia"
-DEFAULT_ACCESS_POINT_CONNECTION_NAME = "Nomad Screen Hotspot"
+DEFAULT_ACCESS_POINT_CONNECTION_NAME = "Backcountry Broadcast Hotspot"
 
 
 def normalize_device_name(value: str) -> str:
@@ -63,7 +63,7 @@ if config_path.exists():
 wifi_block = raw.get("wifi") if isinstance(raw.get("wifi"), dict) else {}
 device_name = normalize_device_name(str(raw.get("deviceName") or raw.get("serverName") or DEFAULT_DEVICE_NAME)) or DEFAULT_DEVICE_NAME
 ssid = str(raw.get("hotspotSsid") or raw.get("accessPointSsid") or wifi_block.get("ssid") or "").strip()
-ssid = " ".join(ssid.split())[:32] or derive_compact_device_token(device_name) or "NomadScreen"
+ssid = " ".join(ssid.split())[:32] or derive_compact_device_token(device_name) or "BackcountryBroadcast"
 password = str(raw.get("wifiPassword") or wifi_block.get("password") or DEFAULT_ACCESS_POINT_PASSWORD)
 if len(password) < 8 or len(password) > 63:
     password = DEFAULT_ACCESS_POINT_PASSWORD

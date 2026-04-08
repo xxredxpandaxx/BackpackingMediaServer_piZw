@@ -1,6 +1,8 @@
-# Backpacking Media Server
+# Backcountry Broadcast
 
-A Raspberry Pi Zero W portable media server that keeps the existing Nomad Screen web UI, media-library layout, and metadata format, while replacing the old microcontroller firmware with a Pi-native Python service.
+A Raspberry Pi Zero W portable media server branded as Backcountry Broadcast. It keeps the existing media-library layout and metadata format while replacing the old microcontroller firmware with a Pi-native Python service.
+
+The visible product name is now Backcountry Broadcast. For compatibility with existing installs, internal paths, service filenames, and environment variables still use the historical `nomadscreen` identifiers for now.
 
 ## What changed
 
