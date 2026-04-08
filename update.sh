@@ -3,13 +3,15 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_INSTALL_DIR="/opt/backcountry-broadcast"
+LEGACY_INSTALL_DIR="/opt/nomadscreen"
 LEGACY_SERVICE_NAME="nomadscreen"
 LEGACY_NETWORK_SERVICE_NAME="nomadscreen-network"
 LEGACY_FILEBROWSER_SERVICE_NAME="nomadscreen-filebrowser"
 SERVICE_NAME="${NOMADSCREEN_SERVICE_NAME:-backcountry-broadcast}"
 NETWORK_SERVICE_NAME="${NOMADSCREEN_NETWORK_SERVICE_NAME:-backcountry-broadcast-network}"
 FILEBROWSER_SERVICE_NAME="${NOMADSCREEN_FILEBROWSER_SERVICE_NAME:-backcountry-broadcast-filebrowser}"
-INSTALL_DIR="${NOMADSCREEN_INSTALL_DIR:-${SCRIPT_DIR}}"
+INSTALL_DIR="${NOMADSCREEN_INSTALL_DIR:-}"
 STORAGE_ROOT="${NOMADSCREEN_STORAGE_ROOT:-}"
 MEDIA_ROOT="${NOMADSCREEN_MEDIA_ROOT:-}"
 HTTP_PORT="${NOMADSCREEN_PORT:-}"
@@ -28,7 +30,7 @@ Usage:
   update.sh [options]
 
 Options:
-  --install-dir PATH      App install path (default: current checkout directory)
+  --install-dir PATH      App install path (default: detected install or /opt/backcountry-broadcast)
   --service-name NAME     systemd service name (default: backcountry-broadcast)
   --network-service NAME  Wi-Fi fallback service name (default: backcountry-broadcast-network)
   --storage-root PATH     Runtime storage root (default: preserved from installed service)
@@ -123,6 +125,39 @@ resolve_existing_service_path() {
     return
   fi
   printf '/etc/systemd/system/%s.service\n' "${preferred_name}"
+}
+
+resolve_install_dir() {
+  local service_path
+  local working_directory
+
+  if [[ -n "${INSTALL_DIR}" ]]; then
+    return
+  fi
+
+  if [[ -d "${SCRIPT_DIR}/.git" && -f "${SCRIPT_DIR}/src/main.py" ]]; then
+    INSTALL_DIR="${SCRIPT_DIR}"
+    return
+  fi
+
+  service_path="$(resolve_existing_service_path "${SERVICE_NAME}" "${LEGACY_SERVICE_NAME}")"
+  working_directory="$(read_unit_value "${service_path}" "WorkingDirectory" || true)"
+  if [[ -n "${working_directory}" && -d "${working_directory}/.git" ]]; then
+    INSTALL_DIR="${working_directory}"
+    return
+  fi
+
+  if [[ -d "${DEFAULT_INSTALL_DIR}/.git" ]]; then
+    INSTALL_DIR="${DEFAULT_INSTALL_DIR}"
+    return
+  fi
+
+  if [[ -d "${LEGACY_INSTALL_DIR}/.git" ]]; then
+    INSTALL_DIR="${LEGACY_INSTALL_DIR}"
+    return
+  fi
+
+  INSTALL_DIR="${DEFAULT_INSTALL_DIR}"
 }
 
 parse_args() {
@@ -562,6 +597,7 @@ print_success() {
 }
 
 parse_args "$@"
+resolve_install_dir
 ensure_install_context
 prepare_tmp_dir
 prepare_filebrowser_storage
