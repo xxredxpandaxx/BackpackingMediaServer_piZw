@@ -47,6 +47,8 @@ DEFAULT_CATALOG_DB_PATH = f"{DEFAULT_METADATA_ROOT}/library.db"
 LEGACY_CATALOG_DB_PATH = f"{LEGACY_METADATA_ROOT}/library.db"
 DEFAULT_RUNTIME_CONFIG_NAME = "backcountry-broadcast.config.json"
 LEGACY_RUNTIME_CONFIG_NAME = "nomadscreen.config.json"
+DEFAULT_RUNTIME_USER_CONFIG_NAME = "backcountry-broadcast.user.json"
+LEGACY_RUNTIME_USER_CONFIG_NAME = "nomadscreen.user.json"
 DEFAULT_RUNTIME_CONFIG_PATH = f"/{DEFAULT_RUNTIME_CONFIG_NAME}"
 LEGACY_RUNTIME_CONFIG_PATH = f"/{LEGACY_RUNTIME_CONFIG_NAME}"
 DEFAULT_METADATA_REFRESH_SCRIPT = APP_ROOT / "tools" / "backcountry_broadcast_refresh_metadata.py"
@@ -195,6 +197,13 @@ def runtime_config_candidates(storage_root: Path) -> list[Path]:
     ]
 
 
+def runtime_user_config_candidates(storage_root: Path) -> list[Path]:
+    return [
+        storage_root / DEFAULT_RUNTIME_USER_CONFIG_NAME,
+        storage_root / LEGACY_RUNTIME_USER_CONFIG_NAME,
+    ]
+
+
 def first_existing_path(candidates: list[Path]) -> Path | None:
     for candidate in candidates:
         if candidate.exists():
@@ -216,6 +225,15 @@ def read_runtime_config_file(config_path: Path | list[Path] | tuple[Path, ...]) 
             return {}, f"{candidate} (unreadable)"
 
     return {}, str(candidates[0])
+
+
+def merge_runtime_config_values(base: object, override: object) -> object:
+    if isinstance(base, dict) and isinstance(override, dict):
+        merged = dict(base)
+        for key, value in override.items():
+            merged[key] = merge_runtime_config_values(merged.get(key), value) if key in merged else value
+        return merged
+    return override
 
 
 def fsync_directory(path: Path) -> None:
@@ -782,7 +800,18 @@ def load_settings() -> dict[str, object]:
     config_candidates = runtime_config_candidates(storage_root)
     config_path = config_candidates[0]
     config_source_path = first_existing_path(config_candidates) or config_path
-    raw_config, config_source = read_runtime_config_file(config_candidates)
+    raw_base_config, base_config_source = read_runtime_config_file(config_candidates)
+    user_config_candidates = runtime_user_config_candidates(storage_root)
+    user_config_path = user_config_candidates[0]
+    user_config_source_path = first_existing_path(user_config_candidates) or user_config_path
+    raw_user_config, user_config_source = read_runtime_config_file(user_config_candidates)
+    raw_config = merge_runtime_config_values(raw_base_config, raw_user_config)
+    config_sources: list[str] = []
+    if first_existing_path(config_candidates) is not None and base_config_source:
+        config_sources.append(base_config_source)
+    if first_existing_path(user_config_candidates) is not None and user_config_source:
+        config_sources.append(user_config_source)
+    config_source = " + ".join(config_sources) if config_sources else "defaults"
 
     raw_name = raw_config.get("deviceName") or raw_config.get("serverName") or DEFAULT_DEVICE_NAME
     device_name = normalize_device_name(str(raw_name))[:MAX_DEVICE_NAME_LENGTH] or DEFAULT_DEVICE_NAME
@@ -889,6 +918,8 @@ def load_settings() -> dict[str, object]:
         "upload_tmp_directory": upload_tmp_directory,
         "config_path": config_path,
         "config_source_path": config_source_path,
+        "user_config_path": user_config_path,
+        "user_config_source_path": user_config_source_path,
         "device_name": device_name,
         "ssid": hotspot_ssid,
         "wifi_password": wifi_password,
@@ -3345,6 +3376,7 @@ class AppState:
             "tmdbApiKey": str(self.settings.get("tmdb_api_key") or ""),
             "devicePasswordConfigured": self.device_access_uses_dedicated_password(),
             "configSource": self.settings["config_source"],
+            "userConfigPath": str(self.settings.get("user_config_path") or ""),
         }
 
     def save_device_config(
@@ -3370,9 +3402,9 @@ class AppState:
             safe_device_password = validated_device_page_password(safe_device_password)
 
         with self.lock:
-            config_path = Path(self.settings["config_path"])
-            config_source_path = Path(self.settings.get("config_source_path") or config_path)
-            raw_config, _ = read_runtime_config_file([config_source_path, config_path])
+            user_config_path = Path(self.settings.get("user_config_path") or self.settings["config_path"])
+            user_config_source_path = Path(self.settings.get("user_config_source_path") or user_config_path)
+            raw_config, _ = read_runtime_config_file([user_config_source_path, user_config_path])
             raw_config["deviceName"] = safe_device_name
             raw_config.pop("serverName", None)
             raw_config["hotspotSsid"] = safe_hotspot_ssid
@@ -3388,14 +3420,15 @@ class AppState:
                 wifi_block["ssid"] = safe_hotspot_ssid
                 wifi_block["password"] = safe_wifi_password
                 raw_config["wifi"] = wifi_block
-            config_path.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_text(config_path, json.dumps(raw_config, indent=2, ensure_ascii=False) + "\n")
+            user_config_path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(user_config_path, json.dumps(raw_config, indent=2, ensure_ascii=False) + "\n")
             self.settings = load_settings()
             self.configure_upload_temp_directory()
             self.prepare_upload_staging_directory()
 
         message = (
-            "Saved device settings. Fallback Wi-Fi changes apply the next time the hotspot starts. "
+            "Saved device settings to the retained user settings file. "
+            "Fallback Wi-Fi changes apply the next time the hotspot starts. "
             "The TMDb API key is used on the next online rescan."
         )
         if safe_device_password:

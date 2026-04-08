@@ -29,6 +29,8 @@ DEFAULT_STORAGE_ROOT = SCRIPT_ROOT / ".backcountry-broadcast-runtime"
 LEGACY_STORAGE_ROOT = SCRIPT_ROOT / ".nomadscreen-runtime"
 DEFAULT_RUNTIME_CONFIG_NAME = "backcountry-broadcast.config.json"
 LEGACY_RUNTIME_CONFIG_NAME = "nomadscreen.config.json"
+DEFAULT_RUNTIME_USER_CONFIG_NAME = "backcountry-broadcast.user.json"
+LEGACY_RUNTIME_USER_CONFIG_NAME = "nomadscreen.user.json"
 DEFAULT_METADATA_DIRECTORY_NAME = ".backcountry-broadcast"
 LEGACY_METADATA_DIRECTORY_NAME = ".nomadscreen"
 
@@ -288,8 +290,8 @@ def config_bool(value: object, default: bool) -> bool:
     return default
 
 
-def read_runtime_config(config_path: Path) -> dict[str, object]:
-    defaults: dict[str, object] = {
+def default_runtime_config() -> dict[str, object]:
+    return {
         "tmdbApiKey": "",
         "tmdbBearerToken": "",
         "language": "en-US",
@@ -298,20 +300,38 @@ def read_runtime_config(config_path: Path) -> dict[str, object]:
         "overwriteImages": False,
         "minimumMatchScore": 0.55,
     }
+
+
+def read_runtime_config(config_path: Path) -> dict[str, object]:
     if not config_path.exists():
-        return defaults
+        return {}
     try:
         raw = json.loads(config_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return defaults
-    merged = dict(defaults)
-    merged.update(raw)
-    return merged
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def merge_runtime_config_values(base: object, override: object) -> object:
+    if isinstance(base, dict) and isinstance(override, dict):
+        merged = dict(base)
+        for key, value in override.items():
+            merged[key] = merge_runtime_config_values(merged.get(key), value) if key in merged else value
+        return merged
+    return override
 
 
 def runtime_config_path(storage_root: Path) -> Path:
     preferred = storage_root / DEFAULT_RUNTIME_CONFIG_NAME
     legacy = storage_root / LEGACY_RUNTIME_CONFIG_NAME
+    if preferred.exists() or not legacy.exists():
+        return preferred
+    return legacy
+
+
+def runtime_user_config_path(storage_root: Path) -> Path:
+    preferred = storage_root / DEFAULT_RUNTIME_USER_CONFIG_NAME
+    legacy = storage_root / LEGACY_RUNTIME_USER_CONFIG_NAME
     if preferred.exists() or not legacy.exists():
         return preferred
     return legacy
@@ -1238,7 +1258,13 @@ def isoformat_now() -> str:
 
 
 def build_library(storage_root: Path, media_root: Path, verbose: bool) -> dict[str, object]:
-    config = read_runtime_config(runtime_config_path(storage_root))
+    config = merge_runtime_config_values(
+        default_runtime_config(),
+        merge_runtime_config_values(
+            read_runtime_config(runtime_config_path(storage_root)),
+            read_runtime_config(runtime_user_config_path(storage_root)),
+        ),
+    )
     client = TmdbClient(config)
     metadata_root = metadata_root_path(media_root)
     metadata_root.mkdir(parents=True, exist_ok=True)

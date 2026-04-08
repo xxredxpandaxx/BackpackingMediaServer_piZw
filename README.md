@@ -32,11 +32,12 @@ The project now uses Backcountry Broadcast naming for the repo files, default se
 The server expects a storage root that contains:
 
 - `backcountry-broadcast.config.json`
+- `backcountry-broadcast.user.json`
 - `media/`
 - `media/.backcountry-broadcast/library.json` when metadata has been generated
 - `media/.backcountry-broadcast/library.db` after the Pi scans the library
 
-For local development, the app now keeps its default runtime files under `.backcountry-broadcast-runtime/` inside the repo so test media and generated metadata do not clutter the project root. On the Pi, `NOMADSCREEN_STORAGE_ROOT` holds config/runtime files such as `backcountry-broadcast.config.json`, while `NOMADSCREEN_MEDIA_ROOT` can point at the real media library path. The installer now defaults that media path to `~/media`. Large web uploads are staged under `/var/tmp/backcountry-broadcast-upload` so they do not fill the Pi Zero W's small `/tmp` RAM disk.
+For local development, the app now keeps its default runtime files under `.backcountry-broadcast-runtime/` inside the repo so test media and generated metadata do not clutter the project root. On the Pi, `NOMADSCREEN_STORAGE_ROOT` holds config/runtime files such as `backcountry-broadcast.config.json` and the retained `backcountry-broadcast.user.json`, while `NOMADSCREEN_MEDIA_ROOT` can point at the real media library path. The installer now defaults that media path to `~/media`. Large web uploads are staged under `/var/tmp/backcountry-broadcast-upload` so they do not fill the Pi Zero W's small `/tmp` RAM disk.
 
 ### Recommended media layout
 
@@ -50,13 +51,15 @@ Nested folders inside `media/documents` show up as clickable folders in the Docu
 
 ### Runtime config notes
 
-Keep `backcountry-broadcast.config.json` in your runtime storage root, for example `/srv/backcountry-broadcast`. You can keep that storage on:
+Keep `backcountry-broadcast.config.json` and `backcountry-broadcast.user.json` in your runtime storage root, for example `/srv/backcountry-broadcast`. You can keep that storage on:
 
 - the Pi filesystem
 - an external USB drive
 - a removable SD card mounted by the Pi
 
-Edit that config file to set:
+Treat `backcountry-broadcast.config.json` as the installer-managed base file and put your custom values in `backcountry-broadcast.user.json`, which the installer and updater leave alone. The Device page now saves editable settings into the retained user file automatically.
+
+Edit that retained config file to set:
 
 - the device/server name shown in the web UI
 - the fallback hotspot name and password
@@ -110,6 +113,7 @@ What that installer does:
 - installs `curl`, `git`, `python3`, `python3-venv`, and `NetworkManager`
 - clones or updates the repo into `/opt/backcountry-broadcast`
 - seeds `/srv/backcountry-broadcast/backcountry-broadcast.config.json` from `backcountry-broadcast.config.example.json` if needed
+- creates `/srv/backcountry-broadcast/backcountry-broadcast.user.json` for retained custom settings if needed
 - creates the standard `~/media` folder layout without overwriting existing files
 - creates `/opt/backcountry-broadcast/.venv` and installs Python dependencies
 - installs File Browser into `/usr/local/bin/filebrowser`
@@ -161,15 +165,16 @@ curl -fsSL https://raw.githubusercontent.com/xxredxpandaxx/BackpackingMediaServe
    ```
 
 3. Copy `backcountry-broadcast.config.example.json` to your runtime storage root as `backcountry-broadcast.config.json`, for example `/srv/backcountry-broadcast/backcountry-broadcast.config.json`.
-4. Create your media folders under the real media path, for example `~/media/{movies,tv,music,audiobooks,documents}`.
-5. Create a virtual environment and install the dependency:
+4. Create `/srv/backcountry-broadcast/backcountry-broadcast.user.json` with `{}` and put your custom settings there.
+5. Create your media folders under the real media path, for example `~/media/{movies,tv,music,audiobooks,documents}`.
+6. Create a virtual environment and install the dependency:
 
    ```bash
    python3 -m venv /opt/backcountry-broadcast/.venv
    /opt/backcountry-broadcast/.venv/bin/pip install -r /opt/backcountry-broadcast/requirements.txt
    ```
 
-6. Install File Browser and create its state directory:
+7. Install File Browser and create its state directory:
 
    ```bash
    curl -fsSL https://raw.githubusercontent.com/filebrowser/get/master/get.sh | bash
@@ -178,7 +183,7 @@ curl -fsSL https://raw.githubusercontent.com/xxredxpandaxx/BackpackingMediaServe
    sudo chown -R $USER:$USER /srv/backcountry-broadcast/filebrowser
    ```
 
-7. Start the server manually once to confirm the library loads:
+8. Start the server manually once to confirm the library loads:
 
    ```bash
    NOMADSCREEN_STORAGE_ROOT=/srv/backcountry-broadcast NOMADSCREEN_MEDIA_ROOT=/home/pi/media /opt/backcountry-broadcast/.venv/bin/python /opt/backcountry-broadcast/src/main.py
@@ -245,7 +250,7 @@ To preload known networks, use Raspberry Pi Imager advanced settings before firs
 
 ## Runtime config
 
-`backcountry-broadcast.config.json` still supports the metadata-builder fields and now also supports:
+`backcountry-broadcast.config.json` still supports the metadata-builder fields and `backcountry-broadcast.user.json` can override any of them. Those files now support:
 
 - `httpPort`
 - `bindAddress`

@@ -250,6 +250,16 @@ migrate_legacy_runtime_names() {
     log "Renaming runtime config to backcountry-broadcast.config.json"
     run_root mv "${STORAGE_ROOT}/nomadscreen.config.json" "${STORAGE_ROOT}/backcountry-broadcast.config.json"
   fi
+  if [[ -f "${STORAGE_ROOT}/nomadscreen.user.json" && ! -f "${STORAGE_ROOT}/backcountry-broadcast.user.json" ]]; then
+    log "Renaming retained user settings to backcountry-broadcast.user.json"
+    run_root mv "${STORAGE_ROOT}/nomadscreen.user.json" "${STORAGE_ROOT}/backcountry-broadcast.user.json"
+  fi
+  if [[ ! -f "${STORAGE_ROOT}/backcountry-broadcast.user.json" ]]; then
+    log "Creating retained user settings file"
+    printf '{}\n' | run_root tee "${STORAGE_ROOT}/backcountry-broadcast.user.json" >/dev/null
+  fi
+  run_root chown "${INSTALL_USER}:${INSTALL_GROUP}" "${STORAGE_ROOT}/backcountry-broadcast.config.json" >/dev/null 2>&1 || true
+  run_root chown "${INSTALL_USER}:${INSTALL_GROUP}" "${STORAGE_ROOT}/backcountry-broadcast.user.json" >/dev/null 2>&1 || true
 }
 
 ensure_repo() {

@@ -6,6 +6,8 @@ DEFAULT_STORAGE_ROOT="/srv/backcountry-broadcast"
 LEGACY_STORAGE_ROOT="/srv/nomadscreen"
 DEFAULT_CONFIG_NAME="backcountry-broadcast.config.json"
 LEGACY_CONFIG_NAME="nomadscreen.config.json"
+DEFAULT_USER_CONFIG_NAME="backcountry-broadcast.user.json"
+LEGACY_USER_CONFIG_NAME="nomadscreen.user.json"
 DEFAULT_WIFI_INTERFACE="wlan0"
 DEFAULT_CONNECT_TIMEOUT_SECONDS="20"
 DEFAULT_ACCESS_POINT_PASSWORD="backpackingmedia"
@@ -18,9 +20,15 @@ if [[ -z "${NOMADSCREEN_STORAGE_ROOT:-}" && ! -e "${STORAGE_ROOT}" && -e "${LEGA
 fi
 DEFAULT_CONFIG_PATH="${STORAGE_ROOT}/${DEFAULT_CONFIG_NAME}"
 LEGACY_CONFIG_PATH="${STORAGE_ROOT}/${LEGACY_CONFIG_NAME}"
+DEFAULT_USER_CONFIG_PATH="${STORAGE_ROOT}/${DEFAULT_USER_CONFIG_NAME}"
+LEGACY_USER_CONFIG_PATH="${STORAGE_ROOT}/${LEGACY_USER_CONFIG_NAME}"
 CONFIG_PATH="${NOMADSCREEN_CONFIG_PATH:-${DEFAULT_CONFIG_PATH}}"
 if [[ -z "${NOMADSCREEN_CONFIG_PATH:-}" && ! -f "${CONFIG_PATH}" && -f "${LEGACY_CONFIG_PATH}" ]]; then
   CONFIG_PATH="${LEGACY_CONFIG_PATH}"
+fi
+USER_CONFIG_PATH="${NOMADSCREEN_USER_CONFIG_PATH:-${DEFAULT_USER_CONFIG_PATH}}"
+if [[ -z "${NOMADSCREEN_USER_CONFIG_PATH:-}" && ! -f "${USER_CONFIG_PATH}" && -f "${LEGACY_USER_CONFIG_PATH}" ]]; then
+  USER_CONFIG_PATH="${LEGACY_USER_CONFIG_PATH}"
 fi
 
 log() {
@@ -34,7 +42,7 @@ die() {
 
 read_runtime_config() {
   mapfile -t config_values < <(
-    python3 - "${CONFIG_PATH}" <<'PY'
+    python3 - "${CONFIG_PATH}" "${USER_CONFIG_PATH}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -63,13 +71,32 @@ def derive_compact_device_token(device_name: str) -> str:
     return "".join(output)
 
 
+def merge_config_values(base, override):
+    if isinstance(base, dict) and isinstance(override, dict):
+        merged = dict(base)
+        for key, value in override.items():
+            if key in merged:
+                merged[key] = merge_config_values(merged[key], value)
+            else:
+                merged[key] = value
+        return merged
+    return override
+
+
 config_path = Path(sys.argv[1])
+user_config_path = Path(sys.argv[2])
 raw = {}
 if config_path.exists():
     try:
         raw = json.loads(config_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         raw = {}
+if user_config_path.exists():
+    try:
+        user_raw = json.loads(user_config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        user_raw = {}
+    raw = merge_config_values(raw, user_raw)
 
 wifi_block = raw.get("wifi") if isinstance(raw.get("wifi"), dict) else {}
 device_name = normalize_device_name(str(raw.get("deviceName") or raw.get("serverName") or DEFAULT_DEVICE_NAME)) or DEFAULT_DEVICE_NAME

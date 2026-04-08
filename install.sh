@@ -228,13 +228,21 @@ prepare_repo() {
 }
 
 seed_storage() {
+  local retained_config_path
   log "Preparing runtime storage at ${STORAGE_ROOT}"
   run_root mkdir -p "${STORAGE_ROOT}"
+  retained_config_path="${STORAGE_ROOT}/backcountry-broadcast.user.json"
   if [[ -f "${STORAGE_ROOT}/nomadscreen.config.json" && ! -f "${STORAGE_ROOT}/backcountry-broadcast.config.json" ]]; then
     run_root mv "${STORAGE_ROOT}/nomadscreen.config.json" "${STORAGE_ROOT}/backcountry-broadcast.config.json"
   fi
   if [[ -f "${INSTALL_DIR}/backcountry-broadcast.config.example.json" ]]; then
     run_root cp -a -n "${INSTALL_DIR}/backcountry-broadcast.config.example.json" "${STORAGE_ROOT}/backcountry-broadcast.config.json"
+  fi
+  if [[ -f "${STORAGE_ROOT}/nomadscreen.user.json" && ! -f "${retained_config_path}" ]]; then
+    run_root mv "${STORAGE_ROOT}/nomadscreen.user.json" "${retained_config_path}"
+  fi
+  if [[ ! -f "${retained_config_path}" ]]; then
+    printf '{}\n' | run_root tee "${retained_config_path}" >/dev/null
   fi
   log "Preparing media library at ${MEDIA_ROOT}"
   run_root mkdir -p \
