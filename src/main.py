@@ -5,6 +5,7 @@ import mimetypes
 import os
 import queue
 import re
+import secrets
 import socket
 import sqlite3
 import subprocess
@@ -14,6 +15,7 @@ import threading
 import time
 import unicodedata
 from datetime import datetime, timezone
+from functools import wraps
 from pathlib import Path
 from urllib.parse import quote
 
@@ -46,6 +48,10 @@ DEFAULT_MAX_STREAMS = 12
 DEFAULT_CLIENT_WINDOW_SECONDS = 300
 DEFAULT_METADATA_REFRESH_TIMEOUT_SECONDS = 1800
 DEFAULT_FILEBROWSER_PORT = 8081
+DEVICE_AUTH_COOKIE_NAME = "nomadscreen_device_auth"
+DEVICE_AUTH_SESSION_SECONDS = 12 * 60 * 60
+MIN_DEVICE_PAGE_PASSWORD_LENGTH = 4
+MAX_DEVICE_PAGE_PASSWORD_LENGTH = 128
 MAX_DEVICE_NAME_LENGTH = 80
 MAX_HOTSPOT_SSID_LENGTH = 32
 MIN_HOTSPOT_PASSWORD_LENGTH = 8
@@ -94,6 +100,15 @@ def validated_hotspot_password(value: str) -> str:
     if len(password) < MIN_HOTSPOT_PASSWORD_LENGTH or len(password) > MAX_HOTSPOT_PASSWORD_LENGTH:
         raise ValueError(
             f"Fallback Wi-Fi password must be {MIN_HOTSPOT_PASSWORD_LENGTH}-{MAX_HOTSPOT_PASSWORD_LENGTH} characters."
+        )
+    return password
+
+
+def validated_device_page_password(value: str) -> str:
+    password = normalize_hotspot_password(value)
+    if len(password) < MIN_DEVICE_PAGE_PASSWORD_LENGTH or len(password) > MAX_DEVICE_PAGE_PASSWORD_LENGTH:
+        raise ValueError(
+            f"Device page password must be {MIN_DEVICE_PAGE_PASSWORD_LENGTH}-{MAX_DEVICE_PAGE_PASSWORD_LENGTH} characters."
         )
     return password
 
@@ -737,6 +752,11 @@ def load_settings() -> dict[str, object]:
         len(wifi_password) < MIN_HOTSPOT_PASSWORD_LENGTH or len(wifi_password) > MAX_HOTSPOT_PASSWORD_LENGTH
     ):
         wifi_password = DEFAULT_ACCESS_POINT_PASSWORD
+    device_password = normalize_hotspot_password(str(raw_config.get("devicePassword") or ""))
+    if device_password and (
+        len(device_password) < MIN_DEVICE_PAGE_PASSWORD_LENGTH or len(device_password) > MAX_DEVICE_PAGE_PASSWORD_LENGTH
+    ):
+        device_password = ""
     hotspot_ssid = configured_access_point_ssid(raw_config, device_name)
     media_root_value = (
         os.environ.get("NOMADSCREEN_MEDIA_ROOT", "").strip()
@@ -825,6 +845,7 @@ def load_settings() -> dict[str, object]:
         "device_name": device_name,
         "ssid": hotspot_ssid,
         "wifi_password": wifi_password,
+        "device_password": device_password,
         "wifi_interface": wifi_interface or DEFAULT_WIFI_INTERFACE,
         "known_wifi_timeout_seconds": known_wifi_timeout_seconds,
         "fallback_ap_enabled": fallback_ap_enabled,
@@ -868,6 +889,7 @@ class AppState:
         self.show_count = 0
         self.upload_status = self.default_upload_status()
         self.metadata_refresh_status = self.default_metadata_refresh_status()
+        self.device_auth_sessions: dict[str, float] = {}
         self.prepare_upload_staging_directory()
         self.scan_library()
 
@@ -1028,6 +1050,47 @@ class AppState:
             payload = dict(self.metadata_refresh_status)
         payload["recentLines"] = list(payload.get("recentLines") or [])
         return payload
+
+    def device_access_password(self) -> str:
+        return str(self.settings.get("device_password") or self.settings.get("wifi_password") or "").strip()
+
+    def device_access_uses_dedicated_password(self) -> bool:
+        return bool(str(self.settings.get("device_password") or "").strip())
+
+    def cleanup_device_auth_sessions(self, now: float | None = None) -> None:
+        cutoff = float(now or time.time())
+        for token, expires_at in list(self.device_auth_sessions.items()):
+            if float(expires_at) <= cutoff:
+                self.device_auth_sessions.pop(token, None)
+
+    def is_device_authenticated(self, token: object) -> bool:
+        safe_token = str(token or "").strip()
+        if not safe_token:
+            return False
+        with self.lock:
+            self.cleanup_device_auth_sessions()
+            expires_at = self.device_auth_sessions.get(safe_token)
+            if not expires_at:
+                return False
+            if float(expires_at) <= time.time():
+                self.device_auth_sessions.pop(safe_token, None)
+                return False
+            return True
+
+    def create_device_auth_session(self) -> tuple[str, int]:
+        token = secrets.token_urlsafe(32)
+        expires_at = int(time.time()) + DEVICE_AUTH_SESSION_SECONDS
+        with self.lock:
+            self.cleanup_device_auth_sessions()
+            self.device_auth_sessions[token] = float(expires_at)
+        return token, DEVICE_AUTH_SESSION_SECONDS
+
+    def clear_device_auth_session(self, token: object) -> None:
+        safe_token = str(token or "").strip()
+        if not safe_token:
+            return
+        with self.lock:
+            self.device_auth_sessions.pop(safe_token, None)
 
     def set_metadata_refresh_status(
         self,
@@ -1279,6 +1342,13 @@ class AppState:
             "ipUrl": ip_url,
             "mdnsUrl": mdns_url,
             "root": str(self.media_root_path()),
+        }
+
+    def device_auth_payload(self, authenticated: bool) -> dict[str, object]:
+        return {
+            "required": True,
+            "authenticated": bool(authenticated),
+            "usesDedicatedPassword": self.device_access_uses_dedicated_password(),
         }
 
     def media_root_path(self) -> Path:
@@ -3105,7 +3175,7 @@ class AppState:
             "roots": roots,
         }
 
-    def status_payload(self) -> dict[str, object]:
+    def status_payload(self, authenticated: bool = False) -> dict[str, object]:
         local_ip = self.best_local_ip()
         port = int(self.settings["http_port"])
         mdns_host = f"{self.settings['mdns_host']}.local"
@@ -3114,14 +3184,53 @@ class AppState:
         network = self.network_snapshot()
         current_name = str(network["current_name"])
         reported_ssid = current_name if current_name else str(network["hotspot_name"])
+        is_authenticated = bool(authenticated)
+        hotspot_password = str(network["hotspot_password"]) if is_authenticated else ""
+        current_password = str(network["current_password"]) if is_authenticated else ""
+        if is_authenticated:
+            file_manager = self.file_manager_status_payload(local_ip, mdns_host)
+            metadata_refresh = self.metadata_refresh_status_payload()
+        else:
+            file_manager = {
+                "username": "admin",
+                "password": "",
+                "passwordAvailable": False,
+                "passwordPath": "",
+                "port": safe_int(self.settings.get("filebrowser_port"), DEFAULT_FILEBROWSER_PORT, 1),
+                "url": "",
+                "ipUrl": "",
+                "mdnsUrl": "",
+                "root": "",
+            }
+            metadata_refresh = {
+                "id": "",
+                "active": False,
+                "phase": "idle",
+                "message": "",
+                "error": "",
+                "reason": "",
+                "detail": "",
+                "enabled": False,
+                "configured": False,
+                "online": False,
+                "attempted": False,
+                "success": False,
+                "script": "",
+                "recentLines": [],
+                "outputLineCount": 0,
+                "exitCode": None,
+                "startedAt": "",
+                "updatedAt": "",
+                "completedAt": "",
+            }
         return {
             "device": self.settings["device_name"],
             "ssid": reported_ssid,
-            "password": str(network["current_password"]),
+            "password": current_password,
             "networkMode": network["mode"],
             "networkName": current_name,
             "hotspotSsid": network["hotspot_name"],
-            "hotspotPassword": network["hotspot_password"],
+            "hotspotPassword": hotspot_password,
             "wifiInterface": network["interface"],
             "fallbackApEnabled": self.settings["fallback_ap_enabled"],
             "knownWifiTimeoutSeconds": self.settings["known_wifi_timeout_seconds"],
@@ -3141,8 +3250,8 @@ class AppState:
             "libraryCount": len(self.media_library),
             "mediaRoot": str(self.settings["media_directory"]),
             "mediaVirtualRoot": DEFAULT_MEDIA_ROOT,
-            "uploadTempRoot": str(self.settings["upload_tmp_directory"]),
-            "uploadTempReady": self.upload_temp_ready,
+            "uploadTempRoot": str(self.settings["upload_tmp_directory"]) if is_authenticated else "",
+            "uploadTempReady": self.upload_temp_ready if is_authenticated else False,
             "clients": self.active_client_count(),
             "lastPlayed": self.last_played_title,
             "lastPlayedType": self.last_played_type,
@@ -3152,9 +3261,10 @@ class AppState:
             "metadataItemCount": len(self.item_metadata),
             "metadataShowCount": len(self.show_metadata),
             "preferServerLibrary": self.metadata_index_stale,
-            "upload": self.upload_status_payload(),
-            "metadataRefresh": self.metadata_refresh_status_payload(),
-            "fileManager": self.file_manager_status_payload(local_ip, mdns_host),
+            "upload": self.upload_status_payload() if is_authenticated else self.default_upload_status(),
+            "metadataRefresh": metadata_refresh,
+            "fileManager": file_manager,
+            "deviceAuth": self.device_auth_payload(is_authenticated),
             "platform": "raspberry-pi-zero-w",
         }
 
@@ -3164,6 +3274,7 @@ class AppState:
             "hotspotSsid": str(self.settings["ssid"]),
             "wifiPassword": str(self.settings["wifi_password"]),
             "tmdbApiKey": str(self.settings.get("tmdb_api_key") or ""),
+            "devicePasswordConfigured": self.device_access_uses_dedicated_password(),
             "configSource": self.settings["config_source"],
         }
 
@@ -3174,6 +3285,7 @@ class AppState:
         wifi_password: object,
         tmdb_api_key: object = "",
         tmdb_bearer_token: object | None = None,
+        device_password: object | None = None,
     ) -> dict[str, object]:
         safe_device_name = normalize_device_name(str(device_name or ""))[:MAX_DEVICE_NAME_LENGTH]
         if not safe_device_name:
@@ -3184,6 +3296,9 @@ class AppState:
             raise ValueError("Enter a fallback Wi-Fi name.")
 
         safe_wifi_password = validated_hotspot_password(str(wifi_password or ""))
+        safe_device_password = normalize_hotspot_password(str(device_password or ""))
+        if safe_device_password:
+            safe_device_password = validated_device_page_password(safe_device_password)
 
         with self.lock:
             config_path = Path(self.settings["config_path"])
@@ -3194,6 +3309,8 @@ class AppState:
             raw_config.pop("accessPointSsid", None)
             raw_config["wifiPassword"] = safe_wifi_password
             raw_config["tmdbApiKey"] = str(tmdb_api_key or "").strip()
+            if safe_device_password:
+                raw_config["devicePassword"] = safe_device_password
             if tmdb_bearer_token is not None:
                 raw_config["tmdbBearerToken"] = str(tmdb_bearer_token or "").strip()
             if isinstance(raw_config.get("wifi"), dict):
@@ -3207,11 +3324,20 @@ class AppState:
             self.configure_upload_temp_directory()
             self.prepare_upload_staging_directory()
 
+        message = (
+            "Saved device settings. Fallback Wi-Fi changes apply the next time the hotspot starts. "
+            "The TMDb API key is used on the next online rescan."
+        )
+        if safe_device_password:
+            message = (
+                f"{message} The Device page will use the new password the next time you unlock it."
+            )
+
         return {
             "ok": True,
-            "message": "Saved device settings. Fallback Wi-Fi changes apply the next time the hotspot starts. The TMDb API key is used on the next online rescan.",
+            "message": message,
             "config": self.device_config_payload(),
-            "status": self.status_payload(),
+            "status": self.status_payload(authenticated=True),
         }
 
     def find_library_item(self, path: str) -> dict[str, object] | None:
@@ -3259,6 +3385,53 @@ app = Flask(__name__, static_folder=None)
 @app.before_request
 def record_request_client() -> None:
     state.record_client(request.remote_addr)
+
+
+def current_device_auth_token() -> str:
+    return str(request.cookies.get(DEVICE_AUTH_COOKIE_NAME) or "").strip()
+
+
+def request_has_device_access() -> bool:
+    return state.is_device_authenticated(current_device_auth_token())
+
+
+def set_device_auth_cookie(response: Response, token: str, max_age: int) -> Response:
+    response.set_cookie(
+        DEVICE_AUTH_COOKIE_NAME,
+        token,
+        max_age=max_age,
+        httponly=True,
+        secure=request.is_secure,
+        samesite="Lax",
+        path="/",
+    )
+    return response
+
+
+def clear_device_auth_cookie(response: Response) -> Response:
+    response.delete_cookie(DEVICE_AUTH_COOKIE_NAME, path="/", httponly=True, secure=request.is_secure, samesite="Lax")
+    return response
+
+
+def unauthorized_device_response(message: str = "Enter the device page password to continue.") -> Response:
+    response = no_store_json(
+        {
+            "error": message,
+            "deviceAuth": state.device_auth_payload(False),
+        },
+        401,
+    )
+    return clear_device_auth_cookie(response)
+
+
+def require_device_access(handler):
+    @wraps(handler)
+    def wrapped(*args, **kwargs):
+        if not request_has_device_access():
+            return unauthorized_device_response()
+        return handler(*args, **kwargs)
+
+    return wrapped
 
 
 def send_app_shell() -> Response:
@@ -3330,15 +3503,60 @@ def app_js() -> Response:
 
 @app.get("/api/status")
 def api_status() -> Response:
-    return no_store_json(state.status_payload())
+    return no_store_json(state.status_payload(authenticated=request_has_device_access()))
+
+
+@app.get("/api/device-auth")
+def api_device_auth_status() -> Response:
+    authenticated = request_has_device_access()
+    return no_store_json(
+        {
+            "ok": True,
+            "deviceAuth": state.device_auth_payload(authenticated),
+        }
+    )
+
+
+@app.post("/api/device-auth/login")
+def api_device_auth_login() -> Response:
+    payload = request.get_json(silent=True) or {}
+    password = normalize_hotspot_password(str(payload.get("password") or ""))
+    if not password or password != state.device_access_password():
+        return unauthorized_device_response("That password did not unlock the Device page.")
+    token, max_age = state.create_device_auth_session()
+    response = no_store_json(
+        {
+            "ok": True,
+            "message": "Device page unlocked.",
+            "deviceAuth": state.device_auth_payload(True),
+            "status": state.status_payload(authenticated=True),
+        }
+    )
+    return set_device_auth_cookie(response, token, max_age)
+
+
+@app.post("/api/device-auth/logout")
+def api_device_auth_logout() -> Response:
+    state.clear_device_auth_session(current_device_auth_token())
+    response = no_store_json(
+        {
+            "ok": True,
+            "message": "Device page locked.",
+            "deviceAuth": state.device_auth_payload(False),
+            "status": state.status_payload(authenticated=False),
+        }
+    )
+    return clear_device_auth_cookie(response)
 
 
 @app.get("/api/device-config")
+@require_device_access
 def api_device_config_get() -> Response:
     return no_store_json({"ok": True, "config": state.device_config_payload()})
 
 
 @app.post("/api/device-config")
+@require_device_access
 def api_device_config() -> Response:
     payload = request.get_json(silent=True) or {}
     try:
@@ -3348,6 +3566,7 @@ def api_device_config() -> Response:
             payload.get("wifiPassword"),
             payload.get("tmdbApiKey"),
             payload.get("tmdbBearerToken"),
+            payload.get("devicePassword"),
         )
     except ValueError as error:
         return no_store_json({"error": str(error)}, 400)
@@ -3390,6 +3609,7 @@ def api_playback_state_delete() -> Response:
 
 
 @app.post("/api/upload-progress")
+@require_device_access
 def api_upload_progress() -> Response:
     payload = request.get_json(silent=True) or {}
     upload_id = normalize_upload_id(payload.get("uploadId"))
@@ -3548,6 +3768,7 @@ def api_catalog_lookup() -> Response:
 
 
 @app.get("/api/upload-destinations")
+@require_device_access
 def api_upload_destinations() -> Response:
     return no_store_json(state.upload_destinations_payload())
 
@@ -3567,6 +3788,7 @@ def api_asset() -> Response:
 
 
 @app.post("/api/upload")
+@require_device_access
 def api_upload() -> Response:
     upload_id = normalize_upload_id(request.form.get("uploadId")) or f"upload-{int(time.time() * 1000)}"
     raw_destination = str(request.form.get("destination") or "")
@@ -3757,6 +3979,7 @@ def api_upload() -> Response:
 
 
 @app.post("/api/rescan")
+@require_device_access
 def api_rescan() -> Response:
     metadata_refresh = state.run_metadata_refresh_on_rescan()
     state.scan_library()

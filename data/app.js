@@ -27,6 +27,7 @@ const state = {
     hotspotSsid: "",
     wifiPassword: "",
     tmdbApiKey: "",
+    devicePassword: "",
   },
   catalogSummary: null,
   catalogGenres: {
@@ -95,6 +96,9 @@ const state = {
   deviceConfigFeedback: "",
   deviceConfigFeedbackTone: "",
   deviceConfigLoaded: false,
+  deviceAuthDraft: "",
+  deviceAuthFeedback: "",
+  deviceAuthFeedbackTone: "",
   preferServerLibrary: false,
   uploadingLocally: false,
   uploadSelectionLocked: false,
@@ -568,6 +572,28 @@ function describeUploadSelection(looseFiles, folderFiles) {
 
 function uploadStatusSnapshot() {
   return (state.status && state.status.upload) || null;
+}
+
+function deviceAuthSnapshot() {
+  return (state.status && state.status.deviceAuth) || null;
+}
+
+function deviceAccessLocked() {
+  const auth = deviceAuthSnapshot();
+  return state.route.name === "device" && Boolean(auth && auth.required && !auth.authenticated);
+}
+
+function clearDeviceProtectedState() {
+  state.uploadDestinations = [];
+  state.deviceConfigLoaded = false;
+  state.deviceConfigDraft = {
+    deviceName: "",
+    hotspotSsid: "",
+    wifiPassword: "",
+    tmdbApiKey: "",
+    devicePassword: "",
+    devicePasswordConfigured: Boolean(deviceAuthSnapshot() && deviceAuthSnapshot().usesDedicatedPassword),
+  };
 }
 
 function uploadStatusPhase(upload) {
@@ -4475,6 +4501,40 @@ async function refreshDeviceData() {
   await refreshAll();
 }
 
+async function loginDeviceAccess(password) {
+  const response = await fetch("/api/device-auth/login", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    cache: "no-store",
+    body: JSON.stringify({ password }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || `Device auth returned HTTP ${response.status}`);
+  }
+  if (payload.status) {
+    state.status = payload.status;
+  }
+  return payload;
+}
+
+async function logoutDeviceAccess() {
+  const response = await fetch("/api/device-auth/logout", {
+    method: "POST",
+    cache: "no-store",
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || `Device auth returned HTTP ${response.status}`);
+  }
+  if (payload.status) {
+    state.status = payload.status;
+  }
+  return payload;
+}
+
 async function saveDeviceConfig(values) {
   const response = await fetch("/api/device-config", {
     method: "POST",
@@ -5285,6 +5345,119 @@ function createInfoCard(config) {
   return card;
 }
 
+function createDeviceLockCard() {
+  const auth = deviceAuthSnapshot() || {};
+  const card = document.createElement("article");
+  card.className = "info-card info-card--config";
+
+  const eyebrow = document.createElement("p");
+  eyebrow.className = "eyebrow";
+  eyebrow.textContent = "Protected";
+
+  const title = document.createElement("h3");
+  title.textContent = "Unlock Device Info";
+
+  const copy = document.createElement("p");
+  copy.className = "info-copy";
+  copy.textContent = auth.usesDedicatedPassword
+    ? "Enter the device page password to view network details, uploads, metadata controls, and File Browser credentials."
+    : "Enter the fallback Wi-Fi password to unlock the Device page. You can set a separate device page password after you get in.";
+
+  const form = document.createElement("form");
+  form.className = "upload-form";
+
+  const field = document.createElement("label");
+  field.className = "upload-field upload-field--full";
+  const label = document.createElement("span");
+  label.className = "upload-label";
+  label.textContent = "Password";
+  const input = document.createElement("input");
+  input.className = "upload-text";
+  input.type = "password";
+  input.name = "device-unlock-password";
+  input.autocomplete = "current-password";
+  input.minLength = 4;
+  input.maxLength = 128;
+  input.value = state.deviceAuthDraft || "";
+  field.appendChild(label);
+  field.appendChild(input);
+
+  const note = document.createElement("p");
+  note.className = "upload-note";
+  note.textContent = auth.usesDedicatedPassword
+    ? "This only unlocks the Device admin section."
+    : "Right now the Device page uses the same password as the fallback hotspot.";
+
+  const feedback = document.createElement("p");
+  feedback.className = "upload-status";
+
+  const actions = document.createElement("div");
+  actions.className = "upload-actions";
+  const submit = document.createElement("button");
+  submit.type = "submit";
+  submit.className = "primary-button";
+  submit.textContent = "Unlock Device Info";
+  actions.appendChild(submit);
+
+  const applyAuthState = (message, tone) => {
+    feedback.textContent = message || "";
+    feedback.className = "upload-status";
+    if (tone) {
+      feedback.classList.add(`upload-status--${tone}`);
+    }
+  };
+
+  input.addEventListener("input", () => {
+    state.deviceAuthDraft = input.value;
+  });
+  applyAuthState(state.deviceAuthFeedback, state.deviceAuthFeedbackTone);
+
+  form.appendChild(field);
+  form.appendChild(note);
+  form.appendChild(feedback);
+  form.appendChild(actions);
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const password = input.value;
+    state.deviceAuthDraft = password;
+    if (!String(password || "").trim()) {
+      state.deviceAuthFeedback = "Enter the device page password.";
+      state.deviceAuthFeedbackTone = "error";
+      applyAuthState(state.deviceAuthFeedback, state.deviceAuthFeedbackTone);
+      return;
+    }
+
+    form.querySelectorAll("input, button").forEach((element) => {
+      element.disabled = true;
+    });
+    applyAuthState("Unlocking the device page...", "pending");
+
+    try {
+      await loginDeviceAccess(password);
+      state.deviceAuthDraft = "";
+      state.deviceAuthFeedback = "";
+      state.deviceAuthFeedbackTone = "";
+      clearDeviceProtectedState();
+      await refreshAll();
+      els.pageSubtitle.textContent = "Device page unlocked.";
+    } catch (error) {
+      state.deviceAuthFeedback = error.message || "Unable to unlock the Device page.";
+      state.deviceAuthFeedbackTone = "error";
+      applyAuthState(state.deviceAuthFeedback, state.deviceAuthFeedbackTone);
+      form.querySelectorAll("input, button").forEach((element) => {
+        element.disabled = false;
+      });
+    }
+  });
+
+  card.appendChild(eyebrow);
+  card.appendChild(title);
+  card.appendChild(copy);
+  card.appendChild(form);
+  return card;
+}
+
 function createDeviceConfigCard() {
   const status = state.status || {};
   const storedDraft = state.deviceConfigDraft || {};
@@ -5292,6 +5465,8 @@ function createDeviceConfigCard() {
   const initialHotspotSsid = String(storedDraft.hotspotSsid || status.hotspotSsid || hotspotNetworkName(status) || appNetworkName()).trim();
   const initialWifiPassword = String(storedDraft.wifiPassword || status.hotspotPassword || "").trim();
   const initialTmdbApiKey = String(storedDraft.tmdbApiKey || "").trim();
+  const initialDevicePassword = String(storedDraft.devicePassword || "").trim();
+  const devicePasswordConfigured = Boolean(storedDraft.devicePasswordConfigured || (deviceAuthSnapshot() && deviceAuthSnapshot().usesDedicatedPassword));
   const card = document.createElement("article");
   card.className = "info-card info-card--config";
 
@@ -5371,10 +5546,29 @@ function createDeviceConfigCard() {
   tmdbApiKeyField.appendChild(tmdbApiKeyLabel);
   tmdbApiKeyField.appendChild(tmdbApiKeyInput);
 
+  const devicePasswordField = document.createElement("label");
+  devicePasswordField.className = "upload-field upload-field--full";
+  const devicePasswordLabel = document.createElement("span");
+  devicePasswordLabel.className = "upload-label";
+  devicePasswordLabel.textContent = "New device page password";
+  const devicePasswordInput = document.createElement("input");
+  devicePasswordInput.className = "upload-text";
+  devicePasswordInput.type = "password";
+  devicePasswordInput.name = "device-password";
+  devicePasswordInput.autocomplete = "new-password";
+  devicePasswordInput.minLength = 4;
+  devicePasswordInput.maxLength = 128;
+  devicePasswordInput.placeholder = devicePasswordConfigured
+    ? "Leave blank to keep the current device page password"
+    : "Leave blank to keep using the fallback Wi-Fi password";
+  devicePasswordInput.value = initialDevicePassword;
+  devicePasswordField.appendChild(devicePasswordLabel);
+  devicePasswordField.appendChild(devicePasswordInput);
+
   const note = document.createElement("p");
   note.className = "upload-note";
   note.textContent =
-    "These values are saved on the Pi. Fallback Wi-Fi changes take effect the next time hotspot mode starts, and the TMDb API key is used on the next online rescan.";
+    "These values are saved on the Pi. Leave the device page password blank to keep the current unlock password. If you have never set one, the Device page uses the fallback Wi-Fi password. Fallback Wi-Fi changes take effect the next time hotspot mode starts, and the TMDb API key is used on the next online rescan.";
 
   const feedback = document.createElement("p");
   feedback.className = "upload-status";
@@ -5391,6 +5585,7 @@ function createDeviceConfigCard() {
   fields.appendChild(hotspotNameField);
   fields.appendChild(wifiPasswordField);
   fields.appendChild(tmdbApiKeyField);
+  fields.appendChild(devicePasswordField);
   form.appendChild(fields);
   form.appendChild(note);
   form.appendChild(feedback);
@@ -5410,6 +5605,8 @@ function createDeviceConfigCard() {
       hotspotSsid: hotspotNameInput.value.trim(),
       wifiPassword: wifiPasswordInput.value.trim(),
       tmdbApiKey: tmdbApiKeyInput.value.trim(),
+      devicePassword: devicePasswordInput.value.trim(),
+      devicePasswordConfigured,
     };
   };
 
@@ -5417,6 +5614,7 @@ function createDeviceConfigCard() {
   hotspotNameInput.addEventListener("input", syncDraft);
   wifiPasswordInput.addEventListener("input", syncDraft);
   tmdbApiKeyInput.addEventListener("input", syncDraft);
+  devicePasswordInput.addEventListener("input", syncDraft);
   syncDraft();
   applyConfigState(state.deviceConfigFeedback, state.deviceConfigFeedbackTone);
 
@@ -5428,6 +5626,7 @@ function createDeviceConfigCard() {
       hotspotSsid: String(state.deviceConfigDraft.hotspotSsid || "").trim(),
       wifiPassword: String(state.deviceConfigDraft.wifiPassword || "").trim(),
       tmdbApiKey: String(state.deviceConfigDraft.tmdbApiKey || "").trim(),
+      devicePassword: String(state.deviceConfigDraft.devicePassword || "").trim(),
     };
 
     if (!draft.deviceName) {
@@ -5448,6 +5647,12 @@ function createDeviceConfigCard() {
       applyConfigState(state.deviceConfigFeedback, state.deviceConfigFeedbackTone);
       return;
     }
+    if (draft.devicePassword && (draft.devicePassword.length < 4 || draft.devicePassword.length > 128)) {
+      state.deviceConfigFeedback = "Device page password must be 4-128 characters.";
+      state.deviceConfigFeedbackTone = "error";
+      applyConfigState(state.deviceConfigFeedback, state.deviceConfigFeedbackTone);
+      return;
+    }
 
     const previousHotspotSsid = String(status.hotspotSsid || "").trim();
     const previousWifiPassword = String(status.hotspotPassword || "").trim();
@@ -5464,6 +5669,8 @@ function createDeviceConfigCard() {
         hotspotSsid: String(savedConfig.hotspotSsid || draft.hotspotSsid).trim(),
         wifiPassword: String(savedConfig.wifiPassword || draft.wifiPassword).trim(),
         tmdbApiKey: String(savedConfig.tmdbApiKey || draft.tmdbApiKey).trim(),
+        devicePassword: "",
+        devicePasswordConfigured: Boolean(savedConfig.devicePasswordConfigured || draft.devicePassword),
       };
       state.deviceConfigLoaded = true;
       if (payload.status) {
@@ -6147,7 +6354,9 @@ function updatePageHeader(show, movie, season, audiobook, documentBrowser) {
     meta = {
       eyebrow: "Device Info",
       title: deviceLabel,
-      subtitle: "Wi-Fi details, library maintenance, metadata health, and other device controls live here.",
+      subtitle: deviceAccessLocked()
+        ? "Enter the device page password to view Wi-Fi details and device controls."
+        : "Wi-Fi details, library maintenance, metadata health, and other device controls live here.",
       searchPlaceholder: "Search device details",
     };
   }
@@ -6307,13 +6516,31 @@ function updatePageActions(show, movie, season, documentBrowser) {
   }
 
   if (state.route.name === "device") {
-    els.actions.appendChild(
-      createButton("Refresh Device Data", "ghost-button", () => {
-        refreshDeviceData().catch((error) => {
-          els.pageSubtitle.textContent = `Refresh failed: ${error.message}`;
-        });
-      }),
-    );
+    if (!deviceAccessLocked()) {
+      els.actions.appendChild(
+        createButton("Refresh Device Data", "ghost-button", () => {
+          refreshDeviceData().catch((error) => {
+            els.pageSubtitle.textContent = `Refresh failed: ${error.message}`;
+          });
+        }),
+      );
+      els.actions.appendChild(
+        createButton("Lock Device Info", "ghost-button", () => {
+          logoutDeviceAccess()
+            .then(() => {
+              state.deviceAuthDraft = "";
+              state.deviceAuthFeedback = "";
+              state.deviceAuthFeedbackTone = "";
+              clearDeviceProtectedState();
+              render();
+              els.pageSubtitle.textContent = "Device page locked.";
+            })
+            .catch((error) => {
+              els.pageSubtitle.textContent = `Unable to lock the device page: ${error.message}`;
+            });
+        }),
+      );
+    }
     els.actions.appendChild(
       createButton("Open Home", "ghost-button", () => openRoute({ name: "home" })),
     );
@@ -6561,9 +6788,11 @@ function renderHero(show, movie, season, documentBrowser) {
     const preferredUrl = status.mdnsReady ? status.mdnsUrl : status.ipAppUrl || status.appUrl || "/app";
     eyebrow.textContent = "Device Control";
     title.textContent = status.device || appDisplayName();
-    subtitle.textContent = status.sdMounted
-      ? deviceNetworkSubtitle(status, preferredUrl)
-      : "The admin page shows network details, storage health, and library maintenance controls.";
+    subtitle.textContent = deviceAccessLocked()
+      ? "Unlock the Device page to manage uploads, network settings, metadata refreshes, and file tools."
+      : status.sdMounted
+        ? deviceNetworkSubtitle(status, preferredUrl)
+        : "The admin page shows network details, storage health, and library maintenance controls.";
     gradientKey = "device";
     actionRow.appendChild(
       createButton("Browse Library", "ghost-button", () => openRoute({ name: "home" })),
@@ -7470,6 +7699,24 @@ function renderDevicePage(container) {
   const status = state.status;
   const library = state.library;
 
+  if (deviceAccessLocked()) {
+    const section = document.createElement("section");
+    section.className = "content-section";
+    section.appendChild(
+      createSectionHeading(
+        "Device",
+        "Protected Controls",
+        "This admin area is locked until you enter the device page password.",
+      ),
+    );
+    const grid = document.createElement("div");
+    grid.className = "device-grid";
+    grid.appendChild(createDeviceLockCard());
+    section.appendChild(grid);
+    container.appendChild(section);
+    return;
+  }
+
   if (!status || !library) {
     container.appendChild(createEmptyState("Loading device information from the Raspberry Pi Zero W..."));
     return;
@@ -7786,7 +8033,7 @@ function stopDeviceStatusPolling() {
 }
 
 function shouldPollDeviceStatus() {
-  return state.route.name === "device" && !document.hidden && !state.uploadingLocally;
+  return state.route.name === "device" && !deviceAccessLocked() && !document.hidden && !state.uploadingLocally;
 }
 
 function scheduleDeviceStatusPolling(delayMs) {
@@ -7814,6 +8061,11 @@ async function pollDeviceStatus() {
 
   try {
     await loadStatus();
+    if (deviceAccessLocked()) {
+      clearDeviceProtectedState();
+      render();
+      return;
+    }
     const nextUpload = uploadStatusSnapshot();
     const nextMetadata = metadataRefreshSnapshot();
     refreshLiveUploadActivity(nextUpload);
@@ -7856,7 +8108,7 @@ function syncDeviceStatusPolling() {
 }
 
 function ensureUploadDestinationsLoaded() {
-  if (state.route.name !== "device" || state.uploadDestinations.length || uploadDestinationsRequest) {
+  if (state.route.name !== "device" || deviceAccessLocked() || state.uploadDestinations.length || uploadDestinationsRequest) {
     return;
   }
 
@@ -7875,7 +8127,7 @@ function ensureUploadDestinationsLoaded() {
 }
 
 function ensureDeviceConfigLoaded() {
-  if (state.route.name !== "device" || state.deviceConfigLoaded || deviceConfigRequest) {
+  if (state.route.name !== "device" || deviceAccessLocked() || state.deviceConfigLoaded || deviceConfigRequest) {
     return;
   }
 
@@ -7886,6 +8138,8 @@ function ensureDeviceConfigLoaded() {
         hotspotSsid: String(config.hotspotSsid || state.deviceConfigDraft.hotspotSsid || "").trim(),
         wifiPassword: String(config.wifiPassword || state.deviceConfigDraft.wifiPassword || "").trim(),
         tmdbApiKey: String(config.tmdbApiKey || state.deviceConfigDraft.tmdbApiKey || "").trim(),
+        devicePassword: "",
+        devicePasswordConfigured: Boolean(config.devicePasswordConfigured),
       };
       state.deviceConfigLoaded = true;
       render();
@@ -7937,6 +8191,12 @@ function render() {
   disconnectCatalogAutoLoadObserver();
   els.content.innerHTML = "";
 
+  if (deviceAccessLocked()) {
+    renderDevicePage(els.content);
+    syncDeviceStatusPolling();
+    return;
+  }
+
   const requiresFullLibrary = ["music", "documents", "device"].includes(state.route.name);
   if (requiresFullLibrary && !state.library) {
     els.content.appendChild(createEmptyState("Loading library from the storage index..."));
@@ -7973,7 +8233,7 @@ function render() {
 }
 
 async function loadStatus() {
-  const response = await fetch("/api/status");
+  const response = await fetch("/api/status", { cache: "no-store" });
   state.status = await response.json();
   state.preferServerLibrary = Boolean((state.status && state.status.preferServerLibrary) || state.preferServerLibrary);
 }
@@ -8059,6 +8319,9 @@ async function loadLibrary() {
 
 async function refreshAll() {
   await loadStatus();
+  if (deviceAccessLocked()) {
+    clearDeviceProtectedState();
+  }
   if (!state.playbackLoaded) {
     try {
       await (playbackStateRequest || (playbackStateRequest = loadServerPlaybackState()));
@@ -8071,6 +8334,10 @@ async function refreshAll() {
     } finally {
       playbackStateRequest = null;
     }
+  }
+  if (deviceAccessLocked()) {
+    render();
+    return;
   }
   await loadRouteData();
   if (routeGenreSection()) {
@@ -8088,6 +8355,8 @@ async function refreshAll() {
       hotspotSsid: String(config.hotspotSsid || state.deviceConfigDraft.hotspotSsid || "").trim(),
       wifiPassword: String(config.wifiPassword || state.deviceConfigDraft.wifiPassword || "").trim(),
       tmdbApiKey: String(config.tmdbApiKey || state.deviceConfigDraft.tmdbApiKey || "").trim(),
+      devicePassword: "",
+      devicePasswordConfigured: Boolean(config.devicePasswordConfigured),
     };
     state.deviceConfigLoaded = true;
   }

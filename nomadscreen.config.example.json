@@ -2,6 +2,7 @@
   "deviceName": "Nomad Screen",
   "hotspotSsid": "NomadScreen",
   "wifiPassword": "backpackingmedia",
+  "devicePassword": "",
   "fallbackAccessPointEnabled": true,
   "knownWifiTimeoutSeconds": 20,
   "wifiInterface": "wlan0",

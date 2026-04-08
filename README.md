@@ -58,6 +58,7 @@ Edit that config file to set:
 
 - the device/server name shown in the web UI
 - the fallback hotspot name and password
+- an optional dedicated password for the `/app/device` admin page
 - whether fallback hotspot mode is enabled
 - how long the Pi should wait for a known Wi-Fi network before it creates its own access point
 - TMDb metadata settings and image-download options
@@ -249,6 +250,7 @@ To preload known networks, use Raspberry Pi Imager advanced settings before firs
 - `mdnsEnabled`
 - `mdnsHost`
 - `wifiInterface`
+- `devicePassword`
 - `fallbackAccessPointEnabled`
 - `knownWifiTimeoutSeconds`
 - `metadataRefreshOnRescan`
@@ -258,6 +260,8 @@ To preload known networks, use Raspberry Pi Imager advanced settings before firs
 - `clientWindowSeconds`
 
 If a field is missing, sensible defaults are used.
+
+The Device page is password-protected. If `devicePassword` is set, that unlocks `/app/device`. If it is blank, the Device page falls back to the hotspot `wifiPassword`.
 
 ## Metadata workflow
 
