@@ -19,6 +19,14 @@ body,
   color: var(--bb-text) !important;
 }
 
+body,
+.layout,
+.container,
+.columns,
+.column {
+  background: var(--bb-bg) !important;
+}
+
 a,
 [class*="link"] {
   color: var(--bb-accent) !important;
@@ -56,6 +64,14 @@ textarea {
   border-color: var(--bb-line) !important;
   color: var(--bb-text) !important;
   box-shadow: none !important;
+}
+
+.input,
+.textarea,
+.select select {
+  background: var(--bb-surface) !important;
+  border-color: var(--bb-line) !important;
+  color: var(--bb-text) !important;
 }
 
 input::placeholder,
@@ -101,6 +117,20 @@ header,
   background: #20261e !important;
 }
 
+.navbar,
+.navbar-menu,
+.navbar-brand,
+.navbar-start,
+.navbar-end,
+.level,
+.level-left,
+.level-right,
+.media,
+.media-content {
+  background: #20261e !important;
+  color: var(--bb-text) !important;
+}
+
 main,
 section,
 article,
@@ -116,6 +146,61 @@ table,
 [class*="settings"],
 [class*="info"] {
   background: var(--bb-surface) !important;
+}
+
+.box,
+.card,
+.card-content,
+.card-header,
+.panel,
+.panel-heading,
+.panel-block,
+.dropdown-content,
+.modal-card-head,
+.modal-card-body,
+.modal-card-foot,
+.message,
+.message-header,
+.message-body,
+.notification {
+  background: var(--bb-surface) !important;
+  border-color: var(--bb-line) !important;
+  color: var(--bb-text) !important;
+}
+
+.menu-list a,
+.navbar-item,
+.dropdown-item,
+.panel-block,
+.breadcrumb a,
+.breadcrumb span {
+  color: var(--bb-text) !important;
+}
+
+.menu-list a:hover,
+.navbar-item:hover,
+.dropdown-item:hover,
+.panel-block:hover,
+.breadcrumb a:hover {
+  background: var(--bb-accent-soft) !important;
+  color: var(--bb-text) !important;
+}
+
+.breadcrumb,
+.breadcrumbs,
+[class*="breadcrumb"],
+[class*="path"],
+[class*="search"] {
+  background: var(--bb-surface-soft) !important;
+  border-color: var(--bb-line) !important;
+  color: var(--bb-text) !important;
+}
+
+[class*="search"] input,
+[class*="search"] .input,
+[class*="search"] .control,
+[class*="search"] .icon {
+  background: transparent !important;
 }
 
 th,
@@ -136,12 +221,60 @@ tbody tr:hover,
   background: var(--bb-accent-soft) !important;
 }
 
+.table,
+.table td,
+.table th,
+.table tr,
+.table thead td,
+.table thead th,
+.table tbody tr {
+  background: transparent !important;
+  border-color: rgba(214, 204, 177, 0.1) !important;
+  color: var(--bb-text) !important;
+}
+
+.table tbody tr:hover {
+  background: var(--bb-accent-soft) !important;
+}
+
+.is-primary,
+.button.is-primary,
+.tag.is-primary,
+.progress.is-primary,
+.pagination-link.is-current,
+.has-background-primary {
+  background: var(--bb-accent-soft) !important;
+  border-color: rgba(198, 165, 107, 0.32) !important;
+  color: var(--bb-text) !important;
+}
+
+.has-text-primary {
+  color: var(--bb-accent) !important;
+}
+
 [class*="search"] svg,
 [class*="sidebar"] svg,
 [class*="toolbar"] svg,
 button svg {
   color: var(--bb-accent) !important;
   fill: currentColor !important;
+}
+
+.icon,
+.icon svg,
+.icon svg path,
+.card svg,
+.card svg path,
+.box svg,
+.box svg path,
+[class*="folder"] svg,
+[class*="folder"] svg path,
+[class*="file"] svg,
+[class*="file"] svg path,
+[class*="item"] svg,
+[class*="item"] svg path {
+  color: var(--bb-accent) !important;
+  fill: var(--bb-accent) !important;
 }
 
 [class*="tag"],
@@ -160,6 +293,14 @@ progress {
 ::selection {
   background: rgba(198, 165, 107, 0.24);
   color: #fff8ea;
+}
+
+.progress::-webkit-progress-value {
+  background: var(--bb-accent) !important;
+}
+
+.progress::-moz-progress-bar {
+  background: var(--bb-accent) !important;
 }
 
 ::-webkit-scrollbar-track {
