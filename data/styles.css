@@ -117,16 +117,17 @@ button {
   margin-bottom: 34px;
 }
 
-.brand-shell {
+.sidebar-meta {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  align-items: start;
+  align-items: center;
   gap: 12px;
+  margin-bottom: 12px;
 }
 
 .brand {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 14px;
   min-width: 0;
   margin-bottom: 0;
@@ -140,13 +141,12 @@ button {
   min-width: 0;
 }
 
-.brand-copy .eyebrow {
-  margin: 0 0 6px;
-}
-
 .brand h1 {
-  overflow-wrap: anywhere;
-  line-height: 1.05;
+  overflow-wrap: normal;
+  word-break: normal;
+  line-height: 0.96;
+  text-wrap: balance;
+  max-width: 8ch;
 }
 
 .brand-mark {
@@ -239,13 +239,13 @@ button {
 }
 
 .nav-link--toolbar {
-  padding: 10px 14px;
+  padding: 8px 14px;
   font-size: 0.82rem;
   line-height: 1.2;
   white-space: nowrap;
-  align-self: start;
+  align-self: center;
   justify-self: end;
-  margin-top: 2px;
+  margin-top: 0;
 }
 
 .nav-link:hover,
