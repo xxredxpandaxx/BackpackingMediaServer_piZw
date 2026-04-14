@@ -113,11 +113,15 @@ button {
 }
 
 .sidebar-header {
+  display: block;
+  margin-bottom: 34px;
+}
+
+.brand-shell {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  align-items: flex-start;
+  align-items: start;
   gap: 12px;
-  margin-bottom: 34px;
 }
 
 .brand {
@@ -130,6 +134,14 @@ button {
 
 .brand > div {
   min-width: 0;
+}
+
+.brand-copy {
+  min-width: 0;
+}
+
+.brand-copy .eyebrow {
+  margin: 0 0 6px;
 }
 
 .brand h1 {
@@ -233,6 +245,7 @@ button {
   white-space: nowrap;
   align-self: start;
   justify-self: end;
+  margin-top: 2px;
 }
 
 .nav-link:hover,
