@@ -1,61 +1,22 @@
 :root {
   color-scheme: dark;
-  --bb-bg: #1a1f1a;
-  --bb-bg-alt: #22291f;
-  --bb-panel: rgba(28, 33, 27, 0.88);
-  --bb-panel-strong: rgba(31, 37, 29, 0.94);
-  --bb-line: rgba(214, 204, 177, 0.16);
-  --bb-line-strong: rgba(214, 204, 177, 0.28);
+  --bb-bg: #181d18;
+  --bb-bg-alt: #222820;
+  --bb-surface: #262d24;
+  --bb-surface-soft: #2d352a;
+  --bb-line: rgba(214, 204, 177, 0.18);
   --bb-text: #f3eddf;
   --bb-muted: #b7ae9a;
   --bb-accent: #c6a56b;
-  --bb-accent-soft: rgba(198, 165, 107, 0.18);
+  --bb-accent-soft: rgba(198, 165, 107, 0.14);
   --bb-moss: #7d8f66;
-  --bb-shadow: 0 24px 60px rgba(7, 10, 7, 0.28);
-  --bb-radius: 18px;
-  --bb-radius-lg: 24px;
-  --bb-heading: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
-  --bb-body: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
 }
 
 html,
 body,
 #app {
-  background:
-    radial-gradient(circle at top left, rgba(198, 165, 107, 0.18), transparent 24%),
-    radial-gradient(circle at top right, rgba(125, 143, 102, 0.18), transparent 26%),
-    linear-gradient(155deg, #171b17 0%, #222820 46%, #121611 100%) !important;
+  background: var(--bb-bg) !important;
   color: var(--bb-text) !important;
-  font-family: var(--bb-body) !important;
-}
-
-body {
-  position: relative;
-}
-
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  background-image:
-    linear-gradient(rgba(243, 237, 223, 0.022) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(243, 237, 223, 0.022) 1px, transparent 1px);
-  background-size: 56px 56px;
-  mask-image: radial-gradient(circle at center, black 44%, transparent 88%);
-}
-
-h1,
-h2,
-h3,
-h4,
-h5,
-h6,
-[class*="title"],
-[class*="heading"] {
-  font-family: var(--bb-heading) !important;
-  color: var(--bb-text) !important;
-  letter-spacing: 0.01em;
 }
 
 a,
@@ -73,9 +34,8 @@ button,
 [role="button"],
 input[type="button"],
 input[type="submit"] {
-  border-radius: 999px !important;
-  border: 1px solid var(--bb-line) !important;
-  background: linear-gradient(135deg, rgba(198, 165, 107, 0.18), rgba(125, 143, 102, 0.12)) !important;
+  background: var(--bb-surface-soft) !important;
+  border-color: var(--bb-line) !important;
   color: var(--bb-text) !important;
   box-shadow: none !important;
 }
@@ -85,16 +45,15 @@ button:hover,
 [role="button"]:hover,
 input[type="button"]:hover,
 input[type="submit"]:hover {
-  border-color: var(--bb-line-strong) !important;
-  background: linear-gradient(135deg, rgba(198, 165, 107, 0.28), rgba(125, 143, 102, 0.18)) !important;
+  background: #343d30 !important;
+  border-color: rgba(214, 204, 177, 0.28) !important;
 }
 
 input,
 select,
 textarea {
-  border-radius: 16px !important;
-  border: 1px solid var(--bb-line) !important;
-  background: rgba(20, 24, 19, 0.92) !important;
+  background: var(--bb-surface) !important;
+  border-color: var(--bb-line) !important;
   color: var(--bb-text) !important;
   box-shadow: none !important;
 }
@@ -128,21 +87,18 @@ tbody,
 [class*="settings"],
 [class*="info"] {
   border-color: var(--bb-line) !important;
+  color: var(--bb-text) !important;
 }
 
 aside,
 [class*="sidebar"] {
-  background:
-    linear-gradient(180deg, rgba(255, 244, 220, 0.04), transparent 28%),
-    rgba(18, 23, 17, 0.86) !important;
-  backdrop-filter: blur(22px);
+  background: var(--bb-bg-alt) !important;
 }
 
 header,
 [class*="header"],
 [class*="toolbar"] {
-  background: rgba(21, 26, 20, 0.72) !important;
-  backdrop-filter: blur(18px);
+  background: #20261e !important;
 }
 
 main,
@@ -159,20 +115,7 @@ table,
 [class*="upload"],
 [class*="settings"],
 [class*="info"] {
-  background:
-    linear-gradient(180deg, rgba(255, 244, 220, 0.04), rgba(255, 244, 220, 0.01)),
-    var(--bb-panel) !important;
-  color: var(--bb-text) !important;
-  box-shadow: var(--bb-shadow) !important;
-  border-radius: var(--bb-radius-lg) !important;
-}
-
-table,
-[class*="listing"],
-[class*="table"] {
-  border-collapse: separate !important;
-  border-spacing: 0 !important;
-  overflow: hidden;
+  background: var(--bb-surface) !important;
 }
 
 th,
@@ -184,16 +127,13 @@ tr {
 
 thead th {
   color: var(--bb-muted) !important;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  font-size: 0.76rem;
 }
 
 tbody tr:hover,
 .selected,
 .active,
 [aria-selected="true"] {
-  background: rgba(198, 165, 107, 0.1) !important;
+  background: var(--bb-accent-soft) !important;
 }
 
 [class*="search"] svg,
@@ -207,9 +147,8 @@ button svg {
 [class*="tag"],
 [class*="badge"],
 [class*="chip"] {
-  border-radius: 999px !important;
-  border: 1px solid var(--bb-line) !important;
   background: var(--bb-accent-soft) !important;
+  border-color: var(--bb-line) !important;
   color: var(--bb-text) !important;
 }
 
@@ -219,21 +158,14 @@ progress {
 }
 
 ::selection {
-  background: rgba(198, 165, 107, 0.28);
+  background: rgba(198, 165, 107, 0.24);
   color: #fff8ea;
 }
 
-::-webkit-scrollbar {
-  width: 12px;
-  height: 12px;
-}
-
 ::-webkit-scrollbar-track {
-  background: rgba(18, 23, 17, 0.82);
+  background: var(--bb-bg-alt);
 }
 
 ::-webkit-scrollbar-thumb {
-  border: 2px solid rgba(18, 23, 17, 0.82);
-  border-radius: 999px;
   background: rgba(198, 165, 107, 0.34);
 }
