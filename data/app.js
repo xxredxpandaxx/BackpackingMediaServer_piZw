@@ -7812,13 +7812,6 @@ function renderDevicePage(container) {
       searchText: `config settings server name device name hotspot wifi ssid password ${status.device || ""} ${hotspotName || ""} ${hotspotPassword || ""}`,
     },
     {
-      eyebrow: "Upload",
-      title: "Add Media Over Wi-Fi",
-      copy: "Send files or whole folders to any existing media path, or create a new folder as you upload.",
-      renderCard: () => createUploadCard(),
-      searchText: "upload media files folders wifi device panel add media over wifi browse choose files choose folder season show destination path rescan",
-    },
-    {
       eyebrow: "Files",
       title: "File Management",
       copy:
@@ -8378,7 +8371,6 @@ async function refreshAll() {
     }
   }
   if (state.route.name === "device") {
-    await (uploadDestinationsRequest || loadUploadDestinations());
     const config = await (deviceConfigRequest || loadDeviceConfig());
     state.deviceConfigDraft = {
       deviceName: String(config.deviceName || state.deviceConfigDraft.deviceName || "").trim(),

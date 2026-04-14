@@ -113,9 +113,9 @@ button {
 }
 
 .sidebar-header {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: flex-start;
-  justify-content: space-between;
   gap: 12px;
   margin-bottom: 34px;
 }
@@ -126,6 +126,15 @@ button {
   gap: 14px;
   min-width: 0;
   margin-bottom: 0;
+}
+
+.brand > div {
+  min-width: 0;
+}
+
+.brand h1 {
+  overflow-wrap: anywhere;
+  line-height: 1.05;
 }
 
 .brand-mark {
@@ -222,7 +231,8 @@ button {
   font-size: 0.82rem;
   line-height: 1.2;
   white-space: nowrap;
-  align-self: center;
+  align-self: start;
+  justify-self: end;
 }
 
 .nav-link:hover,
