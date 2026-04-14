@@ -118,6 +118,7 @@ What that installer does:
 - creates `/opt/backcountry-broadcast/.venv` and installs Python dependencies
 - installs File Browser into `/usr/local/bin/filebrowser`
 - prepares `/srv/backcountry-broadcast/filebrowser` for the File Browser database and captured password
+- applies the bundled File Browser branding from `/opt/backcountry-broadcast/deploy/filebrowser-branding`
 - prepares `/var/tmp/backcountry-broadcast-upload` for large browser uploads
 - writes and enables `backcountry-broadcast-network.service`
 - writes and enables `backcountry-broadcast.service`
@@ -135,6 +136,7 @@ That updater:
 - pulls the latest code into `/opt/backcountry-broadcast`
 - refreshes Python dependencies
 - makes sure File Browser is installed
+- reapplies the bundled File Browser branding
 - rewrites the service units with your current paths
 - refreshes `backcountry-broadcast-filebrowser.service`
 - keeps large web uploads pointed at `/var/tmp/backcountry-broadcast-upload`

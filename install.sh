@@ -273,6 +273,32 @@ prepare_filebrowser_storage() {
   run_root chown -R "${INSTALL_USER}:${INSTALL_GROUP}" "${state_dir}"
 }
 
+configure_filebrowser_branding() {
+  local state_dir
+  local database_path
+  local branding_dir
+
+  state_dir="${STORAGE_ROOT}/filebrowser"
+  database_path="${state_dir}/filebrowser.db"
+  branding_dir="${INSTALL_DIR}/deploy/filebrowser-branding"
+
+  if [[ ! -d "${branding_dir}" ]]; then
+    log "Skipping File Browser branding: ${branding_dir} not found"
+    return
+  fi
+
+  if [[ ! -f "${database_path}" ]]; then
+    log "Skipping File Browser branding: ${database_path} not found yet"
+    return
+  fi
+
+  log "Applying File Browser branding from ${branding_dir}"
+  run_as_install_user /usr/local/bin/filebrowser config set \
+    --database "${database_path}" \
+    --branding.name "Backcountry Broadcast" \
+    --branding.files "${branding_dir}" >/dev/null
+}
+
 install_python_deps() {
   log "Creating virtual environment"
   run_as_install_user env TMPDIR="${TMP_DIR}" python3 -m venv "${INSTALL_DIR}/.venv"
@@ -496,6 +522,8 @@ start_service() {
   restart_service_unit "${SERVICE_NAME}"
   restart_service_unit "${FILEBROWSER_SERVICE_NAME}"
   capture_filebrowser_password
+  configure_filebrowser_branding
+  restart_service_unit "${FILEBROWSER_SERVICE_NAME}"
 }
 
 print_success() {

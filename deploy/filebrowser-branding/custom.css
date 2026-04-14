@@ -1,0 +1,239 @@
+:root {
+  color-scheme: dark;
+  --bb-bg: #1a1f1a;
+  --bb-bg-alt: #22291f;
+  --bb-panel: rgba(28, 33, 27, 0.88);
+  --bb-panel-strong: rgba(31, 37, 29, 0.94);
+  --bb-line: rgba(214, 204, 177, 0.16);
+  --bb-line-strong: rgba(214, 204, 177, 0.28);
+  --bb-text: #f3eddf;
+  --bb-muted: #b7ae9a;
+  --bb-accent: #c6a56b;
+  --bb-accent-soft: rgba(198, 165, 107, 0.18);
+  --bb-moss: #7d8f66;
+  --bb-shadow: 0 24px 60px rgba(7, 10, 7, 0.28);
+  --bb-radius: 18px;
+  --bb-radius-lg: 24px;
+  --bb-heading: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+  --bb-body: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+}
+
+html,
+body,
+#app {
+  background:
+    radial-gradient(circle at top left, rgba(198, 165, 107, 0.18), transparent 24%),
+    radial-gradient(circle at top right, rgba(125, 143, 102, 0.18), transparent 26%),
+    linear-gradient(155deg, #171b17 0%, #222820 46%, #121611 100%) !important;
+  color: var(--bb-text) !important;
+  font-family: var(--bb-body) !important;
+}
+
+body {
+  position: relative;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(243, 237, 223, 0.022) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(243, 237, 223, 0.022) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(circle at center, black 44%, transparent 88%);
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+[class*="title"],
+[class*="heading"] {
+  font-family: var(--bb-heading) !important;
+  color: var(--bb-text) !important;
+  letter-spacing: 0.01em;
+}
+
+a,
+[class*="link"] {
+  color: var(--bb-accent) !important;
+}
+
+a:hover,
+[class*="link"]:hover {
+  color: #e8c98f !important;
+}
+
+button,
+.button,
+[role="button"],
+input[type="button"],
+input[type="submit"] {
+  border-radius: 999px !important;
+  border: 1px solid var(--bb-line) !important;
+  background: linear-gradient(135deg, rgba(198, 165, 107, 0.18), rgba(125, 143, 102, 0.12)) !important;
+  color: var(--bb-text) !important;
+  box-shadow: none !important;
+}
+
+button:hover,
+.button:hover,
+[role="button"]:hover,
+input[type="button"]:hover,
+input[type="submit"]:hover {
+  border-color: var(--bb-line-strong) !important;
+  background: linear-gradient(135deg, rgba(198, 165, 107, 0.28), rgba(125, 143, 102, 0.18)) !important;
+}
+
+input,
+select,
+textarea {
+  border-radius: 16px !important;
+  border: 1px solid var(--bb-line) !important;
+  background: rgba(20, 24, 19, 0.92) !important;
+  color: var(--bb-text) !important;
+  box-shadow: none !important;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--bb-muted) !important;
+}
+
+header,
+aside,
+nav,
+main,
+section,
+article,
+table,
+thead,
+tbody,
+[class*="sidebar"],
+[class*="header"],
+[class*="toolbar"],
+[class*="card"],
+[class*="panel"],
+[class*="modal"],
+[class*="dropdown"],
+[class*="menu"],
+[class*="listing"],
+[class*="preview"],
+[class*="editor"],
+[class*="upload"],
+[class*="settings"],
+[class*="info"] {
+  border-color: var(--bb-line) !important;
+}
+
+aside,
+[class*="sidebar"] {
+  background:
+    linear-gradient(180deg, rgba(255, 244, 220, 0.04), transparent 28%),
+    rgba(18, 23, 17, 0.86) !important;
+  backdrop-filter: blur(22px);
+}
+
+header,
+[class*="header"],
+[class*="toolbar"] {
+  background: rgba(21, 26, 20, 0.72) !important;
+  backdrop-filter: blur(18px);
+}
+
+main,
+section,
+article,
+table,
+[class*="card"],
+[class*="panel"],
+[class*="modal"],
+[class*="dropdown"],
+[class*="listing"],
+[class*="preview"],
+[class*="editor"],
+[class*="upload"],
+[class*="settings"],
+[class*="info"] {
+  background:
+    linear-gradient(180deg, rgba(255, 244, 220, 0.04), rgba(255, 244, 220, 0.01)),
+    var(--bb-panel) !important;
+  color: var(--bb-text) !important;
+  box-shadow: var(--bb-shadow) !important;
+  border-radius: var(--bb-radius-lg) !important;
+}
+
+table,
+[class*="listing"],
+[class*="table"] {
+  border-collapse: separate !important;
+  border-spacing: 0 !important;
+  overflow: hidden;
+}
+
+th,
+td,
+tr {
+  border-color: rgba(214, 204, 177, 0.1) !important;
+  color: var(--bb-text) !important;
+}
+
+thead th {
+  color: var(--bb-muted) !important;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.76rem;
+}
+
+tbody tr:hover,
+.selected,
+.active,
+[aria-selected="true"] {
+  background: rgba(198, 165, 107, 0.1) !important;
+}
+
+[class*="search"] svg,
+[class*="sidebar"] svg,
+[class*="toolbar"] svg,
+button svg {
+  color: var(--bb-accent) !important;
+  fill: currentColor !important;
+}
+
+[class*="tag"],
+[class*="badge"],
+[class*="chip"] {
+  border-radius: 999px !important;
+  border: 1px solid var(--bb-line) !important;
+  background: var(--bb-accent-soft) !important;
+  color: var(--bb-text) !important;
+}
+
+[class*="progress"],
+progress {
+  accent-color: var(--bb-accent) !important;
+}
+
+::selection {
+  background: rgba(198, 165, 107, 0.28);
+  color: #fff8ea;
+}
+
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(18, 23, 17, 0.82);
+}
+
+::-webkit-scrollbar-thumb {
+  border: 2px solid rgba(18, 23, 17, 0.82);
+  border-radius: 999px;
+  background: rgba(198, 165, 107, 0.34);
+}

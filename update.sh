@@ -280,6 +280,32 @@ prepare_filebrowser_storage() {
   run_root chown -R "${INSTALL_USER}:${INSTALL_GROUP}" "${state_dir}"
 }
 
+configure_filebrowser_branding() {
+  local state_dir
+  local database_path
+  local branding_dir
+
+  state_dir="${STORAGE_ROOT}/filebrowser"
+  database_path="${state_dir}/filebrowser.db"
+  branding_dir="${INSTALL_DIR}/deploy/filebrowser-branding"
+
+  if [[ ! -d "${branding_dir}" ]]; then
+    log "Skipping File Browser branding: ${branding_dir} not found"
+    return
+  fi
+
+  if [[ ! -f "${database_path}" ]]; then
+    log "Skipping File Browser branding: ${database_path} not found yet"
+    return
+  fi
+
+  log "Applying File Browser branding from ${branding_dir}"
+  run_as_install_user /usr/local/bin/filebrowser config set \
+    --database "${database_path}" \
+    --branding.name "Backcountry Broadcast" \
+    --branding.files "${branding_dir}" >/dev/null
+}
+
 migrate_legacy_runtime_names() {
   if [[ -f "${STORAGE_ROOT}/nomadscreen.config.json" && ! -f "${STORAGE_ROOT}/backcountry-broadcast.config.json" ]]; then
     log "Renaming runtime config to backcountry-broadcast.config.json"
@@ -568,6 +594,9 @@ restart_services() {
   log "Restarting ${FILEBROWSER_SERVICE_NAME}.service"
   run_root systemctl restart "${FILEBROWSER_SERVICE_NAME}.service"
   capture_filebrowser_password
+  configure_filebrowser_branding
+  log "Restarting ${FILEBROWSER_SERVICE_NAME}.service to apply branding"
+  run_root systemctl restart "${FILEBROWSER_SERVICE_NAME}.service"
 }
 
 print_success() {
