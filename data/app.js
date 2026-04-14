@@ -162,6 +162,7 @@ const els = {
   pageTitle: document.getElementById("page-title"),
   pageSubtitle: document.getElementById("page-subtitle"),
   pageTools: document.querySelector(".page-tools"),
+  playerSection: document.querySelector(".player-section"),
   search: document.getElementById("search-input"),
   pageFilterSlot: document.getElementById("page-filter-slot"),
   actions: document.getElementById("page-actions"),
@@ -6381,8 +6382,9 @@ function updatePageHeader(show, movie, season, audiobook, documentBrowser) {
     state.route.name === "show" ||
     state.route.name === "season" ||
     state.route.name === "audiobook";
-  els.pageTools.hidden = isDetailPage;
-  els.pageTools.style.display = isDetailPage ? "none" : "";
+  const isAdminPage = state.route.name === "device";
+  els.pageTools.hidden = isDetailPage || isAdminPage;
+  els.pageTools.style.display = isDetailPage || isAdminPage ? "none" : "";
   els.pageEyebrow.hidden = isDetailPage || !meta.eyebrow;
   els.pageEyebrow.textContent = meta.eyebrow;
   els.pageTitle.hidden = isDetailPage || !meta.title;
@@ -6563,14 +6565,17 @@ function updatePageActions(show, movie, season, documentBrowser) {
 function renderHero(show, movie, season, documentBrowser) {
   const sections = librarySections();
   els.hero.innerHTML = "";
+  els.hero.hidden = false;
 
   if (
     state.route.name === "home" ||
     state.route.name === "movie" ||
     state.route.name === "audiobook" ||
     state.route.name === "show" ||
-    state.route.name === "season"
+    state.route.name === "season" ||
+    state.route.name === "device"
   ) {
+    els.hero.hidden = true;
     return;
   }
 
@@ -8193,6 +8198,7 @@ function render() {
   renderPageFilters();
   updatePageActions(show, movie, season, documentBrowser);
   renderHero(show, movie, season, documentBrowser);
+  els.playerSection.hidden = state.route.name === "device";
 
   disconnectCatalogAutoLoadObserver();
   els.content.innerHTML = "";
