@@ -70,7 +70,7 @@ METADATA_HIDDEN_DIRECTORY_NAMES = {
 }
 DEVICE_AUTH_COOKIE_NAME = "backcountry_broadcast_device_auth"
 LEGACY_DEVICE_AUTH_COOKIE_NAME = "nomadscreen_device_auth"
-DEVICE_AUTH_SESSION_SECONDS = 12 * 60 * 60
+DEVICE_AUTH_SESSION_SECONDS = 24 * 60 * 60
 MIN_DEVICE_PAGE_PASSWORD_LENGTH = 4
 MAX_DEVICE_PAGE_PASSWORD_LENGTH = 128
 MAX_DEVICE_NAME_LENGTH = 80
@@ -968,8 +968,61 @@ class AppState:
         self.upload_status = self.default_upload_status()
         self.metadata_refresh_status = self.default_metadata_refresh_status()
         self.device_auth_sessions: dict[str, float] = {}
+        self.load_device_auth_sessions()
         self.prepare_upload_staging_directory()
         self.scan_library()
+
+    def device_auth_sessions_path(self) -> Path:
+        return (Path(self.settings["storage_root"]) / "device-auth-sessions.json").resolve(strict=False)
+
+    def _persist_device_auth_sessions_unlocked(self) -> None:
+        path = self.device_auth_sessions_path()
+        sessions = {
+            token: int(expires_at)
+            for token, expires_at in self.device_auth_sessions.items()
+            if str(token or "").strip() and float(expires_at) > time.time()
+        }
+        self.device_auth_sessions = {token: float(expires_at) for token, expires_at in sessions.items()}
+
+        try:
+            if sessions:
+                atomic_write_text(path, json.dumps({"sessions": sessions}, indent=2, ensure_ascii=False) + "\n")
+            elif path.exists():
+                path.unlink()
+                fsync_directory(path.parent)
+        except OSError:
+            return
+
+    def load_device_auth_sessions(self) -> None:
+        path = self.device_auth_sessions_path()
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+
+        source = raw.get("sessions") if isinstance(raw, dict) and isinstance(raw.get("sessions"), dict) else raw
+        if not isinstance(source, dict):
+            return
+
+        now = time.time()
+        sessions: dict[str, float] = {}
+        changed = False
+        for token, expires_at in source.items():
+            safe_token = str(token or "").strip()
+            try:
+                safe_expires_at = float(expires_at)
+            except (TypeError, ValueError):
+                changed = True
+                continue
+            if not safe_token or safe_expires_at <= now:
+                changed = True
+                continue
+            sessions[safe_token] = safe_expires_at
+
+        with self.lock:
+            self.device_auth_sessions = sessions
+            if changed:
+                self._persist_device_auth_sessions_unlocked()
 
     def default_upload_status(self) -> dict[str, object]:
         return {
@@ -1135,23 +1188,29 @@ class AppState:
     def device_access_uses_dedicated_password(self) -> bool:
         return bool(str(self.settings.get("device_password") or "").strip())
 
-    def cleanup_device_auth_sessions(self, now: float | None = None) -> None:
+    def cleanup_device_auth_sessions(self, now: float | None = None, persist: bool = False) -> bool:
         cutoff = float(now or time.time())
+        changed = False
         for token, expires_at in list(self.device_auth_sessions.items()):
             if float(expires_at) <= cutoff:
                 self.device_auth_sessions.pop(token, None)
+                changed = True
+        if changed and persist:
+            self._persist_device_auth_sessions_unlocked()
+        return changed
 
     def is_device_authenticated(self, token: object) -> bool:
         safe_token = str(token or "").strip()
         if not safe_token:
             return False
         with self.lock:
-            self.cleanup_device_auth_sessions()
+            self.cleanup_device_auth_sessions(persist=True)
             expires_at = self.device_auth_sessions.get(safe_token)
             if not expires_at:
                 return False
             if float(expires_at) <= time.time():
                 self.device_auth_sessions.pop(safe_token, None)
+                self._persist_device_auth_sessions_unlocked()
                 return False
             return True
 
@@ -1161,6 +1220,7 @@ class AppState:
         with self.lock:
             self.cleanup_device_auth_sessions()
             self.device_auth_sessions[token] = float(expires_at)
+            self._persist_device_auth_sessions_unlocked()
         return token, DEVICE_AUTH_SESSION_SECONDS
 
     def clear_device_auth_session(self, token: object) -> None:
@@ -1168,7 +1228,9 @@ class AppState:
         if not safe_token:
             return
         with self.lock:
-            self.device_auth_sessions.pop(safe_token, None)
+            removed = self.device_auth_sessions.pop(safe_token, None)
+            if removed is not None:
+                self._persist_device_auth_sessions_unlocked()
 
     def set_metadata_refresh_status(
         self,
