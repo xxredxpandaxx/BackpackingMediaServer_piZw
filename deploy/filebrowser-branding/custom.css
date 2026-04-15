@@ -27,6 +27,19 @@ body,
   background: var(--bb-bg) !important;
 }
 
+.hero,
+.hero-head,
+.hero-body,
+.hero-foot,
+.section,
+.login,
+.login-page,
+[class*="login"],
+[class*="auth"] {
+  background: var(--bb-bg) !important;
+  color: var(--bb-text) !important;
+}
+
 a,
 [class*="link"] {
   color: var(--bb-accent) !important;
@@ -71,6 +84,13 @@ textarea {
 .select select {
   background: var(--bb-surface) !important;
   border-color: var(--bb-line) !important;
+  color: var(--bb-text) !important;
+}
+
+.label,
+.help,
+.title,
+.subtitle {
   color: var(--bb-text) !important;
 }
 
@@ -168,6 +188,22 @@ table,
   color: var(--bb-text) !important;
 }
 
+.has-background-white,
+.has-background-white-bis,
+.has-background-white-ter,
+.has-background-light,
+.has-background-grey-lighter,
+.has-background-grey-light,
+.has-background-dark,
+.has-background-black-bis,
+.has-background-link,
+.has-background-link-dark,
+.has-background-info,
+.has-background-info-dark {
+  background: var(--bb-surface) !important;
+  color: var(--bb-text) !important;
+}
+
 .menu-list a,
 .navbar-item,
 .dropdown-item,
@@ -242,7 +278,11 @@ tbody tr:hover,
 .tag.is-primary,
 .progress.is-primary,
 .pagination-link.is-current,
-.has-background-primary {
+.has-background-primary,
+.is-link,
+.button.is-link,
+.is-info,
+.button.is-info {
   background: var(--bb-accent-soft) !important;
   border-color: rgba(198, 165, 107, 0.32) !important;
   color: var(--bb-text) !important;
@@ -250,6 +290,14 @@ tbody tr:hover,
 
 .has-text-primary {
   color: var(--bb-accent) !important;
+}
+
+.has-text-link,
+.has-text-info,
+.has-text-grey,
+.has-text-grey-light,
+.has-text-grey-dark {
+  color: var(--bb-muted) !important;
 }
 
 [class*="search"] svg,
