@@ -222,6 +222,48 @@ table,
   color: var(--bb-text) !important;
 }
 
+#search,
+#search.active,
+#search.ongoing {
+  background: transparent !important;
+  color: var(--bb-text) !important;
+}
+
+#search #input,
+#search.active #input,
+#search.ongoing #input {
+  background: var(--bb-surface-soft) !important;
+  border-color: var(--bb-line) !important;
+  color: var(--bb-text) !important;
+  box-shadow: none !important;
+}
+
+#search input,
+#search #input input {
+  background: transparent !important;
+  color: var(--bb-text) !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
+#search input::placeholder,
+#search #input input::placeholder {
+  color: var(--bb-muted) !important;
+}
+
+#search #result,
+#search.active #result {
+  background: var(--bb-surface) !important;
+  border-color: var(--bb-line) !important;
+  color: var(--bb-text) !important;
+}
+
+#search .action,
+#search .material-icons,
+#search button {
+  color: var(--bb-accent) !important;
+}
+
 .breadcrumb,
 .breadcrumbs,
 [class*="breadcrumb"],
