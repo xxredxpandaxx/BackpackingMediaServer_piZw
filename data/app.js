@@ -27,6 +27,9 @@ const state = {
     hotspotSsid: "",
     wifiPassword: "",
     tmdbApiKey: "",
+    displayEnabled: false,
+    displayModel: "waveshare-1.69",
+    displayView: "auto",
     devicePassword: "",
   },
   catalogSummary: null,
@@ -249,6 +252,11 @@ function normalizeDisplayProfileKey(value) {
 function normalizeDisplayViewKey(value) {
   const safeValue = String(value || "").trim().toLowerCase();
   return DISPLAY_VIEWS[safeValue] ? safeValue : "boot";
+}
+
+function normalizePhysicalDisplayView(value) {
+  const safeValue = String(value || "").trim().toLowerCase();
+  return ["auto", "boot", "wifi", "status"].includes(safeValue) ? safeValue : "auto";
 }
 
 function displayProfileConfig(route = state.route) {
@@ -681,8 +689,31 @@ function clearDeviceProtectedState() {
     hotspotSsid: "",
     wifiPassword: "",
     tmdbApiKey: "",
+    displayEnabled: false,
+    displayModel: "waveshare-1.69",
+    displayView: "auto",
     devicePassword: "",
     devicePasswordConfigured: Boolean(deviceAuthSnapshot() && deviceAuthSnapshot().usesDedicatedPassword),
+  };
+}
+
+function applyDeviceConfigDraft(config = {}) {
+  state.deviceConfigDraft = {
+    deviceName: String(config.deviceName || state.deviceConfigDraft.deviceName || "").trim(),
+    hotspotSsid: String(config.hotspotSsid || state.deviceConfigDraft.hotspotSsid || "").trim(),
+    wifiPassword: String(config.wifiPassword || state.deviceConfigDraft.wifiPassword || "").trim(),
+    tmdbApiKey: String(config.tmdbApiKey || state.deviceConfigDraft.tmdbApiKey || "").trim(),
+    displayEnabled: Boolean(
+      config.displayEnabled != null ? config.displayEnabled : state.deviceConfigDraft.displayEnabled,
+    ),
+    displayModel: normalizeDisplayProfileKey(config.displayModel || state.deviceConfigDraft.displayModel),
+    displayView: normalizePhysicalDisplayView(config.displayView || state.deviceConfigDraft.displayView),
+    devicePassword: "",
+    devicePasswordConfigured: Boolean(
+      config.devicePasswordConfigured != null
+        ? config.devicePasswordConfigured
+        : state.deviceConfigDraft.devicePasswordConfigured,
+    ),
   };
 }
 
@@ -5566,6 +5597,17 @@ function createDeviceConfigCard() {
   const initialHotspotSsid = String(storedDraft.hotspotSsid || status.hotspotSsid || hotspotNetworkName(status) || appNetworkName()).trim();
   const initialWifiPassword = String(storedDraft.wifiPassword || status.hotspotPassword || "").trim();
   const initialTmdbApiKey = String(storedDraft.tmdbApiKey || "").trim();
+  const initialDisplayEnabled = Boolean(
+    storedDraft.displayEnabled != null
+      ? storedDraft.displayEnabled
+      : ((status.display && status.display.enabled) || false),
+  );
+  const initialDisplayModel = normalizeDisplayProfileKey(
+    storedDraft.displayModel || (status.display && status.display.model) || "waveshare-1.69",
+  );
+  const initialDisplayView = normalizePhysicalDisplayView(
+    storedDraft.displayView || (status.display && status.display.view) || "auto",
+  );
   const initialDevicePassword = String(storedDraft.devicePassword || "").trim();
   const devicePasswordConfigured = Boolean(storedDraft.devicePasswordConfigured || (deviceAuthSnapshot() && deviceAuthSnapshot().usesDedicatedPassword));
   const card = document.createElement("article");
@@ -5647,6 +5689,60 @@ function createDeviceConfigCard() {
   tmdbApiKeyField.appendChild(tmdbApiKeyLabel);
   tmdbApiKeyField.appendChild(tmdbApiKeyInput);
 
+  const displayEnabledField = document.createElement("label");
+  displayEnabledField.className = "upload-field";
+  const displayEnabledLabel = document.createElement("span");
+  displayEnabledLabel.className = "upload-label";
+  displayEnabledLabel.textContent = "Physical screen";
+  const displayEnabledInput = document.createElement("input");
+  displayEnabledInput.className = "upload-checkbox";
+  displayEnabledInput.type = "checkbox";
+  displayEnabledInput.name = "display-enabled";
+  displayEnabledInput.checked = initialDisplayEnabled;
+  displayEnabledField.appendChild(displayEnabledLabel);
+  displayEnabledField.appendChild(displayEnabledInput);
+
+  const displayModelField = document.createElement("label");
+  displayModelField.className = "upload-field";
+  const displayModelLabel = document.createElement("span");
+  displayModelLabel.className = "upload-label";
+  displayModelLabel.textContent = "Screen model";
+  const displayModelSelect = document.createElement("select");
+  displayModelSelect.className = "upload-text";
+  displayModelSelect.name = "display-model";
+  for (const key of DISPLAY_PROFILE_ORDER) {
+    const option = document.createElement("option");
+    option.value = key;
+    option.textContent = DISPLAY_PROFILES[key].label;
+    displayModelSelect.appendChild(option);
+  }
+  displayModelSelect.value = initialDisplayModel;
+  displayModelField.appendChild(displayModelLabel);
+  displayModelField.appendChild(displayModelSelect);
+
+  const displayViewField = document.createElement("label");
+  displayViewField.className = "upload-field";
+  const displayViewLabel = document.createElement("span");
+  displayViewLabel.className = "upload-label";
+  displayViewLabel.textContent = "Screen content";
+  const displayViewSelect = document.createElement("select");
+  displayViewSelect.className = "upload-text";
+  displayViewSelect.name = "display-view";
+  for (const optionConfig of [
+    { value: "auto", label: "Auto" },
+    { value: "boot", label: "Boot" },
+    { value: "wifi", label: "Wi-Fi QR" },
+    { value: "status", label: "Status" },
+  ]) {
+    const option = document.createElement("option");
+    option.value = optionConfig.value;
+    option.textContent = optionConfig.label;
+    displayViewSelect.appendChild(option);
+  }
+  displayViewSelect.value = initialDisplayView;
+  displayViewField.appendChild(displayViewLabel);
+  displayViewField.appendChild(displayViewSelect);
+
   const devicePasswordField = document.createElement("label");
   devicePasswordField.className = "upload-field upload-field--full";
   const devicePasswordLabel = document.createElement("span");
@@ -5669,7 +5765,7 @@ function createDeviceConfigCard() {
   const note = document.createElement("p");
   note.className = "upload-note";
   note.textContent =
-    "These values are saved on the Pi. Leave the device page password blank to keep the current unlock password. If you have never set one, the Device page uses the fallback Wi-Fi password. Fallback Wi-Fi changes take effect the next time hotspot mode starts, and the TMDb API key is used on the next online rescan.";
+    "These values are saved on the Pi. Leave the device page password blank to keep the current unlock password. If you have never set one, the Device page uses the fallback Wi-Fi password. Fallback Wi-Fi changes take effect the next time hotspot mode starts, the tiny-screen service picks up display changes automatically, and the TMDb API key is used on the next online rescan.";
 
   const feedback = document.createElement("p");
   feedback.className = "upload-status";
@@ -5686,6 +5782,9 @@ function createDeviceConfigCard() {
   fields.appendChild(hotspotNameField);
   fields.appendChild(wifiPasswordField);
   fields.appendChild(tmdbApiKeyField);
+  fields.appendChild(displayEnabledField);
+  fields.appendChild(displayModelField);
+  fields.appendChild(displayViewField);
   fields.appendChild(devicePasswordField);
   form.appendChild(fields);
   form.appendChild(note);
@@ -5706,6 +5805,9 @@ function createDeviceConfigCard() {
       hotspotSsid: hotspotNameInput.value.trim(),
       wifiPassword: wifiPasswordInput.value.trim(),
       tmdbApiKey: tmdbApiKeyInput.value.trim(),
+      displayEnabled: displayEnabledInput.checked,
+      displayModel: normalizeDisplayProfileKey(displayModelSelect.value),
+      displayView: normalizePhysicalDisplayView(displayViewSelect.value),
       devicePassword: devicePasswordInput.value.trim(),
       devicePasswordConfigured,
     };
@@ -5715,6 +5817,9 @@ function createDeviceConfigCard() {
   hotspotNameInput.addEventListener("input", syncDraft);
   wifiPasswordInput.addEventListener("input", syncDraft);
   tmdbApiKeyInput.addEventListener("input", syncDraft);
+  displayEnabledInput.addEventListener("change", syncDraft);
+  displayModelSelect.addEventListener("change", syncDraft);
+  displayViewSelect.addEventListener("change", syncDraft);
   devicePasswordInput.addEventListener("input", syncDraft);
   syncDraft();
   applyConfigState(state.deviceConfigFeedback, state.deviceConfigFeedbackTone);
@@ -5727,6 +5832,9 @@ function createDeviceConfigCard() {
       hotspotSsid: String(state.deviceConfigDraft.hotspotSsid || "").trim(),
       wifiPassword: String(state.deviceConfigDraft.wifiPassword || "").trim(),
       tmdbApiKey: String(state.deviceConfigDraft.tmdbApiKey || "").trim(),
+      displayEnabled: Boolean(state.deviceConfigDraft.displayEnabled),
+      displayModel: normalizeDisplayProfileKey(state.deviceConfigDraft.displayModel),
+      displayView: normalizePhysicalDisplayView(state.deviceConfigDraft.displayView),
       devicePassword: String(state.deviceConfigDraft.devicePassword || "").trim(),
     };
 
@@ -5757,7 +5865,7 @@ function createDeviceConfigCard() {
 
     const previousHotspotSsid = String(status.hotspotSsid || "").trim();
     const previousWifiPassword = String(status.hotspotPassword || "").trim();
-    form.querySelectorAll("input, button").forEach((element) => {
+    form.querySelectorAll("input, select, button").forEach((element) => {
       element.disabled = true;
     });
     applyConfigState("Saving device settings on the Pi...", "pending");
@@ -5765,14 +5873,11 @@ function createDeviceConfigCard() {
     try {
       const payload = await saveDeviceConfig(draft);
       const savedConfig = payload.config || draft;
-      state.deviceConfigDraft = {
-        deviceName: String(savedConfig.deviceName || draft.deviceName).trim(),
-        hotspotSsid: String(savedConfig.hotspotSsid || draft.hotspotSsid).trim(),
-        wifiPassword: String(savedConfig.wifiPassword || draft.wifiPassword).trim(),
-        tmdbApiKey: String(savedConfig.tmdbApiKey || draft.tmdbApiKey).trim(),
-        devicePassword: "",
+      applyDeviceConfigDraft({
+        ...draft,
+        ...savedConfig,
         devicePasswordConfigured: Boolean(savedConfig.devicePasswordConfigured || draft.devicePassword),
-      };
+      });
       state.deviceConfigLoaded = true;
       if (payload.status) {
         state.status = payload.status;
@@ -5793,7 +5898,7 @@ function createDeviceConfigCard() {
       state.deviceConfigFeedback = error.message || "Unable to save device settings.";
       state.deviceConfigFeedbackTone = "error";
       applyConfigState(state.deviceConfigFeedback, state.deviceConfigFeedbackTone);
-      form.querySelectorAll("input, button").forEach((element) => {
+      form.querySelectorAll("input, select, button").forEach((element) => {
         element.disabled = false;
       });
     }
@@ -8260,6 +8365,27 @@ function renderDevicePage(container) {
       eyebrow: "Display",
       title: "Tiny Screen Previews",
       copy: "Try boot, Wi-Fi QR, and live status layouts sized for the two Waveshare SPI panels before wiring up a dedicated display service.",
+      rows: [
+        { label: "Physical screen", value: status.display && status.display.enabled ? "Enabled" : "Disabled" },
+        {
+          label: "Model",
+          value:
+            (status.display && status.display.model && DISPLAY_PROFILES[status.display.model]
+              ? DISPLAY_PROFILES[status.display.model].label
+              : "Waveshare 1.69\""),
+        },
+        {
+          label: "View",
+          value:
+            status.display && status.display.view
+              ? (status.display.view === "auto"
+                ? "Auto"
+                : DISPLAY_VIEWS[status.display.view]
+                  ? DISPLAY_VIEWS[status.display.view].label
+                  : status.display.view)
+              : "Auto",
+        },
+      ],
       actions: [
         {
           label: 'Boot 1.69"',
@@ -8553,14 +8679,7 @@ function ensureDeviceConfigLoaded() {
 
   deviceConfigRequest = loadDeviceConfig()
     .then((config) => {
-      state.deviceConfigDraft = {
-        deviceName: String(config.deviceName || state.deviceConfigDraft.deviceName || "").trim(),
-        hotspotSsid: String(config.hotspotSsid || state.deviceConfigDraft.hotspotSsid || "").trim(),
-        wifiPassword: String(config.wifiPassword || state.deviceConfigDraft.wifiPassword || "").trim(),
-        tmdbApiKey: String(config.tmdbApiKey || state.deviceConfigDraft.tmdbApiKey || "").trim(),
-        devicePassword: "",
-        devicePasswordConfigured: Boolean(config.devicePasswordConfigured),
-      };
+      applyDeviceConfigDraft(config);
       state.deviceConfigLoaded = true;
       render();
     })
@@ -8790,14 +8909,7 @@ async function refreshAll() {
   }
   if (state.route.name === "device") {
     const config = await (deviceConfigRequest || loadDeviceConfig());
-    state.deviceConfigDraft = {
-      deviceName: String(config.deviceName || state.deviceConfigDraft.deviceName || "").trim(),
-      hotspotSsid: String(config.hotspotSsid || state.deviceConfigDraft.hotspotSsid || "").trim(),
-      wifiPassword: String(config.wifiPassword || state.deviceConfigDraft.wifiPassword || "").trim(),
-      tmdbApiKey: String(config.tmdbApiKey || state.deviceConfigDraft.tmdbApiKey || "").trim(),
-      devicePassword: "",
-      devicePasswordConfigured: Boolean(config.devicePasswordConfigured),
-    };
+    applyDeviceConfigDraft(config);
     state.deviceConfigLoaded = true;
   }
   lastCompletedUploadRefreshKey = uploadCompletionRefreshKey(uploadStatusSnapshot());

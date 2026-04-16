@@ -26,6 +26,7 @@ The project now uses Backcountry Broadcast naming for the repo files, default se
 - `backcountry-broadcast.config.example.json`: sample runtime config for `/srv/backcountry-broadcast/backcountry-broadcast.config.json`
 - `deploy/network/`: fallback Wi-Fi script and `systemd` unit for known-network-first hotspot mode
 - `deploy/backcountry-broadcast.service`: example `systemd` unit
+- `deploy/backcountry-broadcast-screen.service`: example `systemd` unit for a small SPI status screen
 
 ## Storage layout
 
@@ -68,6 +69,7 @@ Edit that retained config file to set:
 - how long the Pi should wait for a known Wi-Fi network before it creates its own access point
 - TMDb metadata settings and image-download options
 - optional Pi server settings such as `httpPort`, `bindAddress`, and `mdnsEnabled`
+- optional tiny-screen settings such as `displayEnabled`, `displayModel`, and `displayView`
 
 The backend and the fallback hotspot service both derive the `.local` host name automatically from `deviceName`.
 
@@ -122,6 +124,7 @@ What that installer does:
 - prepares `/var/tmp/backcountry-broadcast-upload` for large browser uploads
 - writes and enables `backcountry-broadcast-network.service`
 - writes and enables `backcountry-broadcast.service`
+- writes and enables `backcountry-broadcast-screen.service`
 - writes and enables `backcountry-broadcast-filebrowser.service`
 - captures the initial File Browser admin password so the Device page can show it
 
@@ -138,6 +141,7 @@ That updater:
 - makes sure File Browser is installed
 - reapplies the bundled File Browser branding
 - rewrites the service units with your current paths
+- refreshes `backcountry-broadcast-screen.service`
 - refreshes `backcountry-broadcast-filebrowser.service`
 - keeps large web uploads pointed at `/var/tmp/backcountry-broadcast-upload`
 - restarts `backcountry-broadcast`
@@ -195,13 +199,15 @@ curl -fsSL https://raw.githubusercontent.com/xxredxpandaxx/BackpackingMediaServe
 
    ```bash
    sudo cp /opt/backcountry-broadcast/deploy/network/backcountry-broadcast-network.service /etc/systemd/system/backcountry-broadcast-network.service
-   # If your Pi login is not "pi", edit User=, Group=, and NOMADSCREEN_MEDIA_ROOT= in backcountry-broadcast.service and backcountry-broadcast-filebrowser.service first.
+   # If your Pi login is not "pi", edit User=, Group=, and NOMADSCREEN_MEDIA_ROOT= in backcountry-broadcast.service, backcountry-broadcast-screen.service, and backcountry-broadcast-filebrowser.service first.
    sudo cp /opt/backcountry-broadcast/deploy/backcountry-broadcast.service /etc/systemd/system/backcountry-broadcast.service
+   sudo cp /opt/backcountry-broadcast/deploy/backcountry-broadcast-screen.service /etc/systemd/system/backcountry-broadcast-screen.service
    sudo cp /opt/backcountry-broadcast/deploy/backcountry-broadcast-filebrowser.service /etc/systemd/system/backcountry-broadcast-filebrowser.service
    sudo systemctl daemon-reload
    sudo systemctl enable --now NetworkManager.service
    sudo systemctl enable --now backcountry-broadcast-network.service
    sudo systemctl enable --now backcountry-broadcast.service
+   sudo systemctl enable --now backcountry-broadcast-screen.service
    sudo systemctl enable --now backcountry-broadcast-filebrowser.service
    ```
 
@@ -258,6 +264,18 @@ To preload known networks, use Raspberry Pi Imager advanced settings before firs
 - `bindAddress`
 - `mdnsEnabled`
 - `mdnsHost`
+- `displayEnabled`: enable the physical SPI screen service
+- `displayModel`: `waveshare-1.69` or `waveshare-1.9`
+- `displayView`: `auto`, `boot`, `wifi`, or `status`
+
+The physical screen service assumes the standard Waveshare Raspberry Pi wiring for ST7789 SPI LCDs:
+
+- `CE0` for chip select
+- `GPIO25` for data/command
+- `GPIO27` for reset
+- `GPIO18` for backlight
+
+Enable the Raspberry Pi SPI interface before using the attached screen, for example with `sudo raspi-config`.
 - `wifiInterface`
 - `devicePassword`
 - `fallbackAccessPointEnabled`

@@ -8,6 +8,7 @@ LEGACY_FILEBROWSER_SERVICE_NAME="nomadscreen-filebrowser"
 SERVICE_NAME="${NOMADSCREEN_SERVICE_NAME:-backcountry-broadcast}"
 NETWORK_SERVICE_NAME="${NOMADSCREEN_NETWORK_SERVICE_NAME:-backcountry-broadcast-network}"
 FILEBROWSER_SERVICE_NAME="${NOMADSCREEN_FILEBROWSER_SERVICE_NAME:-backcountry-broadcast-filebrowser}"
+SCREEN_SERVICE_NAME="${NOMADSCREEN_SCREEN_SERVICE_NAME:-backcountry-broadcast-screen}"
 INSTALL_DIR="${NOMADSCREEN_INSTALL_DIR:-/opt/backcountry-broadcast}"
 STORAGE_ROOT="${NOMADSCREEN_STORAGE_ROOT:-/srv/backcountry-broadcast}"
 MEDIA_ROOT="${NOMADSCREEN_MEDIA_ROOT:-}"
@@ -225,6 +226,9 @@ prepare_repo() {
     run_root chmod 0755 "${INSTALL_DIR}/update.sh"
   fi
   run_root chmod 0755 "${INSTALL_DIR}/deploy/network/backcountry-broadcast-network.sh"
+  if [[ -f "${INSTALL_DIR}/tools/backcountry_broadcast_screen.py" ]]; then
+    run_root chmod 0755 "${INSTALL_DIR}/tools/backcountry_broadcast_screen.py"
+  fi
 }
 
 seed_storage() {
@@ -406,6 +410,42 @@ EOF
   rm -f "${tmp_service}"
 }
 
+write_screen_service() {
+  local tmp_service
+  local service_path
+
+  service_path="/etc/systemd/system/${SCREEN_SERVICE_NAME}.service"
+  tmp_service="$(mktemp)"
+
+  cat >"${tmp_service}" <<EOF
+[Unit]
+Description=Backcountry Broadcast physical screen
+After=local-fs.target network.target
+Before=${SERVICE_NAME}.service
+
+[Service]
+Type=simple
+User=${INSTALL_USER}
+Group=${INSTALL_GROUP}
+WorkingDirectory=${INSTALL_DIR}
+Environment=PYTHONUNBUFFERED=1
+Environment=NOMADSCREEN_STORAGE_ROOT=${STORAGE_ROOT}
+Environment=NOMADSCREEN_MEDIA_ROOT=${MEDIA_ROOT}
+Environment=NOMADSCREEN_PORT=${HTTP_PORT}
+ExecStart=${INSTALL_DIR}/.venv/bin/python ${INSTALL_DIR}/tools/backcountry_broadcast_screen.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  log "Writing systemd service to ${service_path}"
+  run_root install -m 0644 "${tmp_service}" "${service_path}"
+  rm -f "${tmp_service}"
+}
+
 write_filebrowser_service() {
   local tmp_service
   local service_path
@@ -519,6 +559,7 @@ start_service() {
   log "Ensuring NetworkManager is active"
   run_root systemctl enable --now NetworkManager.service
   restart_service_unit "${NETWORK_SERVICE_NAME}"
+  restart_service_unit "${SCREEN_SERVICE_NAME}"
   restart_service_unit "${SERVICE_NAME}"
   restart_service_unit "${FILEBROWSER_SERVICE_NAME}"
   capture_filebrowser_password
@@ -537,6 +578,7 @@ print_success() {
   log "Upload temp dir: ${UPLOAD_TMP_DIR}"
   log "Network service: ${NETWORK_SERVICE_NAME}.service"
   log "Service name: ${SERVICE_NAME}.service"
+  log "Screen service: ${SCREEN_SERVICE_NAME}.service"
   log "File Browser service: ${FILEBROWSER_SERVICE_NAME}.service"
   log "File Browser password file: ${STORAGE_ROOT}/filebrowser/admin-password.txt"
   log "Copy your media into ${MEDIA_ROOT} and then use the Device page to rescan."
@@ -568,6 +610,7 @@ install_python_deps
 install_filebrowser_binary
 write_network_service
 write_service
+write_screen_service
 write_filebrowser_service
 cleanup_legacy_service_units
 start_service

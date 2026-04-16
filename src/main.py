@@ -70,6 +70,19 @@ DEFAULT_UPLOAD_TMP_DIRECTORY_NAME = "backcountry-broadcast-upload"
 LEGACY_UPLOAD_TMP_DIRECTORY_NAME = "nomadscreen-upload"
 DEFAULT_UPLOAD_STAGING_PREFIX = ".backcountry-broadcast-upload-"
 LEGACY_UPLOAD_STAGING_PREFIX = ".nomadscreen-upload-"
+DEFAULT_DISPLAY_ENABLED = False
+DEFAULT_DISPLAY_MODEL = "waveshare-1.69"
+DEFAULT_DISPLAY_VIEW = "auto"
+SUPPORTED_DISPLAY_MODELS = {
+    "waveshare-1.69",
+    "waveshare-1.9",
+}
+SUPPORTED_DISPLAY_VIEWS = {
+    "auto",
+    "boot",
+    "wifi",
+    "status",
+}
 METADATA_HIDDEN_DIRECTORY_NAMES = {
     DEFAULT_METADATA_DIRECTORY_NAME.casefold(),
     LEGACY_METADATA_DIRECTORY_NAME.casefold(),
@@ -138,6 +151,16 @@ def validated_device_page_password(value: str) -> str:
             f"Device page password must be {MIN_DEVICE_PAGE_PASSWORD_LENGTH}-{MAX_DEVICE_PAGE_PASSWORD_LENGTH} characters."
         )
     return password
+
+
+def normalize_display_model(value: object) -> str:
+    safe_value = str(value or "").strip().lower()
+    return safe_value if safe_value in SUPPORTED_DISPLAY_MODELS else DEFAULT_DISPLAY_MODEL
+
+
+def normalize_display_view(value: object) -> str:
+    safe_value = str(value or "").strip().lower()
+    return safe_value if safe_value in SUPPORTED_DISPLAY_VIEWS else DEFAULT_DISPLAY_VIEW
 
 
 def escape_wifi_qr_value(value: str) -> str:
@@ -938,6 +961,24 @@ def load_settings() -> dict[str, object]:
         ),
     )
     mdns_host = sanitize_mdns_host(str(raw_config.get("mdnsHost") or "")) or derived_mdns_host(device_name)
+    raw_display_block = raw_config.get("display") if isinstance(raw_config.get("display"), dict) else {}
+    display_enabled = env_bool(
+        "NOMADSCREEN_DISPLAY_ENABLED",
+        config_bool(
+            raw_config.get("displayEnabled", raw_display_block.get("enabled")),
+            DEFAULT_DISPLAY_ENABLED,
+        ),
+    )
+    display_model = normalize_display_model(
+        os.environ.get("NOMADSCREEN_DISPLAY_MODEL")
+        or raw_config.get("displayModel")
+        or raw_display_block.get("model")
+    )
+    display_view = normalize_display_view(
+        os.environ.get("NOMADSCREEN_DISPLAY_VIEW")
+        or raw_config.get("displayView")
+        or raw_display_block.get("view")
+    )
 
     return {
         "storage_root": storage_root,
@@ -959,6 +1000,9 @@ def load_settings() -> dict[str, object]:
         "fallback_ap_enabled": fallback_ap_enabled,
         "mdns_host": mdns_host,
         "mdns_enabled": env_bool("NOMADSCREEN_MDNS", bool(raw_config.get("mdnsEnabled", False))),
+        "display_enabled": display_enabled,
+        "display_model": display_model,
+        "display_view": display_view,
         "bind_address": bind_address,
         "http_port": http_port,
         "filebrowser_port": filebrowser_port,
@@ -3425,6 +3469,11 @@ class AppState:
             "wifiInterface": network["interface"],
             "fallbackApEnabled": self.settings["fallback_ap_enabled"],
             "knownWifiTimeoutSeconds": self.settings["known_wifi_timeout_seconds"],
+            "display": {
+                "enabled": bool(self.settings.get("display_enabled")),
+                "model": str(self.settings.get("display_model") or DEFAULT_DISPLAY_MODEL),
+                "view": str(self.settings.get("display_view") or DEFAULT_DISPLAY_VIEW),
+            },
             "ip": local_ip,
             "appUrl": mdns_url if self.settings["mdns_enabled"] else ip_app_url,
             "ipAppUrl": ip_app_url,
@@ -3466,6 +3515,9 @@ class AppState:
             "hotspotSsid": str(self.settings["ssid"]),
             "wifiPassword": str(self.settings["wifi_password"]),
             "tmdbApiKey": str(self.settings.get("tmdb_api_key") or ""),
+            "displayEnabled": bool(self.settings.get("display_enabled")),
+            "displayModel": str(self.settings.get("display_model") or DEFAULT_DISPLAY_MODEL),
+            "displayView": str(self.settings.get("display_view") or DEFAULT_DISPLAY_VIEW),
             "devicePasswordConfigured": self.device_access_uses_dedicated_password(),
             "configSource": self.settings["config_source"],
             "userConfigPath": str(self.settings.get("user_config_path") or ""),
@@ -3479,6 +3531,9 @@ class AppState:
         tmdb_api_key: object = "",
         tmdb_bearer_token: object | None = None,
         device_password: object | None = None,
+        display_enabled: object | None = None,
+        display_model: object | None = None,
+        display_view: object | None = None,
     ) -> dict[str, object]:
         safe_device_name = normalize_device_name(str(device_name or ""))[:MAX_DEVICE_NAME_LENGTH]
         if not safe_device_name:
@@ -3492,6 +3547,9 @@ class AppState:
         safe_device_password = normalize_hotspot_password(str(device_password or ""))
         if safe_device_password:
             safe_device_password = validated_device_page_password(safe_device_password)
+        safe_display_enabled = config_bool(display_enabled, DEFAULT_DISPLAY_ENABLED)
+        safe_display_model = normalize_display_model(display_model)
+        safe_display_view = normalize_display_view(display_view)
 
         with self.lock:
             user_config_path = Path(self.settings.get("user_config_path") or self.settings["config_path"])
@@ -3503,6 +3561,9 @@ class AppState:
             raw_config.pop("accessPointSsid", None)
             raw_config["wifiPassword"] = safe_wifi_password
             raw_config["tmdbApiKey"] = str(tmdb_api_key or "").strip()
+            raw_config["displayEnabled"] = safe_display_enabled
+            raw_config["displayModel"] = safe_display_model
+            raw_config["displayView"] = safe_display_view
             if safe_device_password:
                 raw_config["devicePassword"] = safe_device_password
             if tmdb_bearer_token is not None:
@@ -3512,6 +3573,11 @@ class AppState:
                 wifi_block["ssid"] = safe_hotspot_ssid
                 wifi_block["password"] = safe_wifi_password
                 raw_config["wifi"] = wifi_block
+            display_block = dict(raw_config.get("display") or {}) if isinstance(raw_config.get("display"), dict) else {}
+            display_block["enabled"] = safe_display_enabled
+            display_block["model"] = safe_display_model
+            display_block["view"] = safe_display_view
+            raw_config["display"] = display_block
             user_config_path.parent.mkdir(parents=True, exist_ok=True)
             atomic_write_text(user_config_path, json.dumps(raw_config, indent=2, ensure_ascii=False) + "\n")
             self.settings = load_settings()
@@ -3788,6 +3854,9 @@ def api_device_config() -> Response:
             payload.get("tmdbApiKey"),
             payload.get("tmdbBearerToken"),
             payload.get("devicePassword"),
+            payload.get("displayEnabled"),
+            payload.get("displayModel"),
+            payload.get("displayView"),
         )
     except ValueError as error:
         return no_store_json({"error": str(error)}, 400)

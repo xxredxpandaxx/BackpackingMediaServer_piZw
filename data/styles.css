@@ -799,6 +799,13 @@ button {
   cursor: pointer;
 }
 
+.upload-checkbox {
+  width: 20px;
+  height: 20px;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
 .upload-note,
 .upload-status {
   margin: 0;

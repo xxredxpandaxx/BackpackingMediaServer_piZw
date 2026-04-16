@@ -3,3 +3,6 @@ requests>=2.32,<3
 rapidfuzz>=3.9,<4
 mutagen>=1.47,<2
 qrcode>=8,<9
+Pillow>=10.4,<12
+Adafruit-Blinka>=8.70,<10
+adafruit-circuitpython-rgb-display>=3.14,<4

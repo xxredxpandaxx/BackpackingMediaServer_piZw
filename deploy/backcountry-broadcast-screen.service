@@ -1,0 +1,21 @@
+[Unit]
+Description=Backcountry Broadcast physical screen
+After=local-fs.target network.target
+Before=backcountry-broadcast.service
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/opt/backcountry-broadcast
+Environment=PYTHONUNBUFFERED=1
+Environment=NOMADSCREEN_STORAGE_ROOT=/srv/backcountry-broadcast
+Environment=NOMADSCREEN_MEDIA_ROOT=/home/pi/media
+Environment=NOMADSCREEN_PORT=80
+ExecStart=/opt/backcountry-broadcast/.venv/bin/python /opt/backcountry-broadcast/tools/backcountry_broadcast_screen.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
