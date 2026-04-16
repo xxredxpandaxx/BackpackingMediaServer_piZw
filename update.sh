@@ -697,8 +697,6 @@ Wants=${NETWORK_SERVICE_NAME}.service
 
 [Service]
 Type=simple
-User=${INSTALL_USER}
-Group=${INSTALL_GROUP}
 WorkingDirectory=${INSTALL_DIR}
 Environment=PYTHONUNBUFFERED=1
 Environment=NOMADSCREEN_STORAGE_ROOT=${STORAGE_ROOT}

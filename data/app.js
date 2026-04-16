@@ -32,6 +32,7 @@ const state = {
     displayModel: "waveshare-1.69",
     displayView: "auto",
     displayStatusPollSeconds: 1,
+    displayBrightness: 100,
     displayButtons: {
       next: "D6",
       previous: "D16",
@@ -209,6 +210,7 @@ const DISPLAY_VIEWS = {
 const DISPLAY_VIEW_ORDER = ["boot", "wifi", "status"];
 const DISPLAY_PROFILE_ORDER = ["waveshare-1.69", "waveshare-1.9"];
 const DEFAULT_DISPLAY_STATUS_POLL_SECONDS = 1;
+const DEFAULT_DISPLAY_BRIGHTNESS = 100;
 const DEFAULT_DISPLAY_BUTTONS = {
   next: "D6",
   previous: "D16",
@@ -300,6 +302,14 @@ function normalizeDisplayStatusPollSeconds(value) {
     return DEFAULT_DISPLAY_STATUS_POLL_SECONDS;
   }
   return Math.min(30, Math.max(0.1, Math.round(numeric * 10) / 10));
+}
+
+function normalizeDisplayBrightness(value) {
+  const numeric = Number.parseInt(value, 10);
+  if (!Number.isFinite(numeric)) {
+    return DEFAULT_DISPLAY_BRIGHTNESS;
+  }
+  return Math.min(100, Math.max(5, numeric));
 }
 
 function normalizeDisplayButtonPin(value, fallback = "") {
@@ -758,6 +768,7 @@ function clearDeviceProtectedState() {
     displayModel: "waveshare-1.69",
     displayView: "auto",
     displayStatusPollSeconds: DEFAULT_DISPLAY_STATUS_POLL_SECONDS,
+    displayBrightness: DEFAULT_DISPLAY_BRIGHTNESS,
     displayButtons: normalizeDisplayButtons(),
     devicePassword: "",
     devicePasswordConfigured: Boolean(deviceAuthSnapshot() && deviceAuthSnapshot().usesDedicatedPassword),
@@ -780,6 +791,11 @@ function applyDeviceConfigDraft(config = {}) {
       config.displayStatusPollSeconds != null
         ? config.displayStatusPollSeconds
         : state.deviceConfigDraft.displayStatusPollSeconds,
+    ),
+    displayBrightness: normalizeDisplayBrightness(
+      config.displayBrightness != null
+        ? config.displayBrightness
+        : state.deviceConfigDraft.displayBrightness,
     ),
     displayButtons: normalizeDisplayButtons(config.displayButtons || state.deviceConfigDraft.displayButtons),
     devicePassword: "",
@@ -4771,6 +4787,7 @@ function deviceConfigPayloadFromDraft() {
     displayModel: normalizeDisplayProfileKey(state.deviceConfigDraft.displayModel),
     displayView: normalizePhysicalDisplayView(state.deviceConfigDraft.displayView),
     displayStatusPollSeconds: normalizeDisplayStatusPollSeconds(state.deviceConfigDraft.displayStatusPollSeconds),
+    displayBrightness: normalizeDisplayBrightness(state.deviceConfigDraft.displayBrightness),
     displayButtons: normalizeDisplayButtons(state.deviceConfigDraft.displayButtons),
     devicePassword: String(state.deviceConfigDraft.devicePassword || "").trim(),
   };
@@ -5941,6 +5958,11 @@ function createScreenSettingsCard() {
       ? storedDraft.displayStatusPollSeconds
       : (status.display && status.display.statusPollSeconds),
   );
+  const initialDisplayBrightness = normalizeDisplayBrightness(
+    storedDraft.displayBrightness != null
+      ? storedDraft.displayBrightness
+      : (status.display && status.display.brightness),
+  );
   const initialDisplayButtons = normalizeDisplayButtons(
     storedDraft.displayButtons || (status.display && status.display.buttons),
   );
@@ -6056,6 +6078,22 @@ function createScreenSettingsCard() {
   displayPollField.appendChild(displayPollLabel);
   displayPollField.appendChild(displayPollInput);
 
+  const displayBrightnessField = document.createElement("label");
+  displayBrightnessField.className = "upload-field";
+  const displayBrightnessLabel = document.createElement("span");
+  displayBrightnessLabel.className = "upload-label";
+  displayBrightnessLabel.textContent = "Backlight brightness";
+  const displayBrightnessInput = document.createElement("input");
+  displayBrightnessInput.className = "upload-text";
+  displayBrightnessInput.type = "number";
+  displayBrightnessInput.name = "display-brightness";
+  displayBrightnessInput.min = "5";
+  displayBrightnessInput.max = "100";
+  displayBrightnessInput.step = "5";
+  displayBrightnessInput.value = String(initialDisplayBrightness);
+  displayBrightnessField.appendChild(displayBrightnessLabel);
+  displayBrightnessField.appendChild(displayBrightnessInput);
+
   const nextButtonField = document.createElement("label");
   nextButtonField.className = "upload-field";
   const nextButtonLabel = document.createElement("span");
@@ -6120,6 +6158,7 @@ function createScreenSettingsCard() {
   fields.appendChild(displayModelField);
   fields.appendChild(displayViewField);
   fields.appendChild(displayPollField);
+  fields.appendChild(displayBrightnessField);
   fields.appendChild(nextButtonField);
   fields.appendChild(previousButtonField);
   fields.appendChild(actionButtonField);
@@ -6144,6 +6183,7 @@ function createScreenSettingsCard() {
       displayModel: normalizeDisplayProfileKey(displayModelSelect.value),
       displayView: normalizePhysicalDisplayView(displayViewSelect.value),
       displayStatusPollSeconds: normalizeDisplayStatusPollSeconds(displayPollInput.value),
+      displayBrightness: normalizeDisplayBrightness(displayBrightnessInput.value),
       displayButtons: normalizeDisplayButtons({
         next: nextButtonInput.value,
         previous: previousButtonInput.value,
@@ -6164,8 +6204,8 @@ function createScreenSettingsCard() {
     previousButtonInput.disabled = consoleMode;
     actionButtonInput.disabled = consoleMode;
     note.textContent = consoleMode
-      ? "Console mode mirrors Linux output to the TFT. The screen content, status poll interval, and button controls below are ignored until you switch back to App-driven mode. After changing the screen mode, turning the display on, or swapping models, run sudo ./update.sh and reboot."
-      : "App-driven mode uses these values immediately. Status poll seconds control how often the physical display checks for server changes, and the button pins should use names like D6, D16, and D26.";
+      ? "Console mode mirrors Linux output to the TFT. The screen content, status poll interval, and button controls below are ignored until you switch back to App-driven mode, but backlight brightness still applies. After changing the screen mode, turning the display on, or swapping models, run sudo ./update.sh and reboot."
+      : "App-driven mode uses these values immediately. Status poll seconds control how often the physical display checks for server changes, brightness is saved as a percentage, and the button pins should use names like D6, D16, and D26.";
   };
 
   displayEnabledInput.addEventListener("change", syncDraft);
@@ -6176,6 +6216,7 @@ function createScreenSettingsCard() {
   displayModelSelect.addEventListener("change", syncDraft);
   displayViewSelect.addEventListener("change", syncDraft);
   displayPollInput.addEventListener("input", syncDraft);
+  displayBrightnessInput.addEventListener("input", syncDraft);
   nextButtonInput.addEventListener("input", syncDraft);
   previousButtonInput.addEventListener("input", syncDraft);
   actionButtonInput.addEventListener("input", syncDraft);
@@ -8687,6 +8728,13 @@ function renderDevicePage(container) {
             status.display && status.display.statusPollSeconds != null
               ? `${normalizeDisplayStatusPollSeconds(status.display.statusPollSeconds)}s`
               : `${DEFAULT_DISPLAY_STATUS_POLL_SECONDS}s`,
+        },
+        {
+          label: "Brightness",
+          value:
+            status.display && status.display.brightness != null
+              ? `${normalizeDisplayBrightness(status.display.brightness)}%`
+              : `${DEFAULT_DISPLAY_BRIGHTNESS}%`,
         },
       ],
       actions: [

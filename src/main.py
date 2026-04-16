@@ -75,6 +75,7 @@ DEFAULT_DISPLAY_BACKEND = "userspace"
 DEFAULT_DISPLAY_MODEL = "waveshare-1.69"
 DEFAULT_DISPLAY_VIEW = "auto"
 DEFAULT_DISPLAY_STATUS_POLL_SECONDS = 1.0
+DEFAULT_DISPLAY_BRIGHTNESS = 100
 DEFAULT_DISPLAY_BUTTON_PINS = {
     "next": "D6",
     "previous": "D16",
@@ -196,6 +197,10 @@ def normalize_display_button_pins(value: object) -> dict[str, str]:
 
 def normalize_display_status_poll_seconds(value: object) -> float:
     return min(30.0, max(0.1, safe_float(value, DEFAULT_DISPLAY_STATUS_POLL_SECONDS, 0.1)))
+
+
+def normalize_display_brightness(value: object) -> int:
+    return min(100, max(5, safe_int(value, DEFAULT_DISPLAY_BRIGHTNESS, 5)))
 
 
 def escape_wifi_qr_value(value: str) -> str:
@@ -1025,6 +1030,11 @@ def load_settings() -> dict[str, object]:
         or raw_config.get("displayStatusPollSeconds")
         or raw_display_block.get("statusPollSeconds")
     )
+    display_brightness = normalize_display_brightness(
+        os.environ.get("NOMADSCREEN_DISPLAY_BRIGHTNESS")
+        or raw_config.get("displayBrightness")
+        or raw_display_block.get("brightness")
+    )
     display_button_pins = normalize_display_button_pins(
         raw_config.get("displayButtons") if isinstance(raw_config.get("displayButtons"), dict) else raw_display_buttons
     )
@@ -1054,6 +1064,7 @@ def load_settings() -> dict[str, object]:
         "display_model": display_model,
         "display_view": display_view,
         "display_status_poll_seconds": display_status_poll_seconds,
+        "display_brightness": display_brightness,
         "display_button_pins": display_button_pins,
         "bind_address": bind_address,
         "http_port": http_port,
@@ -1075,6 +1086,7 @@ class AppState:
     def __init__(self) -> None:
         self.lock = threading.RLock()
         self.settings = load_settings()
+        self.settings_signature = self.runtime_settings_signature(self.settings)
         self.upload_temp_ready = False
         self.configure_upload_temp_directory()
         self.media_library: list[dict[str, object]] = []
@@ -1097,6 +1109,33 @@ class AppState:
         self.load_device_auth_sessions()
         self.prepare_upload_staging_directory()
         self.scan_library()
+
+    def runtime_settings_signature(self, settings: dict[str, object]) -> tuple[tuple[str, int | None, int | None], ...]:
+        signatures: list[tuple[str, int | None, int | None]] = []
+        for raw_path in (
+            settings.get("config_source_path") or settings.get("config_path"),
+            settings.get("user_config_source_path") or settings.get("user_config_path"),
+        ):
+            if not raw_path:
+                continue
+            path = Path(str(raw_path)).expanduser()
+            try:
+                stat_result = path.stat()
+                signatures.append((str(path), stat_result.st_mtime_ns, stat_result.st_size))
+            except OSError:
+                signatures.append((str(path), None, None))
+        return tuple(signatures)
+
+    def reload_settings_if_changed(self, force: bool = False) -> bool:
+        with self.lock:
+            current_signature = self.runtime_settings_signature(self.settings)
+            if not force and current_signature == self.settings_signature:
+                return False
+            self.settings = load_settings()
+            self.settings_signature = self.runtime_settings_signature(self.settings)
+            self.configure_upload_temp_directory()
+            self.prepare_upload_staging_directory()
+            return True
 
     def device_auth_sessions_path(self) -> Path:
         return (Path(self.settings["storage_root"]) / "device-auth-sessions.json").resolve(strict=False)
@@ -1309,9 +1348,11 @@ class AppState:
         return payload
 
     def device_access_password(self) -> str:
+        self.reload_settings_if_changed()
         return str(self.settings.get("device_password") or self.settings.get("wifi_password") or "").strip()
 
     def device_access_uses_dedicated_password(self) -> bool:
+        self.reload_settings_if_changed()
         return bool(str(self.settings.get("device_password") or "").strip())
 
     def cleanup_device_auth_sessions(self, now: float | None = None, persist: bool = False) -> bool:
@@ -3463,6 +3504,7 @@ class AppState:
         }
 
     def status_payload(self, authenticated: bool = False) -> dict[str, object]:
+        self.reload_settings_if_changed()
         local_ip = self.best_local_ip()
         port = int(self.settings["http_port"])
         mdns_host = f"{self.settings['mdns_host']}.local"
@@ -3529,6 +3571,7 @@ class AppState:
                 "statusPollSeconds": float(
                     self.settings.get("display_status_poll_seconds") or DEFAULT_DISPLAY_STATUS_POLL_SECONDS
                 ),
+                "brightness": int(self.settings.get("display_brightness") or DEFAULT_DISPLAY_BRIGHTNESS),
                 "buttons": normalize_display_button_pins(self.settings.get("display_button_pins")),
             },
             "ip": local_ip,
@@ -3567,6 +3610,7 @@ class AppState:
         }
 
     def device_config_payload(self) -> dict[str, object]:
+        self.reload_settings_if_changed()
         return {
             "deviceName": str(self.settings["device_name"]),
             "hotspotSsid": str(self.settings["ssid"]),
@@ -3579,6 +3623,7 @@ class AppState:
             "displayStatusPollSeconds": float(
                 self.settings.get("display_status_poll_seconds") or DEFAULT_DISPLAY_STATUS_POLL_SECONDS
             ),
+            "displayBrightness": int(self.settings.get("display_brightness") or DEFAULT_DISPLAY_BRIGHTNESS),
             "displayButtons": normalize_display_button_pins(self.settings.get("display_button_pins")),
             "devicePasswordConfigured": self.device_access_uses_dedicated_password(),
             "configSource": self.settings["config_source"],
@@ -3598,6 +3643,7 @@ class AppState:
         display_model: object | None = None,
         display_view: object | None = None,
         display_status_poll_seconds: object | None = None,
+        display_brightness: object | None = None,
         display_buttons: object | None = None,
     ) -> dict[str, object]:
         safe_device_name = normalize_device_name(str(device_name or ""))[:MAX_DEVICE_NAME_LENGTH]
@@ -3617,6 +3663,7 @@ class AppState:
         safe_display_model = normalize_display_model(display_model)
         safe_display_view = normalize_display_view(display_view)
         safe_display_status_poll_seconds = normalize_display_status_poll_seconds(display_status_poll_seconds)
+        safe_display_brightness = normalize_display_brightness(display_brightness)
         safe_display_buttons = normalize_display_button_pins(display_buttons)
 
         with self.lock:
@@ -3634,6 +3681,7 @@ class AppState:
             raw_config["displayModel"] = safe_display_model
             raw_config["displayView"] = safe_display_view
             raw_config["displayStatusPollSeconds"] = safe_display_status_poll_seconds
+            raw_config["displayBrightness"] = safe_display_brightness
             raw_config["displayButtons"] = safe_display_buttons
             if safe_device_password:
                 raw_config["devicePassword"] = safe_device_password
@@ -3650,11 +3698,13 @@ class AppState:
             display_block["model"] = safe_display_model
             display_block["view"] = safe_display_view
             display_block["statusPollSeconds"] = safe_display_status_poll_seconds
+            display_block["brightness"] = safe_display_brightness
             display_block["buttons"] = safe_display_buttons
             raw_config["display"] = display_block
             user_config_path.parent.mkdir(parents=True, exist_ok=True)
             atomic_write_text(user_config_path, json.dumps(raw_config, indent=2, ensure_ascii=False) + "\n")
             self.settings = load_settings()
+            self.settings_signature = self.runtime_settings_signature(self.settings)
             self.configure_upload_temp_directory()
             self.prepare_upload_staging_directory()
 
@@ -3933,6 +3983,7 @@ def api_device_config() -> Response:
             payload.get("displayModel"),
             payload.get("displayView"),
             payload.get("displayStatusPollSeconds"),
+            payload.get("displayBrightness"),
             payload.get("displayButtons"),
         )
     except ValueError as error:

@@ -69,7 +69,7 @@ Edit that retained config file to set:
 - how long the Pi should wait for a known Wi-Fi network before it creates its own access point
 - TMDb metadata settings and image-download options
 - optional Pi server settings such as `httpPort`, `bindAddress`, and `mdnsEnabled`
-- optional tiny-screen settings such as `displayEnabled`, `displayBackend`, `displayModel`, `displayView`, `displayStatusPollSeconds`, and `displayButtons`
+- optional tiny-screen settings such as `displayEnabled`, `displayBackend`, `displayModel`, `displayView`, `displayStatusPollSeconds`, `displayBrightness`, and `displayButtons`
 
 The backend and the fallback hotspot service both derive the `.local` host name automatically from `deviceName`.
 
@@ -203,7 +203,7 @@ curl -fsSL https://raw.githubusercontent.com/xxredxpandaxx/BackpackingMediaServe
 
    ```bash
    sudo cp /opt/backcountry-broadcast/deploy/network/backcountry-broadcast-network.service /etc/systemd/system/backcountry-broadcast-network.service
-   # If your Pi login is not "pi", edit User=, Group=, and NOMADSCREEN_MEDIA_ROOT= in backcountry-broadcast.service, backcountry-broadcast-screen.service, and backcountry-broadcast-filebrowser.service first.
+   # If your Pi login is not "pi", edit User=, Group=, and NOMADSCREEN_MEDIA_ROOT= in backcountry-broadcast.service and backcountry-broadcast-filebrowser.service first.
    sudo cp /opt/backcountry-broadcast/deploy/backcountry-broadcast.service /etc/systemd/system/backcountry-broadcast.service
    sudo cp /opt/backcountry-broadcast/deploy/backcountry-broadcast-screen.service /etc/systemd/system/backcountry-broadcast-screen.service
    sudo cp /opt/backcountry-broadcast/deploy/backcountry-broadcast-filebrowser.service /etc/systemd/system/backcountry-broadcast-filebrowser.service
@@ -273,12 +273,15 @@ To preload known networks, use Raspberry Pi Imager advanced settings before firs
 - `displayModel`: `waveshare-1.69` or `waveshare-1.9`
 - `displayView`: `auto`, `boot`, `wifi`, or `status`
 - `displayStatusPollSeconds`: userspace TFT status polling interval, default `1.0`, clamped to `0.1-30`
+- `displayBrightness`: TFT backlight brightness percent, default `100`, clamped to `5-100`
 - `displayButtons`: optional GPIO pin mapping for the physical screen buttons, for example `{"next":"D6","previous":"D16","action":"D26"}`
 
 When you switch `displayBackend` to `console`, turn the TFT on, or change `displayModel`, run `sudo ./update.sh` and reboot so the Pi can rebuild the matching `fbcp` binary and refresh `/boot/firmware/config.txt` or `/boot/config.txt` for the TFT console mode.
 The `console` backend also needs Raspberry Pi's VideoCore development package `libraspberrypi-dev`, because Waveshare's `fbcp` build depends on `bcm_host.h`. On newer generic Debian images such as Debian 13 Trixie, that package may be unavailable, and the project will fall back to the working app-driven `userspace` display mode instead of failing the update.
 
-The physical screen service reads button GPIO mappings from `/srv/backcountry-broadcast/backcountry-broadcast.user.json` if you want to override the defaults without touching the installer-managed base config. In userspace mode, `next` advances through `boot -> wifi -> status`, `previous` goes the other direction, and `action` toggles between the current manual screen and the configured auto/manual screen selection. It also supports long-press gestures: `action` long-press toggles the backlight, `next` long-press jumps to Status, and `previous` long-press jumps to Boot. When `RPi.GPIO` is available, button presses use edge detection so the screen service can mostly sleep until either a button is pressed or the next status poll is due.
+The physical screen service reads button GPIO mappings from `/srv/backcountry-broadcast/backcountry-broadcast.user.json` if you want to override the defaults without touching the installer-managed base config. In userspace mode, `next` advances through `boot -> wifi -> status`, `previous` goes the other direction, and `action` toggles between the current manual screen and the configured auto/manual screen selection. It also supports long-press gestures: `action` long-press toggles the backlight, `next` long-press opens the on-screen Settings menu, and `previous` long-press jumps to Boot. That Settings menu can turn the Backcountry Wi-Fi hotspot on or off, change backlight brightness, reboot the Pi, or power it down. When `RPi.GPIO` is available, button presses use edge detection so the screen service can mostly sleep until either a button is pressed or the next status poll is due.
+
+The bundled `backcountry-broadcast-screen.service` now runs as root so the built-in TFT settings menu can control NetworkManager and request reboot or poweroff without extra sudo setup.
 
 The physical screen service assumes the standard Waveshare Raspberry Pi wiring for ST7789 SPI LCDs:
 

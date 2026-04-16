@@ -8,8 +8,10 @@ import os
 import re
 import socket
 import subprocess
+import tempfile
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import qrcode
@@ -36,6 +38,7 @@ DEFAULT_DISPLAY_BACKEND = "userspace"
 DEFAULT_DISPLAY_MODEL = "waveshare-1.69"
 DEFAULT_DISPLAY_VIEW = "auto"
 DEFAULT_DISPLAY_STATUS_POLL_SECONDS = 1.0
+DEFAULT_DISPLAY_BRIGHTNESS = 100
 DEFAULT_CONFIG_CHECK_SECONDS = 2.0
 DEFAULT_DISABLED_REFRESH_SECONDS = 5.0
 DISPLAY_BUTTON_POLL_SECONDS = 0.05
@@ -43,6 +46,8 @@ DISPLAY_BUTTON_BOUNCE_MS = 140
 DISPLAY_BUTTON_LONG_PRESS_SECONDS = 0.65
 SUPPORTED_DISPLAY_BACKENDS = {"userspace", "console"}
 DISPLAY_BUTTON_VIEW_ORDER = ("boot", "wifi", "status")
+SETTINGS_VIEW_KEY = "settings"
+SETTINGS_MENU_ITEM_IDS = ("wifi", "brightness", "reboot", "poweroff", "exit")
 DEFAULT_DISPLAY_BUTTON_PINS = {
     "next": "D6",
     "previous": "D16",
@@ -176,6 +181,14 @@ def normalize_display_status_poll_seconds(value: object) -> float:
     return min(30.0, max(0.1, seconds))
 
 
+def normalize_display_brightness(value: object) -> int:
+    try:
+        brightness = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_DISPLAY_BRIGHTNESS
+    return min(100, max(5, brightness))
+
+
 def legacy_refresh_fps_to_poll_seconds(value: object) -> float | None:
     try:
         fps = float(value)
@@ -219,6 +232,10 @@ def derived_mdns_host(device_name: str) -> str:
     return sanitize_mdns_host(device_name) or DEFAULT_MDNS_HOST
 
 
+def derived_access_point_connection_name(device_name: str) -> str:
+    return f"{normalize_device_name(device_name) or DEFAULT_DEVICE_NAME} Hotspot"
+
+
 def merge_config_values(base: object, override: object) -> object:
     if isinstance(base, dict) and isinstance(override, dict):
         merged = dict(base)
@@ -244,6 +261,57 @@ def runtime_storage_root() -> Path:
     if root_value:
         return Path(root_value).expanduser()
     return DEFAULT_STORAGE_ROOT
+
+
+def runtime_user_config_candidates(storage_root: Path) -> list[Path]:
+    return [
+        storage_root / DEFAULT_RUNTIME_USER_CONFIG_NAME,
+        storage_root / LEGACY_RUNTIME_USER_CONFIG_NAME,
+    ]
+
+
+def first_existing_path(candidates: list[Path]) -> Path | None:
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def fsync_directory(path: Path) -> None:
+    if os.name != "posix":
+        return
+    flags = getattr(os, "O_RDONLY", 0)
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    try:
+        descriptor = os.open(str(path), flags)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)
+
+
+def atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding=encoding, newline="\n") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+        fsync_directory(path.parent)
+    except Exception:
+        try:
+            temp_path.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def runtime_config_values(storage_root: Path) -> dict[str, object]:
@@ -307,9 +375,22 @@ def load_screen_settings() -> dict[str, object]:
         or raw_display.get("statusPollSeconds")
         or legacy_refresh_fps_to_poll_seconds(raw_config.get("displayRefreshFps") or raw_display.get("refreshFps"))
     )
+    display_brightness = normalize_display_brightness(
+        os.environ.get("NOMADSCREEN_DISPLAY_BRIGHTNESS")
+        or raw_config.get("displayBrightness")
+        or raw_display.get("brightness")
+    )
     display_button_pins = normalize_display_button_pins(
         raw_config.get("displayButtons") if isinstance(raw_config.get("displayButtons"), dict) else raw_display_buttons
     )
+    fallback_ap_enabled = config_bool(
+        raw_config.get("fallbackAccessPointEnabled", raw_config.get("accessPointEnabled")),
+        True,
+    )
+    wifi_interface = str(raw_config.get("wifiInterface") or raw_wifi.get("interface") or "wlan0").strip() or "wlan0"
+    access_point_connection_name = str(
+        raw_config.get("fallbackAccessPointConnectionName") or derived_access_point_connection_name(device_name)
+    ).strip() or derived_access_point_connection_name(DEFAULT_DEVICE_NAME)
     mdns_enabled = config_bool(os.environ.get("NOMADSCREEN_MDNS"), config_bool(raw_config.get("mdnsEnabled"), False))
     mdns_host = sanitize_mdns_host(raw_config.get("mdnsHost")) or derived_mdns_host(device_name)
     media_root = (
@@ -337,8 +418,35 @@ def load_screen_settings() -> dict[str, object]:
         "display_model": display_model,
         "display_view": display_view,
         "display_status_poll_seconds": display_status_poll_seconds,
+        "display_brightness": display_brightness,
         "display_button_pins": display_button_pins,
+        "fallback_ap_enabled": fallback_ap_enabled,
+        "wifi_interface": wifi_interface,
+        "access_point_connection_name": access_point_connection_name,
     }
+
+
+def save_runtime_overrides(
+    storage_root: Path,
+    *,
+    fallback_ap_enabled: bool | None = None,
+    display_brightness: int | None = None,
+) -> None:
+    user_config_candidates = runtime_user_config_candidates(storage_root)
+    user_config_path = first_existing_path(user_config_candidates) or user_config_candidates[0]
+    raw_config = read_runtime_config_file(user_config_path) if user_config_path.exists() else {}
+
+    if fallback_ap_enabled is not None:
+        raw_config["fallbackAccessPointEnabled"] = bool(fallback_ap_enabled)
+
+    if display_brightness is not None:
+        safe_display_brightness = normalize_display_brightness(display_brightness)
+        raw_config["displayBrightness"] = safe_display_brightness
+        display_block = dict(raw_config.get("display") or {}) if isinstance(raw_config.get("display"), dict) else {}
+        display_block["brightness"] = safe_display_brightness
+        raw_config["display"] = display_block
+
+    atomic_write_text(user_config_path, json.dumps(raw_config, indent=2, ensure_ascii=False) + "\n")
 
 
 def best_local_ip(bind_address: str) -> str:
@@ -414,6 +522,148 @@ def fetch_status(settings: dict[str, object]) -> dict[str, object] | None:
         return payload if isinstance(payload, dict) else None
     except (requests.RequestException, ValueError):
         return None
+
+
+def run_command(args: list[str], timeout_seconds: float = 12.0) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        args,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=timeout_seconds,
+    )
+
+
+def nmcli_command(*args: str, timeout_seconds: float = 12.0) -> subprocess.CompletedProcess[str]:
+    return run_command(["nmcli", *args], timeout_seconds=timeout_seconds)
+
+
+def ensure_hotspot_profile(settings: dict[str, object]) -> None:
+    connection_name = str(settings.get("access_point_connection_name") or "").strip()
+    wifi_interface = str(settings.get("wifi_interface") or "wlan0").strip() or "wlan0"
+    ssid = str(settings.get("hotspot_ssid") or DEFAULT_ACCESS_POINT_SSID)
+    password = normalize_hotspot_password(settings.get("wifi_password"))
+
+    existing = nmcli_command("-t", "-g", "NAME", "connection", "show", timeout_seconds=4.0)
+    if connection_name not in existing.stdout.splitlines():
+        created = nmcli_command(
+            "connection",
+            "add",
+            "type",
+            "wifi",
+            "ifname",
+            wifi_interface,
+            "con-name",
+            connection_name,
+            "ssid",
+            ssid,
+            "autoconnect",
+            "no",
+        )
+        if created.returncode != 0:
+            stderr = created.stderr.strip() or created.stdout.strip() or "Could not create the hotspot profile."
+            raise RuntimeError(stderr)
+
+    updated = nmcli_command(
+        "connection",
+        "modify",
+        connection_name,
+        "connection.interface-name",
+        wifi_interface,
+        "connection.autoconnect",
+        "no",
+        "wifi.mode",
+        "ap",
+        "wifi.band",
+        "bg",
+        "wifi.ssid",
+        ssid,
+        "wifi-sec.key-mgmt",
+        "wpa-psk",
+        "wifi-sec.psk",
+        password,
+        "ipv4.addresses",
+        "10.0.0.1/24",
+        "ipv4.method",
+        "shared",
+        "ipv6.method",
+        "ignore",
+    )
+    if updated.returncode != 0:
+        stderr = updated.stderr.strip() or updated.stdout.strip() or "Could not update the hotspot profile."
+        raise RuntimeError(stderr)
+
+
+def set_backcountry_wifi_enabled(settings: dict[str, object], enabled: bool) -> str:
+    wifi_interface = str(settings.get("wifi_interface") or "wlan0").strip() or "wlan0"
+    connection_name = str(settings.get("access_point_connection_name") or "").strip()
+
+    radio_result = nmcli_command("radio", "wifi", "on", timeout_seconds=4.0)
+    if radio_result.returncode != 0:
+        stderr = radio_result.stderr.strip() or radio_result.stdout.strip() or "Could not enable Wi-Fi radio."
+        raise RuntimeError(stderr)
+
+    nmcli_command("device", "set", wifi_interface, "managed", "yes", timeout_seconds=4.0)
+
+    if enabled:
+        ensure_hotspot_profile(settings)
+        result = nmcli_command("connection", "up", connection_name, "ifname", wifi_interface)
+        if result.returncode != 0:
+            stderr = result.stderr.strip() or result.stdout.strip() or "Could not start the Backcountry Wi-Fi hotspot."
+            raise RuntimeError(stderr)
+        return "Backcountry Wi-Fi turned on."
+
+    if connection_name:
+        nmcli_command("connection", "down", connection_name, timeout_seconds=6.0)
+    nmcli_command("device", "up", wifi_interface, timeout_seconds=8.0)
+    return "Backcountry Wi-Fi turned off."
+
+
+def perform_power_action(action: str) -> None:
+    if action == "reboot":
+        subprocess.Popen(["systemctl", "reboot"], cwd=str(APP_ROOT))
+        return
+    if action == "poweroff":
+        subprocess.Popen(["systemctl", "poweroff"], cwd=str(APP_ROOT))
+        return
+    raise ValueError(f"Unsupported power action: {action}")
+
+
+def next_display_brightness(current_value: object) -> int:
+    current = normalize_display_brightness(current_value)
+    next_value = current + 10
+    return 10 if next_value > 100 else next_value
+
+
+@dataclass
+class ScreenUiState:
+    manual_view_override: str | None = None
+    settings_selected_index: int = 0
+    settings_return_view: str | None = None
+    pending_power_action: str = ""
+    notice_text: str = ""
+    notice_tone: str = "info"
+    notice_until: float = 0.0
+
+    def active_notice(self) -> str:
+        if self.notice_text and time.monotonic() < float(self.notice_until):
+            return self.notice_text
+        return ""
+
+
+@dataclass
+class InteractionResult:
+    should_redraw: bool = False
+    toggle_backlight: bool = False
+    reload_settings: bool = False
+    refresh_status: bool = False
+    system_action: str | None = None
+
+
+def set_ui_notice(ui_state: ScreenUiState, message: str, tone: str = "info", seconds: float = 4.0) -> None:
+    ui_state.notice_text = str(message or "").strip()
+    ui_state.notice_tone = tone
+    ui_state.notice_until = time.monotonic() + max(0.5, float(seconds))
 
 
 def fit_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
@@ -689,6 +939,87 @@ def render_status_screen(profile: dict[str, object], settings: dict[str, object]
     return image
 
 
+def settings_menu_rows(settings: dict[str, object], ui_state: ScreenUiState) -> list[tuple[str, str]]:
+    wifi_enabled = config_bool(settings.get("fallback_ap_enabled"), True)
+    brightness = normalize_display_brightness(settings.get("display_brightness"))
+    pending = str(ui_state.pending_power_action or "")
+    return [
+        ("Backcountry Wi-Fi", "On" if wifi_enabled else "Off"),
+        ("Backlight", f"{brightness}%"),
+        ("Reboot Pi", "Press again" if pending == "reboot" else ""),
+        ("Power Down", "Press again" if pending == "poweroff" else ""),
+        ("Exit Settings", ""),
+    ]
+
+
+def render_settings_screen(
+    profile: dict[str, object],
+    settings: dict[str, object],
+    status: dict[str, object] | None,
+    ui_state: ScreenUiState,
+) -> Image.Image:
+    image, draw = create_canvas(profile)
+    width = int(profile["width"])
+    height = int(profile["height"])
+    compact = width <= 240 and height <= 280
+    pad = max(10, width // 16)
+    title_font = fit_font(15 if compact else max(18, width // 11), bold=True)
+    body_font = fit_font(9 if compact else max(10, width // 19))
+    label_font = fit_font(8 if compact else max(9, width // 22), bold=True)
+
+    draw.rounded_rectangle((pad, pad, width - pad, pad + 28), radius=14, fill="#36452f")
+    draw.text((pad + 10, pad + 6), "SETTINGS", font=label_font, fill="#f3eddf")
+
+    network_mode = network_mode_label(status)
+    subtitle = f"{network_mode} | {str(settings.get('device_name') or DEFAULT_DEVICE_NAME)}"
+    draw.text((pad, pad + 38), truncate_text(draw, subtitle, body_font, width - (pad * 2)), font=body_font, fill="#d2cab9")
+
+    row_y = pad + (52 if compact else 64)
+    row_height = 30 if compact else 40
+    row_gap = 4 if compact else 7
+    rows = settings_menu_rows(settings, ui_state)
+    selected_index = max(0, min(int(ui_state.settings_selected_index), len(rows) - 1))
+    for index, (label, value) in enumerate(rows):
+        is_selected = index == selected_index
+        fill = "#c6a56b" if is_selected else "#1d241c"
+        outline = "#f3eddf" if is_selected else "#52634a"
+        label_fill = "#141913" if is_selected else "#f3eddf"
+        value_fill = "#273021" if is_selected else "#c6d2bf"
+        draw.rounded_rectangle((pad, row_y, width - pad, row_y + row_height), radius=12, fill=fill, outline=outline, width=1)
+        draw.text((pad + 8, row_y + 7), truncate_text(draw, label, label_font, width - (pad * 2) - 16), font=label_font, fill=label_fill)
+        if value:
+            draw.text(
+                (width - pad - 8, row_y + row_height - 9),
+                truncate_text(draw, value, body_font, width - (pad * 2) - 16),
+                font=body_font,
+                fill=value_fill,
+                anchor="rs",
+            )
+        row_y += row_height + row_gap
+
+    notice = ui_state.active_notice()
+    notice_color = "#ffb4a9" if ui_state.notice_tone == "error" else "#d7e8b5"
+    footer_lines = [
+        notice or "Next/Prev select | Action change | Hold Prev exit",
+        "Hold Action toggles the backlight on or off.",
+    ]
+    footer_y = height - (30 if compact else 52)
+    for line in footer_lines:
+        footer_y = draw_multiline_block(
+            draw,
+            line,
+            body_font,
+            notice_color if line == footer_lines[0] else "#9bb08e",
+            pad,
+            footer_y,
+            width - (pad * 2),
+            2,
+            1 if compact else 2,
+        )
+        footer_y += 2
+    return image
+
+
 def render_self_test_screen(profile: dict[str, object], model_key: str) -> Image.Image:
     image = Image.new("RGB", (int(profile["width"]), int(profile["height"])), "#000000")
     draw = ImageDraw.Draw(image)
@@ -920,16 +1251,56 @@ class DisplayButtonManager:
                 time.sleep(poll_sleep)
 
 
-class PhysicalDisplay:
-    def __init__(self, model_key: str):
-        self.model_key = normalize_display_model(model_key)
-        self.profile = dict(DISPLAY_PROFILES[self.model_key])
-        self._backlight = None
+class BacklightController:
+    def __init__(self, pin_name: str):
+        self.pin_name = str(pin_name or "").strip()
+        self._digital = None
+        self._pwm = None
+
+        bcm_pin = pin_name_to_bcm(self.pin_name)
+        if bcm_pin is not None:
+            try:
+                from RPi import GPIO  # type: ignore
+
+                GPIO.setwarnings(False)
+                GPIO.setmode(GPIO.BCM)
+                GPIO.setup(bcm_pin, GPIO.OUT)
+                pwm = GPIO.PWM(bcm_pin, 1000)
+                pwm.start(100)
+                self._pwm = pwm
+                log(f"Backlight PWM enabled on GPIO pin {self.pin_name}.")
+                return
+            except Exception as error:
+                log(f"Could not enable PWM backlight on {self.pin_name}: {error}")
 
         try:
             import board
             import digitalio
+
+            self._digital = digitalio.DigitalInOut(getattr(board, self.pin_name))
+            self._digital.switch_to_output(value=True)
+        except Exception as error:
+            log(f"Could not initialize digital backlight control on {self.pin_name}: {error}")
+            self._digital = None
+
+    def apply(self, enabled: bool, brightness: object) -> None:
+        safe_brightness = normalize_display_brightness(brightness)
+        if self._pwm is not None:
+            self._pwm.ChangeDutyCycle(safe_brightness if enabled else 0)
+            return
+        if self._digital is not None:
+            self._digital.value = bool(enabled and safe_brightness > 0)
+
+
+class PhysicalDisplay:
+    def __init__(self, model_key: str):
+        self.model_key = normalize_display_model(model_key)
+        self.profile = dict(DISPLAY_PROFILES[self.model_key])
+
+        try:
+            import board
             import adafruit_rgb_display.st7789 as st7789
+            import digitalio
         except ModuleNotFoundError as error:
             if str(getattr(error, "name", "")) == "RPi":
                 raise RuntimeError(
@@ -943,9 +1314,6 @@ class PhysicalDisplay:
         cs_pin = digitalio.DigitalInOut(getattr(board, pins["cs"]))
         dc_pin = digitalio.DigitalInOut(getattr(board, pins["dc"]))
         reset_pin = digitalio.DigitalInOut(getattr(board, pins["reset"])) if pins.get("reset") else None
-        if pins.get("backlight"):
-            self._backlight = digitalio.DigitalInOut(getattr(board, pins["backlight"]))
-            self._backlight.switch_to_output(value=True)
 
         # These offsets match the standard ST7789 geometry Waveshare uses for these two SPI panels.
         self._display = st7789.ST7789(
@@ -960,10 +1328,6 @@ class PhysicalDisplay:
             y_offset=int(self.profile["y_offset"]),
             rotation=int(self.profile["rotation"]),
         )
-
-    def set_backlight(self, enabled: bool) -> None:
-        if self._backlight is not None:
-            self._backlight.value = bool(enabled)
 
     def show(self, image: Image.Image) -> None:
         width = int(self.profile["width"])
@@ -981,10 +1345,12 @@ class PhysicalDisplay:
 def choose_view(
     settings: dict[str, object],
     status: dict[str, object] | None,
-    manual_override: str | None = None,
+    ui_state: ScreenUiState,
 ) -> str:
-    if manual_override in DISPLAY_BUTTON_VIEW_ORDER:
-        return str(manual_override)
+    if ui_state.manual_view_override == SETTINGS_VIEW_KEY:
+        return SETTINGS_VIEW_KEY
+    if ui_state.manual_view_override in DISPLAY_BUTTON_VIEW_ORDER:
+        return str(ui_state.manual_view_override)
     configured = normalize_display_view(settings.get("display_view"))
     if configured != "auto":
         return configured
@@ -995,7 +1361,12 @@ def choose_view(
     return "status"
 
 
-def state_signature(settings: dict[str, object], status: dict[str, object] | None, view: str) -> str:
+def state_signature(
+    settings: dict[str, object],
+    status: dict[str, object] | None,
+    view: str,
+    ui_state: ScreenUiState,
+) -> str:
     payload = {
         "display_enabled": bool(settings["display_enabled"]),
         "display_model": str(settings["display_model"]),
@@ -1003,11 +1374,18 @@ def state_signature(settings: dict[str, object], status: dict[str, object] | Non
         "display_status_poll_seconds": float(
             settings.get("display_status_poll_seconds") or DEFAULT_DISPLAY_STATUS_POLL_SECONDS
         ),
+        "display_brightness": int(settings.get("display_brightness") or DEFAULT_DISPLAY_BRIGHTNESS),
         "display_button_pins": dict(settings.get("display_button_pins") or {}),
+        "fallback_ap_enabled": bool(settings.get("fallback_ap_enabled")),
         "device_name": str(settings["device_name"]),
         "hotspot_ssid": str(settings["hotspot_ssid"]),
         "wifi_password": str(settings["wifi_password"]),
         "preferred_url": preferred_app_url(settings, status),
+        "settings": {
+            "selected_index": int(ui_state.settings_selected_index),
+            "pending_power_action": str(ui_state.pending_power_action or ""),
+            "notice": ui_state.active_notice(),
+        },
         "status": {
             "networkMode": (status or {}).get("networkMode"),
             "networkName": (status or {}).get("networkName"),
@@ -1020,12 +1398,19 @@ def state_signature(settings: dict[str, object], status: dict[str, object] | Non
             "ip": (status or {}).get("ip"),
             "appUrl": (status or {}).get("appUrl"),
         },
-    }
+}
     return json.dumps(payload, sort_keys=True, ensure_ascii=True)
 
 
-def render_for_view(view: str, settings: dict[str, object], status: dict[str, object] | None) -> Image.Image:
+def render_for_view(
+    view: str,
+    settings: dict[str, object],
+    status: dict[str, object] | None,
+    ui_state: ScreenUiState,
+) -> Image.Image:
     profile = DISPLAY_PROFILES[normalize_display_model(settings["display_model"])]
+    if view == SETTINGS_VIEW_KEY:
+        return render_settings_screen(profile, settings, status, ui_state)
     if view == "wifi":
         return render_wifi_screen(profile, settings, status)
     if view == "status":
@@ -1047,8 +1432,10 @@ def parse_args() -> argparse.Namespace:
 def run_self_test(model_override: str | None = None) -> int:
     settings = load_screen_settings()
     model_key = normalize_display_model(model_override or settings.get("display_model"))
+    backlight_pin = str(DISPLAY_PROFILES[model_key]["pins"].get("backlight") or "")
+    backlight = BacklightController(backlight_pin)
+    backlight.apply(True, DEFAULT_DISPLAY_BRIGHTNESS)
     display = PhysicalDisplay(model_key)
-    display.set_backlight(True)
     display.show(render_self_test_screen(DISPLAY_PROFILES[model_key], model_key))
     log(f"Rendered self-test pattern for {model_key}. Press Ctrl+C when finished.")
     try:
@@ -1062,36 +1449,119 @@ def handle_button_action(
     action: str | None,
     settings: dict[str, object],
     status: dict[str, object] | None,
-    manual_view_override: str | None,
-) -> tuple[str | None, bool, bool]:
+    ui_state: ScreenUiState,
+) -> InteractionResult:
     if not action:
-        return manual_view_override, False, False
+        return InteractionResult()
 
-    current_view = choose_view(settings, status, manual_view_override)
+    current_view = choose_view(settings, status, ui_state)
     if action == "next":
         next_view = cycle_display_view(current_view)
         log(f"Display next button pressed. Switched to {next_view} view.")
-        return next_view, True, False
+        ui_state.manual_view_override = next_view
+        return InteractionResult(should_redraw=True)
     if action == "next:long":
-        log("Display next long-press detected. Jumped to status view.")
-        return "status", True, False
+        log("Display next long-press detected. Opened the settings menu.")
+        ui_state.settings_return_view = ui_state.manual_view_override
+        ui_state.manual_view_override = SETTINGS_VIEW_KEY
+        ui_state.pending_power_action = ""
+        return InteractionResult(should_redraw=True)
     if action == "previous":
         previous_view = previous_display_view(current_view)
         log(f"Display previous button pressed. Switched to {previous_view} view.")
-        return previous_view, True, False
+        ui_state.manual_view_override = previous_view
+        return InteractionResult(should_redraw=True)
     if action == "previous:long":
         log("Display previous long-press detected. Jumped to boot view.")
-        return "boot", True, False
+        ui_state.manual_view_override = "boot"
+        return InteractionResult(should_redraw=True)
     if action == "action":
-        if manual_view_override is None:
+        if ui_state.manual_view_override is None:
             log(f"Display action button pressed. Locked manual view on {current_view}.")
-            return current_view, True, False
+            ui_state.manual_view_override = current_view
+            return InteractionResult(should_redraw=True)
         log("Display action button pressed. Returned to configured auto/manual view selection.")
-        return None, True, False
+        ui_state.manual_view_override = None
+        return InteractionResult(should_redraw=True)
     if action == "action:long":
         log("Display action long-press detected. Toggling backlight.")
-        return manual_view_override, False, True
-    return manual_view_override, False, False
+        return InteractionResult(toggle_backlight=True)
+    return InteractionResult()
+
+
+def handle_settings_button_action(
+    action: str | None,
+    settings: dict[str, object],
+    ui_state: ScreenUiState,
+) -> InteractionResult:
+    if not action:
+        return InteractionResult()
+
+    menu_count = len(SETTINGS_MENU_ITEM_IDS)
+    if action == "next":
+        ui_state.settings_selected_index = (ui_state.settings_selected_index + 1) % menu_count
+        ui_state.pending_power_action = ""
+        return InteractionResult(should_redraw=True)
+    if action == "previous":
+        ui_state.settings_selected_index = (ui_state.settings_selected_index - 1) % menu_count
+        ui_state.pending_power_action = ""
+        return InteractionResult(should_redraw=True)
+    if action in {"next:long", "previous:long"}:
+        ui_state.manual_view_override = ui_state.settings_return_view
+        ui_state.pending_power_action = ""
+        set_ui_notice(ui_state, "Closed settings.", "info", 2.5)
+        return InteractionResult(should_redraw=True)
+    if action == "action:long":
+        log("Display action long-press detected. Toggling backlight.")
+        return InteractionResult(toggle_backlight=True)
+    if action != "action":
+        return InteractionResult()
+
+    selected_id = SETTINGS_MENU_ITEM_IDS[ui_state.settings_selected_index]
+    ui_state.pending_power_action = "" if selected_id not in {"reboot", "poweroff"} else ui_state.pending_power_action
+
+    if selected_id == "wifi":
+        try:
+            next_enabled = not config_bool(settings.get("fallback_ap_enabled"), True)
+            save_runtime_overrides(Path(settings["storage_root"]), fallback_ap_enabled=next_enabled)
+            message = set_backcountry_wifi_enabled(settings, next_enabled)
+        except Exception as error:
+            set_ui_notice(ui_state, str(error), "error", 5.0)
+            return InteractionResult(should_redraw=True)
+        set_ui_notice(ui_state, message, "success")
+        return InteractionResult(should_redraw=True, reload_settings=True, refresh_status=True)
+
+    if selected_id == "brightness":
+        try:
+            next_brightness = next_display_brightness(settings.get("display_brightness"))
+            save_runtime_overrides(Path(settings["storage_root"]), display_brightness=next_brightness)
+        except Exception as error:
+            set_ui_notice(ui_state, str(error), "error", 5.0)
+            return InteractionResult(should_redraw=True)
+        set_ui_notice(ui_state, f"Backlight set to {next_brightness}%.", "success")
+        return InteractionResult(should_redraw=True, reload_settings=True)
+
+    if selected_id == "reboot":
+        if ui_state.pending_power_action == "reboot":
+            set_ui_notice(ui_state, "Rebooting the Raspberry Pi...", "success", 10.0)
+            ui_state.pending_power_action = ""
+            return InteractionResult(should_redraw=True, system_action="reboot")
+        ui_state.pending_power_action = "reboot"
+        set_ui_notice(ui_state, "Press Action again to reboot the Raspberry Pi.", "info", 6.0)
+        return InteractionResult(should_redraw=True)
+
+    if selected_id == "poweroff":
+        if ui_state.pending_power_action == "poweroff":
+            set_ui_notice(ui_state, "Powering down the Raspberry Pi...", "success", 10.0)
+            ui_state.pending_power_action = ""
+            return InteractionResult(should_redraw=True, system_action="poweroff")
+        ui_state.pending_power_action = "poweroff"
+        set_ui_notice(ui_state, "Press Action again to power the Raspberry Pi down.", "info", 6.0)
+        return InteractionResult(should_redraw=True)
+
+    ui_state.manual_view_override = ui_state.settings_return_view
+    set_ui_notice(ui_state, "Closed settings.", "info", 2.5)
+    return InteractionResult(should_redraw=True)
 
 
 def wait_for_action_or_timeout(timeout_seconds: float, buttons: DisplayButtonManager | None) -> str | None:
@@ -1111,6 +1581,8 @@ def main() -> int:
         return run_self_test(args.model)
 
     display = None
+    backlight_controller: BacklightController | None = None
+    backlight_model = ""
     console_process: subprocess.Popen[bytes] | None = None
     console_signature = ""
     active_model = ""
@@ -1118,7 +1590,7 @@ def main() -> int:
     last_init_error = ""
     last_console_error = ""
     button_manager: DisplayButtonManager | None = None
-    manual_view_override: str | None = None
+    ui_state = ScreenUiState()
     backlight_enabled = True
     blanked_for_disable = False
     settings = load_screen_settings()
@@ -1136,10 +1608,20 @@ def main() -> int:
             settings.get("display_status_poll_seconds") or DEFAULT_DISPLAY_STATUS_POLL_SECONDS
         )
         backend = normalize_display_backend(settings.get("display_backend"))
+        model_key = normalize_display_model(settings.get("display_model"))
         button_pins = settings.get("display_button_pins") if isinstance(settings.get("display_button_pins"), dict) else {}
+        backlight_pin = str(DISPLAY_PROFILES[model_key]["pins"].get("backlight") or "")
 
         if button_manager is None or not button_manager.matches(button_pins):
             button_manager = DisplayButtonManager(button_pins)
+        if backlight_controller is None or backlight_model != model_key:
+            backlight_controller = BacklightController(backlight_pin)
+            backlight_model = model_key
+        if backlight_controller is not None:
+            try:
+                backlight_controller.apply(bool(settings["display_enabled"]) and backlight_enabled, settings.get("display_brightness"))
+            except Exception as error:
+                log(f"Could not update backlight brightness: {error}")
 
         if not settings["display_enabled"]:
             if console_process is not None:
@@ -1150,12 +1632,12 @@ def main() -> int:
             if display is not None and not blanked_for_disable:
                 try:
                     display.blank()
-                    display.set_backlight(False)
                 except Exception:
                     pass
                 blanked_for_disable = True
             backlight_enabled = True
-            manual_view_override = None
+            ui_state.manual_view_override = None
+            ui_state.pending_power_action = ""
             status = None
             next_status_poll_at = 0.0
             wait_for_action_or_timeout(DEFAULT_DISABLED_REFRESH_SECONDS, button_manager)
@@ -1166,14 +1648,12 @@ def main() -> int:
             if display is not None:
                 try:
                     display.blank()
-                    display.set_backlight(False)
                 except Exception:
                     pass
                 display = None
                 active_model = ""
                 last_signature = ""
 
-            model_key = normalize_display_model(settings.get("display_model"))
             binary_path = console_binary_path(model_key)
             desired_signature = f"{model_key}:{binary_path}"
             process_exited = console_process is not None and console_process.poll() is not None
@@ -1215,7 +1695,6 @@ def main() -> int:
         if display is None or active_model != str(settings["display_model"]):
             try:
                 display = PhysicalDisplay(str(settings["display_model"]))
-                display.set_backlight(backlight_enabled)
                 active_model = str(settings["display_model"])
                 last_signature = ""
                 last_init_error = ""
@@ -1233,11 +1712,11 @@ def main() -> int:
         if status is None or now >= next_status_poll_at:
             status = fetch_status(settings)
             next_status_poll_at = now + status_poll_seconds
-        view = choose_view(settings, status, manual_view_override)
-        signature = state_signature(settings, status, view)
+        view = choose_view(settings, status, ui_state)
+        signature = state_signature(settings, status, view, ui_state)
         if signature != last_signature and backlight_enabled:
             try:
-                display.show(render_for_view(view, settings, status))
+                display.show(render_for_view(view, settings, status, ui_state))
                 last_signature = signature
             except Exception as error:
                 log(f"Screen render failed: {error}")
@@ -1249,34 +1728,55 @@ def main() -> int:
             min(seconds_until(next_status_poll_at), seconds_until(next_config_check_at)),
             button_manager,
         )
-        manual_view_override, should_redraw, toggle_backlight = handle_button_action(
-            button_action,
-            settings,
-            status,
-            manual_view_override,
-        )
-        if toggle_backlight:
+        if view == SETTINGS_VIEW_KEY:
+            try:
+                interaction = handle_settings_button_action(button_action, settings, ui_state)
+            except Exception as error:
+                log(f"Settings action failed: {error}")
+                set_ui_notice(ui_state, str(error), "error", 5.0)
+                interaction = InteractionResult(should_redraw=True)
+        else:
+            interaction = handle_button_action(button_action, settings, status, ui_state)
+
+        if interaction.reload_settings:
+            settings = load_screen_settings()
+            next_config_check_at = time.monotonic() + DEFAULT_CONFIG_CHECK_SECONDS
+        if interaction.refresh_status:
+            status = fetch_status(settings)
+            next_status_poll_at = time.monotonic() + status_poll_seconds
+
+        if interaction.toggle_backlight:
             backlight_enabled = not backlight_enabled
             try:
-                display.set_backlight(backlight_enabled)
+                if backlight_controller is not None:
+                    backlight_controller.apply(backlight_enabled, settings.get("display_brightness"))
                 if not backlight_enabled:
-                    display.blank()
+                    if display is not None:
+                        display.blank()
                 else:
                     last_signature = ""
             except Exception as error:
                 log(f"Could not update backlight state: {error}")
-        if should_redraw:
-            immediate_view = choose_view(settings, status, manual_view_override)
-            immediate_signature = state_signature(settings, status, immediate_view)
+        if interaction.should_redraw:
+            immediate_view = choose_view(settings, status, ui_state)
+            immediate_signature = state_signature(settings, status, immediate_view, ui_state)
             try:
-                if backlight_enabled:
-                    display.show(render_for_view(immediate_view, settings, status))
+                if backlight_enabled and display is not None:
+                    display.show(render_for_view(immediate_view, settings, status, ui_state))
                     last_signature = immediate_signature
             except Exception as error:
                 log(f"Screen render failed after button press: {error}")
                 display = None
                 active_model = ""
                 time.sleep(2)
+        if interaction.system_action:
+            try:
+                time.sleep(0.35)
+                perform_power_action(interaction.system_action)
+            except Exception as error:
+                log(f"Power action failed: {error}")
+                set_ui_notice(ui_state, str(error), "error", 5.0)
+                last_signature = ""
 
 
 if __name__ == "__main__":
