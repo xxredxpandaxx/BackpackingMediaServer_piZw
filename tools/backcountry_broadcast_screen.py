@@ -999,6 +999,16 @@ def main() -> int:
         if wait_for_timeout_or_button(refresh_seconds, button_input):
             manual_view_override = cycle_display_view(view)
             log(f"Display button pressed on GPIO6. Switched to {manual_view_override} view.")
+            immediate_view = choose_view(settings, status, manual_view_override)
+            immediate_signature = state_signature(settings, status, immediate_view)
+            try:
+                display.show(render_for_view(immediate_view, settings, status))
+                last_signature = immediate_signature
+            except Exception as error:
+                log(f"Screen render failed after button press: {error}")
+                display = None
+                active_model = ""
+                time.sleep(2)
 
 
 if __name__ == "__main__":
