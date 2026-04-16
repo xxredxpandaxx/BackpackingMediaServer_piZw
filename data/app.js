@@ -100,6 +100,7 @@ const state = {
   deviceConfigFeedback: "",
   deviceConfigFeedbackTone: "",
   deviceConfigLoaded: false,
+  deviceStatusUpdatedAt: "",
   deviceAuthDraft: "",
   deviceAuthFeedback: "",
   deviceAuthFeedbackTone: "",
@@ -265,6 +266,10 @@ function normalizeDisplayProfileKey(value) {
 function normalizeDisplayBackend(value) {
   const safeValue = String(value || "").trim().toLowerCase();
   return DISPLAY_BACKENDS[safeValue] ? safeValue : "userspace";
+}
+
+function statusSignature(status) {
+  return JSON.stringify(status || {});
 }
 
 function normalizeDisplayViewKey(value) {
@@ -8038,8 +8043,9 @@ function createDisplayRow(label, value) {
   return row;
 }
 
-function renderDisplayBootView(canvas, status) {
+function renderDisplayBootView(canvas, status, profile) {
   const deviceName = (status && status.device) || appDisplayName();
+  const compact = profile && profile.id === "waveshare-1.69";
   const networkReady = Boolean(status && status.networkMode && status.networkMode !== "offline");
   const storageReady = Boolean(status && status.sdMounted);
   const libraryCount = Number((status && status.libraryCount) || 0);
@@ -8071,7 +8077,9 @@ function renderDisplayBootView(canvas, status) {
 
   const subtitle = document.createElement("p");
   subtitle.className = "display-screen-copy";
-  subtitle.textContent = "Getting the portable library ready for offline use.";
+  subtitle.textContent = compact
+    ? "Bringing the offline library online."
+    : "Getting the portable library ready for offline use.";
 
   const stepGrid = document.createElement("div");
   stepGrid.className = "display-step-grid";
@@ -8102,8 +8110,9 @@ function renderDisplayBootView(canvas, status) {
   canvas.appendChild(footer);
 }
 
-function renderDisplayWifiView(canvas, status) {
+function renderDisplayWifiView(canvas, status, profile) {
   const deviceName = (status && status.device) || appDisplayName();
+  const compact = profile && profile.id === "waveshare-1.69";
   const hotspotName = hotspotNetworkName(status) || appNetworkName();
   const hotspotPassword = status && (status.hotspotPassword || (status.networkMode === "hotspot" ? status.password : ""));
   const preferredUrl = displayPreferredUrl(status);
@@ -8120,7 +8129,9 @@ function renderDisplayWifiView(canvas, status) {
 
   const subtitle = document.createElement("p");
   subtitle.className = "display-screen-copy";
-  subtitle.textContent = "Scan once, connect to the hotspot, and open the library.";
+  subtitle.textContent = compact
+    ? "Scan, join, open."
+    : "Scan once, connect to the hotspot, and open the library.";
   canvas.appendChild(subtitle);
 
   if (!status) {
@@ -8160,7 +8171,8 @@ function renderDisplayWifiView(canvas, status) {
   canvas.appendChild(details);
 }
 
-function renderDisplayStatusView(canvas, status) {
+function renderDisplayStatusView(canvas, status, profile) {
+  const compact = profile && profile.id === "waveshare-1.69";
   const preferredUrl = displayPreferredUrl(status);
   const libraryCount = Number((status && status.libraryCount) || 0);
   const streamsLabel = status ? `${status.activeStreams || 0}/${status.maxStreams || 0}` : "0/0";
@@ -8189,8 +8201,11 @@ function renderDisplayStatusView(canvas, status) {
 
   const footer = document.createElement("div");
   footer.className = "display-info-list";
-  footer.appendChild(createDisplayRow("Last", lastPlayed));
-  footer.appendChild(createDisplayRow("Updated", formatTimestamp(new Date().toISOString())));
+  if (!compact) {
+    footer.appendChild(createDisplayRow("Last", lastPlayed));
+  }
+  footer.appendChild(createDisplayRow("Open", preferredUrl));
+  footer.appendChild(createDisplayRow("Updated", formatTimestamp(state.deviceStatusUpdatedAt || new Date().toISOString())));
 
   canvas.appendChild(badge);
   canvas.appendChild(title);
@@ -8243,11 +8258,11 @@ function renderDisplayPage(container) {
   canvas.dataset.displayView = view.id;
 
   if (view.id === "wifi") {
-    renderDisplayWifiView(canvas, state.status);
+    renderDisplayWifiView(canvas, state.status, profile);
   } else if (view.id === "status") {
-    renderDisplayStatusView(canvas, state.status);
+    renderDisplayStatusView(canvas, state.status, profile);
   } else {
-    renderDisplayBootView(canvas, state.status);
+    renderDisplayBootView(canvas, state.status, profile);
   }
 
   frame.appendChild(canvas);
@@ -8675,7 +8690,10 @@ async function pollDeviceStatus() {
   const previousMetadata = metadataRefreshSnapshot();
 
   try {
-    await loadStatus();
+    const statusResult = await loadStatus();
+    if (statusResult.changed && (state.route.name === "device" || state.route.name === "display")) {
+      render();
+    }
     if (deviceAccessLocked()) {
       clearDeviceProtectedState();
       render();
@@ -8845,9 +8863,17 @@ function render() {
 }
 
 async function loadStatus() {
+  const previousSignature = statusSignature(state.status);
   const response = await fetch("/api/status", { cache: "no-store" });
-  state.status = await response.json();
+  const nextStatus = await response.json();
+  const nextSignature = statusSignature(nextStatus);
+  const changed = previousSignature !== nextSignature;
+  state.status = nextStatus;
+  if (changed || !state.deviceStatusUpdatedAt) {
+    state.deviceStatusUpdatedAt = new Date().toISOString();
+  }
   state.preferServerLibrary = Boolean((state.status && state.status.preferServerLibrary) || state.preferServerLibrary);
+  return { changed };
 }
 
 async function loadUploadDestinations() {

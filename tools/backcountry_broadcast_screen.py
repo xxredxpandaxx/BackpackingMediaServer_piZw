@@ -35,6 +35,8 @@ DEFAULT_DISPLAY_BACKEND = "userspace"
 DEFAULT_DISPLAY_MODEL = "waveshare-1.69"
 DEFAULT_DISPLAY_VIEW = "auto"
 SUPPORTED_DISPLAY_BACKENDS = {"userspace", "console"}
+DISPLAY_BUTTON_VIEW_ORDER = ("boot", "wifi", "status")
+DISPLAY_VIEW_CYCLE_PIN = "D6"
 
 DISPLAY_PROFILES = {
     "waveshare-1.69": {
@@ -123,6 +125,14 @@ def normalize_display_backend(value: object) -> str:
 def normalize_display_view(value: object) -> str:
     safe_value = str(value or "").strip().lower()
     return safe_value if safe_value in SUPPORTED_DISPLAY_VIEWS else DEFAULT_DISPLAY_VIEW
+
+
+def cycle_display_view(current_view: str) -> str:
+    safe_current = str(current_view or "").strip().lower()
+    if safe_current not in DISPLAY_BUTTON_VIEW_ORDER:
+        return DISPLAY_BUTTON_VIEW_ORDER[0]
+    current_index = DISPLAY_BUTTON_VIEW_ORDER.index(safe_current)
+    return DISPLAY_BUTTON_VIEW_ORDER[(current_index + 1) % len(DISPLAY_BUTTON_VIEW_ORDER)]
 
 
 def sanitize_mdns_host(value: object) -> str:
@@ -369,6 +379,22 @@ def wrap_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, w
     return lines
 
 
+def truncate_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, width: int) -> str:
+    content = str(text or "").strip()
+    if not content:
+        return ""
+    if draw.textbbox((0, 0), content, font=font)[2] <= width:
+        return content
+    ellipsis = "..."
+    shortened = content
+    while shortened:
+        shortened = shortened[:-1].rstrip()
+        candidate = f"{shortened}{ellipsis}"
+        if draw.textbbox((0, 0), candidate, font=font)[2] <= width:
+            return candidate
+    return ellipsis
+
+
 def create_canvas(profile: dict[str, object]) -> tuple[Image.Image, ImageDraw.ImageDraw]:
     width = int(profile["width"])
     height = int(profile["height"])
@@ -388,8 +414,13 @@ def draw_multiline_block(
     y: int,
     max_width: int,
     line_gap: int,
+    max_lines: int | None = None,
 ) -> int:
-    for line in wrap_text(draw, text, font, max_width):
+    lines = wrap_text(draw, text, font, max_width)
+    if max_lines is not None and max_lines > 0 and len(lines) > max_lines:
+        lines = lines[:max_lines]
+        lines[-1] = truncate_text(draw, lines[-1], font, max_width)
+    for line in lines:
         draw.text((x, y), line, font=font, fill=fill)
         y += draw.textbbox((0, 0), line, font=font)[3] + line_gap
     return y
@@ -399,17 +430,19 @@ def render_boot_screen(profile: dict[str, object], settings: dict[str, object], 
     image, draw = create_canvas(profile)
     width = int(profile["width"])
     height = int(profile["height"])
+    compact = width <= 240 and height <= 280
     pad = max(12, width // 15)
-    title_font = fit_font(max(18, width // 10), bold=True)
-    body_font = fit_font(max(11, width // 18))
-    label_font = fit_font(max(10, width // 20), bold=True)
+    title_font = fit_font(16 if compact else max(18, width // 10), bold=True)
+    body_font = fit_font(9 if compact else max(11, width // 18))
+    label_font = fit_font(8 if compact else max(10, width // 20), bold=True)
 
     draw.rounded_rectangle((pad, pad, width - pad, pad + 28), radius=14, fill="#36452f")
     draw.text((pad + 10, pad + 6), "BOOT", font=label_font, fill="#f3eddf")
 
     y = pad + 42
-    draw.text((pad, y), str(settings["device_name"]), font=title_font, fill="#f3eddf")
-    y += draw.textbbox((0, 0), str(settings["device_name"]), font=title_font)[3] + 8
+    device_name = truncate_text(draw, str(settings["device_name"]), title_font, width - (pad * 2))
+    draw.text((pad, y), device_name, font=title_font, fill="#f3eddf")
+    y += draw.textbbox((0, 0), device_name, font=title_font)[3] + (5 if compact else 8)
     y = draw_multiline_block(
         draw,
         "Preparing the portable media server and waiting for live status.",
@@ -418,9 +451,10 @@ def render_boot_screen(profile: dict[str, object], settings: dict[str, object], 
         pad,
         y,
         width - (pad * 2),
-        3,
+        2 if compact else 3,
+        2 if compact else None,
     )
-    y += 6
+    y += 4 if compact else 6
 
     rows = [
         ("Display", str(profile["label"])),
@@ -428,15 +462,31 @@ def render_boot_screen(profile: dict[str, object], settings: dict[str, object], 
         ("Storage", "Ready" if Path(settings["media_directory"]).exists() else "Waiting"),
         ("Web UI", "Online" if status else "Starting"),
     ]
-    box_height = max(28, height // 11)
+    box_height = 26 if compact else max(28, height // 11)
     for label, value in rows:
         draw.rounded_rectangle((pad, y, width - pad, y + box_height), radius=12, outline="#52634a", width=1)
-        draw.text((pad + 10, y + 6), label.upper(), font=label_font, fill="#9bb08e")
-        draw.text((pad + 10, y + box_height // 2), value, font=body_font, fill="#f3eddf", anchor="lm")
-        y += box_height + 8
+        draw.text((pad + 8, y + 5), label.upper(), font=label_font, fill="#9bb08e")
+        draw.text(
+            (pad + 8, y + box_height // 2 + (3 if compact else 0)),
+            truncate_text(draw, value, body_font, width - (pad * 2) - 16),
+            font=body_font,
+            fill="#f3eddf",
+            anchor="lm",
+        )
+        y += box_height + (5 if compact else 8)
 
     footer = preferred_app_url(settings, status)
-    draw_multiline_block(draw, footer, body_font, "#c6a56b", pad, height - 42, width - (pad * 2), 2)
+    draw_multiline_block(
+        draw,
+        footer,
+        body_font,
+        "#c6a56b",
+        pad,
+        height - (28 if compact else 42),
+        width - (pad * 2),
+        2,
+        1 if compact else 2,
+    )
     return image
 
 
@@ -444,19 +494,21 @@ def render_wifi_screen(profile: dict[str, object], settings: dict[str, object], 
     image, draw = create_canvas(profile)
     width = int(profile["width"])
     height = int(profile["height"])
+    compact = width <= 240 and height <= 280
     pad = max(10, width // 16)
-    title_font = fit_font(max(18, width // 11), bold=True)
-    body_font = fit_font(max(10, width // 19))
-    label_font = fit_font(max(9, width // 22), bold=True)
+    title_font = fit_font(16 if compact else max(18, width // 11), bold=True)
+    body_font = fit_font(9 if compact else max(10, width // 19))
+    label_font = fit_font(8 if compact else max(9, width // 22), bold=True)
 
     draw.rounded_rectangle((pad, pad, width - pad, pad + 28), radius=14, fill="#36452f")
     draw.text((pad + 10, pad + 6), "WI-FI QR", font=label_font, fill="#f3eddf")
 
     y = pad + 40
-    draw.text((pad, y), "Join The Hotspot", font=title_font, fill="#f3eddf")
-    y += draw.textbbox((0, 0), "Join The Hotspot", font=title_font)[3] + 6
+    join_title = "Join Hotspot" if compact else "Join The Hotspot"
+    draw.text((pad, y), join_title, font=title_font, fill="#f3eddf")
+    y += draw.textbbox((0, 0), join_title, font=title_font)[3] + (4 if compact else 6)
 
-    qr_size = min(width - (pad * 2), max(96, int(height * 0.42)))
+    qr_size = min(width - (pad * 2), max(84 if compact else 96, int(height * (0.34 if compact else 0.42))))
     qr = qrcode.QRCode(border=1, box_size=8)
     qr.add_data(build_wifi_qr_payload(str(settings["hotspot_ssid"]), str(settings["wifi_password"])))
     qr.make(fit=True)
@@ -474,8 +526,8 @@ def render_wifi_screen(profile: dict[str, object], settings: dict[str, object], 
     for label, value in rows:
         draw.text((pad, y), label.upper(), font=label_font, fill="#9bb08e")
         y += draw.textbbox((0, 0), label, font=label_font)[3] + 2
-        y = draw_multiline_block(draw, value, body_font, "#f3eddf", pad, y, width - (pad * 2), 2)
-        y += 4
+        y = draw_multiline_block(draw, value, body_font, "#f3eddf", pad, y, width - (pad * 2), 2, 1 if compact else 2)
+        y += 3 if compact else 4
 
     return image
 
@@ -484,18 +536,31 @@ def render_status_screen(profile: dict[str, object], settings: dict[str, object]
     image, draw = create_canvas(profile)
     width = int(profile["width"])
     height = int(profile["height"])
+    compact = width <= 240 and height <= 280
     pad = max(10, width // 16)
-    title_font = fit_font(max(18, width // 11), bold=True)
-    body_font = fit_font(max(10, width // 19))
-    label_font = fit_font(max(9, width // 22), bold=True)
-    metric_font = fit_font(max(16, width // 10), bold=True)
+    title_font = fit_font(15 if compact else max(18, width // 11), bold=True)
+    body_font = fit_font(9 if compact else max(10, width // 19))
+    label_font = fit_font(8 if compact else max(9, width // 22), bold=True)
+    metric_font = fit_font(13 if compact else max(16, width // 10), bold=True)
 
     draw.rounded_rectangle((pad, pad, width - pad, pad + 28), radius=14, fill="#36452f")
     draw.text((pad + 10, pad + 6), "STATUS", font=label_font, fill="#f3eddf")
 
     network_name = active_network_name(status, settings) or str(settings["hotspot_ssid"])
-    draw.text((pad, pad + 40), network_mode_label(status), font=title_font, fill="#f3eddf")
-    draw_multiline_block(draw, network_name, body_font, "#d2cab9", pad, pad + 70, width - (pad * 2), 2)
+    title_y = pad + 38
+    draw.text((pad, title_y), truncate_text(draw, network_mode_label(status), title_font, width - (pad * 2)), font=title_font, fill="#f3eddf")
+    name_y = title_y + draw.textbbox((0, 0), network_mode_label(status), font=title_font)[3] + (4 if compact else 8)
+    name_end_y = draw_multiline_block(
+        draw,
+        network_name,
+        body_font,
+        "#d2cab9",
+        pad,
+        name_y,
+        width - (pad * 2),
+        2,
+        2 if compact else 3,
+    )
 
     clients = str((status or {}).get("clients") or 0)
     library_count = str((status or {}).get("libraryCount") or 0)
@@ -508,20 +573,21 @@ def render_status_screen(profile: dict[str, object], settings: dict[str, object]
         ("Storage", storage),
     ]
 
-    metric_top = pad + 102
-    box_gap = 8
+    metric_top = max(name_end_y + (5 if compact else 10), pad + (84 if compact else 102))
+    box_gap = 6 if compact else 8
     box_width = (width - (pad * 2) - box_gap) // 2
-    box_height = max(48, height // 7)
+    box_height = 38 if compact else max(48, height // 7)
     for index, (label, value) in enumerate(metrics):
         col = index % 2
         row = index // 2
         x = pad + (col * (box_width + box_gap))
         y = metric_top + (row * (box_height + box_gap))
         draw.rounded_rectangle((x, y, x + box_width, y + box_height), radius=14, outline="#52634a", width=1)
-        draw.text((x + 10, y + 8), label.upper(), font=label_font, fill="#9bb08e")
-        draw.text((x + 10, y + box_height - 10), value, font=metric_font, fill="#f3eddf", anchor="ls")
+        draw.text((x + 8, y + 6), label.upper(), font=label_font, fill="#9bb08e")
+        metric_value = truncate_text(draw, value, metric_font, box_width - 16)
+        draw.text((x + 8, y + box_height - 7), metric_value, font=metric_font, fill="#f3eddf", anchor="ls")
 
-    footer_y = metric_top + (2 * (box_height + box_gap)) + 2
+    footer_y = metric_top + (2 * (box_height + box_gap)) + (2 if compact else 4)
     footer_lines = [
         ("Open", preferred_app_url(settings, status)),
         ("IP", str((status or {}).get("ip") or best_local_ip(str(settings["bind_address"])))),
@@ -529,8 +595,18 @@ def render_status_screen(profile: dict[str, object], settings: dict[str, object]
     for label, value in footer_lines:
         draw.text((pad, footer_y), label.upper(), font=label_font, fill="#9bb08e")
         footer_y += draw.textbbox((0, 0), label, font=label_font)[3] + 2
-        footer_y = draw_multiline_block(draw, value, body_font, "#f3eddf", pad, footer_y, width - (pad * 2), 2)
-        footer_y += 4
+        footer_y = draw_multiline_block(
+            draw,
+            value,
+            body_font,
+            "#f3eddf",
+            pad,
+            footer_y,
+            width - (pad * 2),
+            2,
+            1 if compact else 2,
+        )
+        footer_y += 3 if compact else 4
     return image
 
 
@@ -617,6 +693,47 @@ def stop_console_process(process: subprocess.Popen[bytes] | None, reason: str = 
         log(reason)
 
 
+class ButtonInput:
+    def __init__(self, pin_name: str):
+        self.pin_name = str(pin_name or "").strip()
+        self._button = None
+        self._pressed_latch = False
+
+        try:
+            import board
+            import digitalio
+        except ModuleNotFoundError:
+            return
+
+        try:
+            button = digitalio.DigitalInOut(getattr(board, self.pin_name))
+            button.switch_to_input(pull=digitalio.Pull.UP)
+            self._button = button
+            log(f"Listening for display button presses on GPIO pin {self.pin_name}.")
+        except AttributeError:
+            log(f"Display button pin {self.pin_name} is not available on this board definition.")
+        except Exception as error:
+            log(f"Could not initialize display button {self.pin_name}: {error}")
+
+    @property
+    def ready(self) -> bool:
+        return self._button is not None
+
+    def poll_pressed(self) -> bool:
+        if self._button is None:
+            return False
+        try:
+            is_pressed = not bool(self._button.value)
+        except Exception:
+            return False
+        if is_pressed and not self._pressed_latch:
+            self._pressed_latch = True
+            return True
+        if not is_pressed:
+            self._pressed_latch = False
+        return False
+
+
 class PhysicalDisplay:
     def __init__(self, model_key: str):
         self.model_key = normalize_display_model(model_key)
@@ -675,7 +792,13 @@ class PhysicalDisplay:
         self.show(Image.new("RGB", (int(self.profile["width"]), int(self.profile["height"])), "black"))
 
 
-def choose_view(settings: dict[str, object], status: dict[str, object] | None) -> str:
+def choose_view(
+    settings: dict[str, object],
+    status: dict[str, object] | None,
+    manual_override: str | None = None,
+) -> str:
+    if manual_override in DISPLAY_BUTTON_VIEW_ORDER:
+        return str(manual_override)
     configured = normalize_display_view(settings.get("display_view"))
     if configured != "auto":
         return configured
@@ -745,6 +868,15 @@ def run_self_test(model_override: str | None = None) -> int:
         return 0
 
 
+def wait_for_timeout_or_button(timeout_seconds: float, button: ButtonInput | None) -> bool:
+    deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+    while time.monotonic() < deadline:
+        if button is not None and button.poll_pressed():
+            return True
+        time.sleep(0.08)
+    return button is not None and button.poll_pressed()
+
+
 def main() -> int:
     args = parse_args()
     if args.self_test:
@@ -757,6 +889,8 @@ def main() -> int:
     last_signature = ""
     last_init_error = ""
     last_console_error = ""
+    button_input = ButtonInput(DISPLAY_VIEW_CYCLE_PIN)
+    manual_view_override: str | None = None
     blanked_for_disable = False
 
     while True:
@@ -777,7 +911,8 @@ def main() -> int:
                 except Exception:
                     pass
                 blanked_for_disable = True
-            time.sleep(refresh_seconds)
+            manual_view_override = None
+            wait_for_timeout_or_button(refresh_seconds, button_input)
             continue
 
         blanked_for_disable = False
@@ -849,7 +984,7 @@ def main() -> int:
                 continue
 
         status = fetch_status(settings)
-        view = choose_view(settings, status)
+        view = choose_view(settings, status, manual_view_override)
         signature = state_signature(settings, status, view)
         if signature != last_signature:
             try:
@@ -861,7 +996,9 @@ def main() -> int:
                 active_model = ""
                 time.sleep(5)
                 continue
-        time.sleep(refresh_seconds)
+        if wait_for_timeout_or_button(refresh_seconds, button_input):
+            manual_view_override = cycle_display_view(view)
+            log(f"Display button pressed on GPIO6. Switched to {manual_view_override} view.")
 
 
 if __name__ == "__main__":
