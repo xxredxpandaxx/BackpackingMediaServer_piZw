@@ -40,7 +40,6 @@ DEFAULT_CONFIG_CHECK_SECONDS = 2.0
 DEFAULT_DISABLED_REFRESH_SECONDS = 5.0
 DISPLAY_BUTTON_POLL_SECONDS = 0.05
 DISPLAY_BUTTON_BOUNCE_MS = 140
-DISPLAY_BUTTON_DOUBLE_PRESS_SECONDS = 0.3
 DISPLAY_BUTTON_LONG_PRESS_SECONDS = 0.65
 SUPPORTED_DISPLAY_BACKENDS = {"userspace", "console"}
 DISPLAY_BUTTON_VIEW_ORDER = ("boot", "wifi", "status")
@@ -892,22 +891,7 @@ class DisplayButtonManager:
             if not button.is_pressed():
                 return "released"
             time.sleep(DISPLAY_BUTTON_POLL_SECONDS)
-        while button.is_pressed():
-            time.sleep(DISPLAY_BUTTON_POLL_SECONDS)
         return "long"
-
-    def _wait_for_second_press(self, action: str, timeout_seconds: float) -> bool:
-        button = self._button_from_action(action)
-        if button is None:
-            return False
-        deadline = time.monotonic() + max(0.0, float(timeout_seconds))
-        while time.monotonic() < deadline:
-            if button.consume_edge() or button.poll_pressed():
-                while button.is_pressed():
-                    time.sleep(DISPLAY_BUTTON_POLL_SECONDS)
-                return True
-            time.sleep(DISPLAY_BUTTON_POLL_SECONDS)
-        return False
 
     def _classify_gesture(self, action: str) -> str:
         button = self._button_from_action(action)
@@ -916,8 +900,6 @@ class DisplayButtonManager:
         result = self._wait_for_release_or_long(button, DISPLAY_BUTTON_LONG_PRESS_SECONDS)
         if result == "long":
             return f"{action}:long"
-        if self._wait_for_second_press(action, DISPLAY_BUTTON_DOUBLE_PRESS_SECONDS):
-            return f"{action}:double"
         return action
 
     def wait_for_action(self, timeout_seconds: float) -> str | None:
@@ -1090,15 +1072,15 @@ def handle_button_action(
         next_view = cycle_display_view(current_view)
         log(f"Display next button pressed. Switched to {next_view} view.")
         return next_view, True, False
-    if action == "next:double" or action == "next:long":
-        log("Display next gesture pressed. Jumped to status view.")
+    if action == "next:long":
+        log("Display next long-press detected. Jumped to status view.")
         return "status", True, False
     if action == "previous":
         previous_view = previous_display_view(current_view)
         log(f"Display previous button pressed. Switched to {previous_view} view.")
         return previous_view, True, False
-    if action == "previous:double" or action == "previous:long":
-        log("Display previous gesture pressed. Jumped to boot view.")
+    if action == "previous:long":
+        log("Display previous long-press detected. Jumped to boot view.")
         return "boot", True, False
     if action == "action":
         if manual_view_override is None:
@@ -1106,9 +1088,6 @@ def handle_button_action(
             return current_view, True, False
         log("Display action button pressed. Returned to configured auto/manual view selection.")
         return None, True, False
-    if action == "action:double":
-        log("Display action double-press detected. Jumped to Wi-Fi view.")
-        return "wifi", True, False
     if action == "action:long":
         log("Display action long-press detected. Toggling backlight.")
         return manual_view_override, False, True
