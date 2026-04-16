@@ -488,7 +488,7 @@ write_screen_service() {
   cat >"${tmp_service}" <<EOF
 [Unit]
 Description=Backcountry Broadcast physical screen
-After=local-fs.target network.target
+After=local-fs.target
 Before=${SERVICE_NAME}.service
 
 [Service]

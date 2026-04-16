@@ -1,6 +1,6 @@
 [Unit]
 Description=Backcountry Broadcast physical screen
-After=local-fs.target network.target
+After=local-fs.target
 Before=backcountry-broadcast.service
 
 [Service]
