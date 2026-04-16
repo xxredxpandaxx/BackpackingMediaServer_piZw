@@ -34,8 +34,8 @@ const state = {
     displayStatusPollSeconds: 1,
     displayBrightness: 100,
     displayButtons: {
-      next: "D6",
-      previous: "D16",
+      next: "D16",
+      previous: "D6",
       action: "D26",
     },
     devicePassword: "",
@@ -212,8 +212,8 @@ const DISPLAY_PROFILE_ORDER = ["waveshare-1.69", "waveshare-1.9"];
 const DEFAULT_DISPLAY_STATUS_POLL_SECONDS = 1;
 const DEFAULT_DISPLAY_BRIGHTNESS = 100;
 const DEFAULT_DISPLAY_BUTTONS = {
-  next: "D6",
-  previous: "D16",
+  next: "D16",
+  previous: "D6",
   action: "D26",
 };
 const DISPLAY_BACKENDS = {
@@ -6098,7 +6098,7 @@ function createScreenSettingsCard() {
   nextButtonField.className = "upload-field";
   const nextButtonLabel = document.createElement("span");
   nextButtonLabel.className = "upload-label";
-  nextButtonLabel.textContent = "Next button pin";
+  nextButtonLabel.textContent = "Down button pin";
   const nextButtonInput = document.createElement("input");
   nextButtonInput.className = "upload-text";
   nextButtonInput.type = "text";
@@ -6112,7 +6112,7 @@ function createScreenSettingsCard() {
   previousButtonField.className = "upload-field";
   const previousButtonLabel = document.createElement("span");
   previousButtonLabel.className = "upload-label";
-  previousButtonLabel.textContent = "Previous button pin";
+  previousButtonLabel.textContent = "Up button pin";
   const previousButtonInput = document.createElement("input");
   previousButtonInput.className = "upload-text";
   previousButtonInput.type = "text";
@@ -6126,7 +6126,7 @@ function createScreenSettingsCard() {
   actionButtonField.className = "upload-field";
   const actionButtonLabel = document.createElement("span");
   actionButtonLabel.className = "upload-label";
-  actionButtonLabel.textContent = "Action button pin";
+  actionButtonLabel.textContent = "Select button pin";
   const actionButtonInput = document.createElement("input");
   actionButtonInput.className = "upload-text";
   actionButtonInput.type = "text";
@@ -6205,7 +6205,7 @@ function createScreenSettingsCard() {
     actionButtonInput.disabled = consoleMode;
     note.textContent = consoleMode
       ? "Console mode mirrors Linux output to the TFT. The screen content, status poll interval, and button controls below are ignored until you switch back to App-driven mode, but backlight brightness still applies. After changing the screen mode, turning the display on, or swapping models, run sudo ./update.sh and reboot."
-      : "App-driven mode uses these values immediately. Status poll seconds control how often the physical display checks for server changes, brightness is saved as a percentage, and the button pins should use names like D6, D16, and D26.";
+      : "App-driven mode uses these values immediately. Status poll seconds control how often the physical display checks for server changes, brightness is saved as a percentage, and the default button layout is Up D6, Down D16, Select D26.";
   };
 
   displayEnabledInput.addEventListener("change", syncDraft);

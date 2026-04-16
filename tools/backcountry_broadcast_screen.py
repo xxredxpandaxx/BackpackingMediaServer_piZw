@@ -49,8 +49,8 @@ DISPLAY_BUTTON_VIEW_ORDER = ("boot", "wifi", "status")
 SETTINGS_VIEW_KEY = "settings"
 SETTINGS_MENU_ITEM_IDS = ("wifi", "brightness", "reboot", "poweroff", "exit")
 DEFAULT_DISPLAY_BUTTON_PINS = {
-    "next": "D6",
-    "previous": "D16",
+    "next": "D16",
+    "previous": "D6",
     "action": "D26",
 }
 
@@ -1000,7 +1000,7 @@ def render_settings_screen(
     notice = ui_state.active_notice()
     notice_color = "#ffb4a9" if ui_state.notice_tone == "error" else "#d7e8b5"
     footer_lines = [
-        notice or "Next/Prev select | Action change | Hold Prev exit",
+        notice or "Up/Down move | Select change | Hold Up exit",
         "Hold Action toggles the backlight on or off.",
     ]
     footer_y = height - (30 if compact else 52)

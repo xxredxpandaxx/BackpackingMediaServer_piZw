@@ -77,8 +77,8 @@ DEFAULT_DISPLAY_VIEW = "auto"
 DEFAULT_DISPLAY_STATUS_POLL_SECONDS = 1.0
 DEFAULT_DISPLAY_BRIGHTNESS = 100
 DEFAULT_DISPLAY_BUTTON_PINS = {
-    "next": "D6",
-    "previous": "D16",
+    "next": "D16",
+    "previous": "D6",
     "action": "D26",
 }
 SUPPORTED_DISPLAY_BACKENDS = {

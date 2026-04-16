@@ -16,8 +16,8 @@
   "displayStatusPollSeconds": 1.0,
   "displayBrightness": 100,
   "displayButtons": {
-    "next": "D6",
-    "previous": "D16",
+    "next": "D16",
+    "previous": "D6",
     "action": "D26"
   },
   "metadataRefreshOnRescan": true,
