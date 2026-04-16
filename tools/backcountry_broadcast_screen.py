@@ -8,6 +8,7 @@ import os
 import re
 import socket
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -34,9 +35,13 @@ DEFAULT_DISPLAY_ENABLED = False
 DEFAULT_DISPLAY_BACKEND = "userspace"
 DEFAULT_DISPLAY_MODEL = "waveshare-1.69"
 DEFAULT_DISPLAY_VIEW = "auto"
-DEFAULT_DISPLAY_REFRESH_FPS = 10.0
+DEFAULT_DISPLAY_STATUS_POLL_SECONDS = 1.0
+DEFAULT_CONFIG_CHECK_SECONDS = 2.0
 DEFAULT_DISABLED_REFRESH_SECONDS = 5.0
-DISPLAY_BUTTON_POLL_SECONDS = 0.02
+DISPLAY_BUTTON_POLL_SECONDS = 0.05
+DISPLAY_BUTTON_BOUNCE_MS = 140
+DISPLAY_BUTTON_DOUBLE_PRESS_SECONDS = 0.3
+DISPLAY_BUTTON_LONG_PRESS_SECONDS = 0.65
 SUPPORTED_DISPLAY_BACKENDS = {"userspace", "console"}
 DISPLAY_BUTTON_VIEW_ORDER = ("boot", "wifi", "status")
 DEFAULT_DISPLAY_BUTTON_PINS = {
@@ -138,6 +143,21 @@ def normalize_button_pin(value: object) -> str:
     return str(value or "").strip()
 
 
+def pin_name_to_bcm(value: object) -> int | None:
+    text = str(value or "").strip().upper()
+    if not text:
+        return None
+    if text.startswith("GPIO"):
+        text = text[4:]
+    elif text.startswith("D"):
+        text = text[1:]
+    try:
+        pin = int(text, 10)
+    except ValueError:
+        return None
+    return pin if 0 <= pin <= 27 else None
+
+
 def normalize_display_button_pins(value: object) -> dict[str, str]:
     output = dict(DEFAULT_DISPLAY_BUTTON_PINS)
     if not isinstance(value, dict):
@@ -149,12 +169,22 @@ def normalize_display_button_pins(value: object) -> dict[str, str]:
     return output
 
 
-def normalize_display_refresh_fps(value: object) -> float:
+def normalize_display_status_poll_seconds(value: object) -> float:
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return DEFAULT_DISPLAY_STATUS_POLL_SECONDS
+    return min(30.0, max(0.1, seconds))
+
+
+def legacy_refresh_fps_to_poll_seconds(value: object) -> float | None:
     try:
         fps = float(value)
     except (TypeError, ValueError):
-        return DEFAULT_DISPLAY_REFRESH_FPS
-    return min(30.0, max(1.0, fps))
+        return None
+    if fps <= 0:
+        return None
+    return 1.0 / max(1.0, fps)
 
 
 def cycle_display_view(current_view: str) -> str:
@@ -272,10 +302,11 @@ def load_screen_settings() -> dict[str, object]:
     display_view = normalize_display_view(
         os.environ.get("NOMADSCREEN_DISPLAY_VIEW") or raw_config.get("displayView") or raw_display.get("view")
     )
-    display_refresh_fps = normalize_display_refresh_fps(
-        os.environ.get("NOMADSCREEN_DISPLAY_REFRESH_FPS")
-        or raw_config.get("displayRefreshFps")
-        or raw_display.get("refreshFps")
+    display_status_poll_seconds = normalize_display_status_poll_seconds(
+        os.environ.get("NOMADSCREEN_DISPLAY_STATUS_POLL_SECONDS")
+        or raw_config.get("displayStatusPollSeconds")
+        or raw_display.get("statusPollSeconds")
+        or legacy_refresh_fps_to_poll_seconds(raw_config.get("displayRefreshFps") or raw_display.get("refreshFps"))
     )
     display_button_pins = normalize_display_button_pins(
         raw_config.get("displayButtons") if isinstance(raw_config.get("displayButtons"), dict) else raw_display_buttons
@@ -306,7 +337,7 @@ def load_screen_settings() -> dict[str, object]:
         "display_backend": display_backend,
         "display_model": display_model,
         "display_view": display_view,
-        "display_refresh_fps": display_refresh_fps,
+        "display_status_poll_seconds": display_status_poll_seconds,
         "display_button_pins": display_button_pins,
     }
 
@@ -747,6 +778,8 @@ class ButtonInput:
         self.pin_name = str(pin_name or "").strip()
         self._button = None
         self._pressed_latch = False
+        self._edge_event = None
+        self._callback_cleanup = None
 
         try:
             import board
@@ -759,6 +792,7 @@ class ButtonInput:
             button.switch_to_input(pull=digitalio.Pull.UP)
             self._button = button
             log(f"Listening for display button presses on GPIO pin {self.pin_name}.")
+            self._initialize_edge_detection()
         except AttributeError:
             log(f"Display button pin {self.pin_name} is not available on this board definition.")
         except Exception as error:
@@ -768,18 +802,60 @@ class ButtonInput:
     def ready(self) -> bool:
         return self._button is not None
 
-    def poll_pressed(self) -> bool:
+    @property
+    def edge_event(self) -> threading.Event | None:
+        return self._edge_event
+
+    def is_pressed(self) -> bool:
         if self._button is None:
             return False
         try:
-            is_pressed = not bool(self._button.value)
+            return not bool(self._button.value)
         except Exception:
             return False
+
+    def _initialize_edge_detection(self) -> None:
+        bcm_pin = pin_name_to_bcm(self.pin_name)
+        if bcm_pin is None:
+            return
+        try:
+            from RPi import GPIO  # type: ignore
+        except ModuleNotFoundError:
+            return
+        try:
+            GPIO.setwarnings(False)
+            GPIO.setmode(GPIO.BCM)
+            GPIO.setup(bcm_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+            edge_event = threading.Event()
+
+            def on_press(channel: int) -> None:
+                edge_event.set()
+
+            GPIO.add_event_detect(bcm_pin, GPIO.FALLING, callback=on_press, bouncetime=DISPLAY_BUTTON_BOUNCE_MS)
+            self._edge_event = edge_event
+            self._callback_cleanup = lambda: GPIO.remove_event_detect(bcm_pin)
+        except Exception as error:
+            log(f"Could not enable edge detection for display button {self.pin_name}: {error}")
+            self._edge_event = None
+            self._callback_cleanup = None
+
+    def poll_pressed(self) -> bool:
+        if self._button is None:
+            return False
+        is_pressed = self.is_pressed()
         if is_pressed and not self._pressed_latch:
             self._pressed_latch = True
             return True
         if not is_pressed:
             self._pressed_latch = False
+        return False
+
+    def consume_edge(self) -> bool:
+        if self._edge_event is None:
+            return False
+        if self._edge_event.is_set():
+            self._edge_event.clear()
+            return True
         return False
 
 
@@ -790,6 +866,11 @@ class DisplayButtonManager:
         self.previous_button = ButtonInput(pins.get("previous") or "")
         self.action_button = ButtonInput(pins.get("action") or "")
         self._signature = self.signature_for(pins)
+        self._buttons = (
+            ("next", self.next_button),
+            ("previous", self.previous_button),
+            ("action", self.action_button),
+        )
 
     @staticmethod
     def signature_for(pin_map: dict[str, str] | None = None) -> str:
@@ -798,6 +879,63 @@ class DisplayButtonManager:
 
     def matches(self, pin_map: dict[str, str] | None = None) -> bool:
         return self._signature == self.signature_for(pin_map)
+
+    def _button_from_action(self, action: str) -> ButtonInput | None:
+        for candidate_action, button in self._buttons:
+            if candidate_action == action:
+                return button
+        return None
+
+    def _wait_for_release_or_long(self, button: ButtonInput, timeout_seconds: float) -> str:
+        deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+        while time.monotonic() < deadline:
+            if not button.is_pressed():
+                return "released"
+            time.sleep(DISPLAY_BUTTON_POLL_SECONDS)
+        while button.is_pressed():
+            time.sleep(DISPLAY_BUTTON_POLL_SECONDS)
+        return "long"
+
+    def _wait_for_second_press(self, action: str, timeout_seconds: float) -> bool:
+        button = self._button_from_action(action)
+        if button is None:
+            return False
+        deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+        while time.monotonic() < deadline:
+            if button.consume_edge() or button.poll_pressed():
+                while button.is_pressed():
+                    time.sleep(DISPLAY_BUTTON_POLL_SECONDS)
+                return True
+            time.sleep(DISPLAY_BUTTON_POLL_SECONDS)
+        return False
+
+    def _classify_gesture(self, action: str) -> str:
+        button = self._button_from_action(action)
+        if button is None:
+            return action
+        result = self._wait_for_release_or_long(button, DISPLAY_BUTTON_LONG_PRESS_SECONDS)
+        if result == "long":
+            return f"{action}:long"
+        if self._wait_for_second_press(action, DISPLAY_BUTTON_DOUBLE_PRESS_SECONDS):
+            return f"{action}:double"
+        return action
+
+    def wait_for_action(self, timeout_seconds: float) -> str | None:
+        timeout = max(0.0, float(timeout_seconds))
+        deadline = time.monotonic() + timeout
+        while True:
+            for action, button in self._buttons:
+                if button.consume_edge() or button.poll_pressed():
+                    return self._classify_gesture(action)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            poll_sleep = min(DISPLAY_BUTTON_POLL_SECONDS, remaining)
+            edge_events = [button.edge_event for _, button in self._buttons if button.edge_event is not None]
+            if edge_events:
+                edge_events[0].wait(poll_sleep)
+            else:
+                time.sleep(poll_sleep)
 
 
 class PhysicalDisplay:
@@ -880,7 +1018,9 @@ def state_signature(settings: dict[str, object], status: dict[str, object] | Non
         "display_enabled": bool(settings["display_enabled"]),
         "display_model": str(settings["display_model"]),
         "display_view": str(view),
-        "display_refresh_fps": float(settings.get("display_refresh_fps") or DEFAULT_DISPLAY_REFRESH_FPS),
+        "display_status_poll_seconds": float(
+            settings.get("display_status_poll_seconds") or DEFAULT_DISPLAY_STATUS_POLL_SECONDS
+        ),
         "display_button_pins": dict(settings.get("display_button_pins") or {}),
         "device_name": str(settings["device_name"]),
         "hotspot_ssid": str(settings["hotspot_ssid"]),
@@ -936,52 +1076,54 @@ def run_self_test(model_override: str | None = None) -> int:
         return 0
 
 
-def wait_for_timeout_or_button(timeout_seconds: float, buttons: DisplayButtonManager | None) -> str | None:
-    deadline = time.monotonic() + max(0.0, float(timeout_seconds))
-    while time.monotonic() < deadline:
-        if buttons is not None:
-            if buttons.next_button.poll_pressed():
-                return "next"
-            if buttons.previous_button.poll_pressed():
-                return "previous"
-            if buttons.action_button.poll_pressed():
-                return "action"
-        time.sleep(DISPLAY_BUTTON_POLL_SECONDS)
-    if buttons is not None:
-        if buttons.next_button.poll_pressed():
-            return "next"
-        if buttons.previous_button.poll_pressed():
-            return "previous"
-        if buttons.action_button.poll_pressed():
-            return "action"
-    return None
-
-
 def handle_button_action(
     action: str | None,
     settings: dict[str, object],
     status: dict[str, object] | None,
     manual_view_override: str | None,
-) -> tuple[str | None, bool]:
+) -> tuple[str | None, bool, bool]:
     if not action:
-        return manual_view_override, False
+        return manual_view_override, False, False
 
     current_view = choose_view(settings, status, manual_view_override)
     if action == "next":
         next_view = cycle_display_view(current_view)
         log(f"Display next button pressed. Switched to {next_view} view.")
-        return next_view, True
+        return next_view, True, False
+    if action == "next:double" or action == "next:long":
+        log("Display next gesture pressed. Jumped to status view.")
+        return "status", True, False
     if action == "previous":
         previous_view = previous_display_view(current_view)
         log(f"Display previous button pressed. Switched to {previous_view} view.")
-        return previous_view, True
+        return previous_view, True, False
+    if action == "previous:double" or action == "previous:long":
+        log("Display previous gesture pressed. Jumped to boot view.")
+        return "boot", True, False
     if action == "action":
         if manual_view_override is None:
             log(f"Display action button pressed. Locked manual view on {current_view}.")
-            return current_view, True
+            return current_view, True, False
         log("Display action button pressed. Returned to configured auto/manual view selection.")
-        return None, True
-    return manual_view_override, False
+        return None, True, False
+    if action == "action:double":
+        log("Display action double-press detected. Jumped to Wi-Fi view.")
+        return "wifi", True, False
+    if action == "action:long":
+        log("Display action long-press detected. Toggling backlight.")
+        return manual_view_override, False, True
+    return manual_view_override, False, False
+
+
+def wait_for_action_or_timeout(timeout_seconds: float, buttons: DisplayButtonManager | None) -> str | None:
+    if buttons is None:
+        time.sleep(max(0.0, float(timeout_seconds)))
+        return None
+    return buttons.wait_for_action(timeout_seconds)
+
+
+def seconds_until(deadline: float, fallback: float = 0.0) -> float:
+    return max(float(fallback), deadline - time.monotonic())
 
 
 def main() -> int:
@@ -998,14 +1140,21 @@ def main() -> int:
     last_console_error = ""
     button_manager: DisplayButtonManager | None = None
     manual_view_override: str | None = None
+    backlight_enabled = True
     blanked_for_disable = False
+    settings = load_screen_settings()
+    status: dict[str, object] | None = None
+    next_status_poll_at = 0.0
+    next_config_check_at = 0.0
 
     while True:
-        settings = load_screen_settings()
-        refresh_seconds = (
-            1.0 / max(1.0, float(settings.get("display_refresh_fps") or DEFAULT_DISPLAY_REFRESH_FPS))
-            if settings["display_enabled"]
-            else DEFAULT_DISABLED_REFRESH_SECONDS
+        now = time.monotonic()
+        if now >= next_config_check_at:
+            settings = load_screen_settings()
+            next_config_check_at = now + DEFAULT_CONFIG_CHECK_SECONDS
+
+        status_poll_seconds = float(
+            settings.get("display_status_poll_seconds") or DEFAULT_DISPLAY_STATUS_POLL_SECONDS
         )
         backend = normalize_display_backend(settings.get("display_backend"))
         button_pins = settings.get("display_button_pins") if isinstance(settings.get("display_button_pins"), dict) else {}
@@ -1026,8 +1175,11 @@ def main() -> int:
                 except Exception:
                     pass
                 blanked_for_disable = True
+            backlight_enabled = True
             manual_view_override = None
-            wait_for_timeout_or_button(refresh_seconds, button_manager)
+            status = None
+            next_status_poll_at = 0.0
+            wait_for_action_or_timeout(DEFAULT_DISABLED_REFRESH_SECONDS, button_manager)
             continue
 
         blanked_for_disable = False
@@ -1072,7 +1224,7 @@ def main() -> int:
                         backend = "userspace"
 
             if backend == "console":
-                time.sleep(refresh_seconds)
+                wait_for_action_or_timeout(min(status_poll_seconds, DEFAULT_CONFIG_CHECK_SECONDS), button_manager)
                 continue
 
         if console_process is not None:
@@ -1084,7 +1236,7 @@ def main() -> int:
         if display is None or active_model != str(settings["display_model"]):
             try:
                 display = PhysicalDisplay(str(settings["display_model"]))
-                display.set_backlight(True)
+                display.set_backlight(backlight_enabled)
                 active_model = str(settings["display_model"])
                 last_signature = ""
                 last_init_error = ""
@@ -1098,10 +1250,13 @@ def main() -> int:
                 time.sleep(10)
                 continue
 
-        status = fetch_status(settings)
+        now = time.monotonic()
+        if status is None or now >= next_status_poll_at:
+            status = fetch_status(settings)
+            next_status_poll_at = now + status_poll_seconds
         view = choose_view(settings, status, manual_view_override)
         signature = state_signature(settings, status, view)
-        if signature != last_signature:
+        if signature != last_signature and backlight_enabled:
             try:
                 display.show(render_for_view(view, settings, status))
                 last_signature = signature
@@ -1111,14 +1266,33 @@ def main() -> int:
                 active_model = ""
                 time.sleep(5)
                 continue
-        button_action = wait_for_timeout_or_button(refresh_seconds, button_manager)
-        manual_view_override, should_redraw = handle_button_action(button_action, settings, status, manual_view_override)
+        button_action = wait_for_action_or_timeout(
+            min(seconds_until(next_status_poll_at), seconds_until(next_config_check_at)),
+            button_manager,
+        )
+        manual_view_override, should_redraw, toggle_backlight = handle_button_action(
+            button_action,
+            settings,
+            status,
+            manual_view_override,
+        )
+        if toggle_backlight:
+            backlight_enabled = not backlight_enabled
+            try:
+                display.set_backlight(backlight_enabled)
+                if not backlight_enabled:
+                    display.blank()
+                else:
+                    last_signature = ""
+            except Exception as error:
+                log(f"Could not update backlight state: {error}")
         if should_redraw:
             immediate_view = choose_view(settings, status, manual_view_override)
             immediate_signature = state_signature(settings, status, immediate_view)
             try:
-                display.show(render_for_view(immediate_view, settings, status))
-                last_signature = immediate_signature
+                if backlight_enabled:
+                    display.show(render_for_view(immediate_view, settings, status))
+                    last_signature = immediate_signature
             except Exception as error:
                 log(f"Screen render failed after button press: {error}")
                 display = None

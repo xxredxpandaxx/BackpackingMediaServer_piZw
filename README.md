@@ -69,7 +69,7 @@ Edit that retained config file to set:
 - how long the Pi should wait for a known Wi-Fi network before it creates its own access point
 - TMDb metadata settings and image-download options
 - optional Pi server settings such as `httpPort`, `bindAddress`, and `mdnsEnabled`
-- optional tiny-screen settings such as `displayEnabled`, `displayBackend`, `displayModel`, `displayView`, `displayRefreshFps`, and `displayButtons`
+- optional tiny-screen settings such as `displayEnabled`, `displayBackend`, `displayModel`, `displayView`, `displayStatusPollSeconds`, and `displayButtons`
 
 The backend and the fallback hotspot service both derive the `.local` host name automatically from `deviceName`.
 
@@ -272,13 +272,13 @@ To preload known networks, use Raspberry Pi Imager advanced settings before firs
 - `displayBackend`: `userspace` for the app-driven TFT UI or `console` to mirror the Pi boot console through Waveshare `fbcp`
 - `displayModel`: `waveshare-1.69` or `waveshare-1.9`
 - `displayView`: `auto`, `boot`, `wifi`, or `status`
-- `displayRefreshFps`: userspace TFT polling/render target, default `10`, clamped to `1-30`
+- `displayStatusPollSeconds`: userspace TFT status polling interval, default `1.0`, clamped to `0.1-30`
 - `displayButtons`: optional GPIO pin mapping for the physical screen buttons, for example `{"next":"D6","previous":"D16","action":"D26"}`
 
 When you switch `displayBackend` to `console`, turn the TFT on, or change `displayModel`, run `sudo ./update.sh` and reboot so the Pi can rebuild the matching `fbcp` binary and refresh `/boot/firmware/config.txt` or `/boot/config.txt` for the TFT console mode.
 The `console` backend also needs Raspberry Pi's VideoCore development package `libraspberrypi-dev`, because Waveshare's `fbcp` build depends on `bcm_host.h`. On newer generic Debian images such as Debian 13 Trixie, that package may be unavailable, and the project will fall back to the working app-driven `userspace` display mode instead of failing the update.
 
-The physical screen service reads button GPIO mappings from `/srv/backcountry-broadcast/backcountry-broadcast.user.json` if you want to override the defaults without touching the installer-managed base config. In userspace mode, `next` advances through `boot -> wifi -> status`, `previous` goes the other direction, and `action` toggles between the current manual screen and the configured auto/manual screen selection.
+The physical screen service reads button GPIO mappings from `/srv/backcountry-broadcast/backcountry-broadcast.user.json` if you want to override the defaults without touching the installer-managed base config. In userspace mode, `next` advances through `boot -> wifi -> status`, `previous` goes the other direction, and `action` toggles between the current manual screen and the configured auto/manual screen selection. It also supports gestures: `action` double-press jumps to Wi-Fi, `action` long-press toggles the backlight, `next` double/long jumps to Status, and `previous` double/long jumps to Boot. When `RPi.GPIO` is available, button presses use edge detection so the screen service can mostly sleep until either a button is pressed or the next status poll is due.
 
 The physical screen service assumes the standard Waveshare Raspberry Pi wiring for ST7789 SPI LCDs:
 

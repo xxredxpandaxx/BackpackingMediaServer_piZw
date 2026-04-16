@@ -13,7 +13,7 @@
   "displayBackend": "userspace",
   "displayModel": "waveshare-1.69",
   "displayView": "auto",
-  "displayRefreshFps": 10,
+  "displayStatusPollSeconds": 1.0,
   "displayButtons": {
     "next": "D6",
     "previous": "D16",
