@@ -274,6 +274,7 @@ To preload known networks, use Raspberry Pi Imager advanced settings before firs
 - `displayView`: `auto`, `boot`, `wifi`, or `status`
 
 When you switch `displayBackend` to `console`, turn the TFT on, or change `displayModel`, run `sudo ./update.sh` and reboot so the Pi can rebuild the matching `fbcp` binary and refresh `/boot/firmware/config.txt` or `/boot/config.txt` for the TFT console mode.
+The `console` backend also needs Raspberry Pi's VideoCore development package `libraspberrypi-dev`, because Waveshare's `fbcp` build depends on `bcm_host.h`. On newer generic Debian images such as Debian 13 Trixie, that package may be unavailable, and the project will fall back to the working app-driven `userspace` display mode instead of failing the update.
 
 The physical screen service assumes the standard Waveshare Raspberry Pi wiring for ST7789 SPI LCDs:
 

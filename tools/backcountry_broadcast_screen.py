@@ -804,26 +804,26 @@ def main() -> int:
                 if not binary_path.exists():
                     message = f"Console display binary is missing for {model_key}: {binary_path}"
                     if message != last_console_error:
-                        log(message)
+                        log(f"{message}. Falling back to app-driven userspace mode.")
                         last_console_error = message
-                    time.sleep(10)
-                    continue
-                try:
-                    console_process = subprocess.Popen([str(binary_path)], cwd=str(APP_ROOT))
-                    console_signature = desired_signature
-                    last_console_error = ""
-                    log(f"Started boot console mirror for {model_key}.")
-                except OSError as error:
-                    if str(error) != last_console_error:
-                        log(f"Could not start boot console mirror: {error}")
-                        last_console_error = str(error)
-                    console_process = None
-                    console_signature = ""
-                    time.sleep(10)
-                    continue
+                    backend = "userspace"
+                else:
+                    try:
+                        console_process = subprocess.Popen([str(binary_path)], cwd=str(APP_ROOT))
+                        console_signature = desired_signature
+                        last_console_error = ""
+                        log(f"Started boot console mirror for {model_key}.")
+                    except OSError as error:
+                        if str(error) != last_console_error:
+                            log(f"Could not start boot console mirror: {error}. Falling back to app-driven userspace mode.")
+                            last_console_error = str(error)
+                        console_process = None
+                        console_signature = ""
+                        backend = "userspace"
 
-            time.sleep(refresh_seconds)
-            continue
+            if backend == "console":
+                time.sleep(refresh_seconds)
+                continue
 
         if console_process is not None:
             stop_console_process(console_process, "Stopped boot console mirror and returned to app-driven screen mode.")

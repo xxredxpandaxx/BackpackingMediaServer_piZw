@@ -25,6 +25,7 @@ BOOT_CONFIG_PATH="${NOMADSCREEN_BOOT_CONFIG_PATH:-}"
 WAVESHARE_FBCP_URL="${NOMADSCREEN_WAVESHARE_FBCP_URL:-https://files.waveshare.com/upload/1/18/Waveshare_fbcp.zip}"
 DISPLAY_BOOT_CONFIG_CHANGED=0
 DISPLAY_CONSOLE_KMS_WARNING=0
+DISPLAY_CONSOLE_UNSUPPORTED=0
 
 usage() {
   cat <<'EOF'
@@ -367,10 +368,24 @@ install_waveshare_fbcp() {
   local cmake_flag
   local build_dir
   local model
+  local display_enabled
+  local display_backend
+  local display_model
 
-  log "Building Waveshare console-mirror binaries"
+  IFS='|' read -r display_enabled display_backend display_model < <(read_display_runtime_settings)
+  if [[ "${display_enabled}" != "1" || "${display_backend}" != "console" ]]; then
+    log "Skipping Waveshare console-mirror build because TFT console mode is not enabled"
+    return
+  fi
+
+  log "Building Waveshare console-mirror binaries for console display mode"
   run_root apt-get update
   run_root apt-get install -y cmake unzip
+  if ! run_root apt-get install -y libraspberrypi-dev; then
+    DISPLAY_CONSOLE_UNSUPPORTED=1
+    log "Skipping console backend build because libraspberrypi-dev is unavailable on this OS image. The TFT can still run in userspace mode."
+    return
+  fi
   download_root="${TMP_DIR}/waveshare-fbcp"
   archive_path="${download_root}/Waveshare_fbcp.zip"
   run_root rm -rf "${download_root}"
@@ -415,6 +430,7 @@ apply_display_boot_config() {
   local display_model
   local tmp_config
   local hdmi_cvt
+  local binary_path
 
   resolve_boot_config_path
   if [[ ! -f "${BOOT_CONFIG_PATH}" ]]; then
@@ -432,6 +448,13 @@ apply_display_boot_config() {
   ' "${BOOT_CONFIG_PATH}" >"${tmp_config}"
 
   if [[ "${display_enabled}" == "1" && "${display_backend}" == "console" ]]; then
+    binary_path="${INSTALL_DIR}/bin/fbcp-${display_model}"
+    if [[ ! -x "${binary_path}" ]]; then
+      DISPLAY_CONSOLE_UNSUPPORTED=1
+      log "Skipping TFT boot-console config because the console backend binary is unavailable for ${display_model}. The screen launcher will continue using userspace mode."
+      rm -f "${tmp_config}"
+      return
+    fi
     hdmi_cvt="$(console_hdmi_cvt "${display_model}")"
     cat >>"${tmp_config}" <<EOF
 # BEGIN BACKCOUNTRY BROADCAST CONSOLE DISPLAY
@@ -886,6 +909,9 @@ print_success() {
   fi
   if [[ "${DISPLAY_CONSOLE_KMS_WARNING}" == "1" ]]; then
     log "If the TFT stays blank in console mode, update ${BOOT_CONFIG_PATH} to stop using vc4-kms-v3d as Waveshare recommends for fbcp."
+  fi
+  if [[ "${DISPLAY_CONSOLE_UNSUPPORTED}" == "1" ]]; then
+    log "This OS image does not support the Waveshare fbcp console backend. The physical screen will keep working in app-driven userspace mode instead."
   fi
   if [[ "${RESTART_NETWORK}" != "1" ]]; then
     if [[ "${legacy_network_pending}" == "1" ]]; then
