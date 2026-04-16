@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
@@ -516,6 +517,68 @@ def render_status_screen(profile: dict[str, object], settings: dict[str, object]
     return image
 
 
+def render_self_test_screen(profile: dict[str, object], model_key: str) -> Image.Image:
+    image = Image.new("RGB", (int(profile["width"]), int(profile["height"])), "#000000")
+    draw = ImageDraw.Draw(image)
+    width = int(profile["width"])
+    height = int(profile["height"])
+    pad = max(10, width // 18)
+    title_font = fit_font(max(16, width // 11), bold=True)
+    body_font = fit_font(max(10, width // 20))
+    label_font = fit_font(max(9, width // 22), bold=True)
+
+    bands = [
+        "#ff3b30",
+        "#ff9500",
+        "#ffd60a",
+        "#34c759",
+        "#0a84ff",
+        "#bf5af2",
+    ]
+    band_height = max(12, int(height * 0.07))
+    for index, color in enumerate(bands):
+        top = index * band_height
+        draw.rectangle((0, top, width, min(height, top + band_height)), fill=color)
+
+    panel_top = (len(bands) * band_height) + 6
+    draw.rounded_rectangle(
+        (pad, panel_top, width - pad, height - pad),
+        radius=16,
+        fill="#101510",
+        outline="#d7c9a7",
+        width=2,
+    )
+    text_y = panel_top + pad
+    draw.text((pad * 2, text_y), "SCREEN TEST", font=title_font, fill="#f3eddf")
+    text_y += draw.textbbox((0, 0), "SCREEN TEST", font=title_font)[3] + 8
+    draw.text((pad * 2, text_y), f"Model: {model_key}", font=body_font, fill="#f3eddf")
+    text_y += draw.textbbox((0, 0), f"Model: {model_key}", font=body_font)[3] + 5
+    draw.text((pad * 2, text_y), f"Size: {width}x{height}", font=body_font, fill="#f3eddf")
+    text_y += draw.textbbox((0, 0), f"Size: {width}x{height}", font=body_font)[3] + 8
+    draw.text((pad * 2, text_y), "If you can read this,", font=label_font, fill="#c6a56b")
+    text_y += draw.textbbox((0, 0), "If you can read this,", font=label_font)[3] + 3
+    draw.text((pad * 2, text_y), "SPI + draw path works.", font=body_font, fill="#ffffff")
+    text_y += draw.textbbox((0, 0), "SPI + draw path works.", font=body_font)[3] + 10
+
+    box_size = max(18, min(width // 5, 40))
+    box_gap = max(6, width // 30)
+    swatches = ["#ffffff", "#000000", "#34c759", "#0a84ff"]
+    swatch_y = min(height - pad - box_size, text_y)
+    swatch_x = pad * 2
+    for color in swatches:
+        outline = "#d7c9a7" if color == "#000000" else None
+        draw.rounded_rectangle(
+            (swatch_x, swatch_y, swatch_x + box_size, swatch_y + box_size),
+            radius=6,
+            fill=color,
+            outline=outline,
+            width=1 if outline else 0,
+        )
+        swatch_x += box_size + box_gap
+
+    return image
+
+
 class PhysicalDisplay:
     def __init__(self, model_key: str):
         self.model_key = normalize_display_model(model_key)
@@ -611,7 +674,36 @@ def render_for_view(view: str, settings: dict[str, object], status: dict[str, ob
     return render_boot_screen(profile, settings, status)
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Drive the Backcountry Broadcast physical SPI screen.")
+    parser.add_argument("--self-test", action="store_true", help="Draw a static test pattern and keep it on screen.")
+    parser.add_argument(
+        "--model",
+        choices=sorted(DISPLAY_PROFILES.keys()),
+        help="Override the configured display model for this run.",
+    )
+    return parser.parse_args()
+
+
+def run_self_test(model_override: str | None = None) -> int:
+    settings = load_screen_settings()
+    model_key = normalize_display_model(model_override or settings.get("display_model"))
+    display = PhysicalDisplay(model_key)
+    display.set_backlight(True)
+    display.show(render_self_test_screen(DISPLAY_PROFILES[model_key], model_key))
+    log(f"Rendered self-test pattern for {model_key}. Press Ctrl+C when finished.")
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        return 0
+
+
 def main() -> int:
+    args = parse_args()
+    if args.self_test:
+        return run_self_test(args.model)
+
     display = None
     active_model = ""
     last_signature = ""
