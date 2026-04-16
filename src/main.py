@@ -20,6 +20,12 @@ from pathlib import Path
 from urllib.parse import quote
 
 from flask import Flask, Response, jsonify, redirect, request, send_file, send_from_directory
+try:
+    import qrcode
+    from qrcode.image.svg import SvgPathImage
+except ImportError:
+    qrcode = None
+    SvgPathImage = None
 
 from audiobook_metadata import extract_audiobook_embedded_metadata
 
@@ -132,6 +138,30 @@ def validated_device_page_password(value: str) -> str:
             f"Device page password must be {MIN_DEVICE_PAGE_PASSWORD_LENGTH}-{MAX_DEVICE_PAGE_PASSWORD_LENGTH} characters."
         )
     return password
+
+
+def escape_wifi_qr_value(value: str) -> str:
+    return re.sub(r"([\\\\;,:])", r"\\\1", str(value or ""))
+
+
+def build_wifi_qr_payload(ssid: str, password: str, auth_type: str = "WPA") -> str:
+    safe_auth_type = str(auth_type or "WPA").strip().upper() or "WPA"
+    return (
+        f"WIFI:T:{safe_auth_type};"
+        f"S:{escape_wifi_qr_value(ssid)};"
+        f"P:{escape_wifi_qr_value(password)};;"
+    )
+
+
+def build_wifi_qr_svg(payload: str) -> str:
+    if qrcode is None or SvgPathImage is None:
+        raise RuntimeError("Wi-Fi QR code rendering is unavailable because the qrcode package is not installed.")
+
+    qr_image = qrcode.make(str(payload or ""), image_factory=SvgPathImage, box_size=8, border=2)
+    svg = qr_image.to_string()
+    if isinstance(svg, bytes):
+        return svg.decode("utf-8")
+    return str(svg)
 
 
 def derive_compact_device_token(device_name: str, lowercase: bool) -> str:
@@ -3680,6 +3710,21 @@ def app_js() -> Response:
 @app.get("/api/status")
 def api_status() -> Response:
     return no_store_json(state.status_payload(authenticated=request_has_device_access()))
+
+
+@app.get("/api/device/wifi-qr.svg")
+@require_device_access
+def api_device_wifi_qr() -> Response:
+    try:
+        svg = build_wifi_qr_svg(
+            build_wifi_qr_payload(str(state.settings["ssid"]), str(state.settings["wifi_password"]))
+        )
+    except RuntimeError as error:
+        return plain_text_response(str(error), 503)
+
+    response = Response(svg, mimetype="image/svg+xml")
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.get("/api/device-auth")

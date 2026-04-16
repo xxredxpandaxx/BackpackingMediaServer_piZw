@@ -154,6 +154,50 @@ const UPLOAD_ROOTS = [
   },
 ];
 
+const DISPLAY_PROFILES = {
+  "waveshare-1.69": {
+    id: "waveshare-1.69",
+    label: 'Waveshare 1.69"',
+    shortLabel: '1.69"',
+    width: 240,
+    height: 280,
+  },
+  "waveshare-1.9": {
+    id: "waveshare-1.9",
+    label: 'Waveshare 1.9"',
+    shortLabel: '1.9"',
+    width: 170,
+    height: 320,
+  },
+};
+
+const DISPLAY_VIEWS = {
+  boot: {
+    id: "boot",
+    label: "Boot",
+    eyebrow: "Display Preview",
+    title: "Boot screen",
+    subtitle: "Tiny-screen boot UI for the attached panel.",
+  },
+  wifi: {
+    id: "wifi",
+    label: "Wi-Fi QR",
+    eyebrow: "Display Preview",
+    title: "Wi-Fi QR screen",
+    subtitle: "Join the fallback hotspot from a phone without touching the shell.",
+  },
+  status: {
+    id: "status",
+    label: "Status",
+    eyebrow: "Display Preview",
+    title: "Status screen",
+    subtitle: "At-a-glance network, storage, and library health for the Pi.",
+  },
+};
+
+const DISPLAY_VIEW_ORDER = ["boot", "wifi", "status"];
+const DISPLAY_PROFILE_ORDER = ["waveshare-1.69", "waveshare-1.9"];
+
 const els = {
   brandMark: document.getElementById("brand-mark"),
   brandTitle: document.getElementById("brand-title"),
@@ -196,6 +240,32 @@ let routeQueryRefreshTimer = 0;
 let catalogAutoLoadObserver = null;
 let playbackStateRequest = null;
 let playbackSyncQueue = Promise.resolve();
+
+function normalizeDisplayProfileKey(value) {
+  const safeValue = String(value || "").trim();
+  return DISPLAY_PROFILES[safeValue] ? safeValue : "waveshare-1.69";
+}
+
+function normalizeDisplayViewKey(value) {
+  const safeValue = String(value || "").trim().toLowerCase();
+  return DISPLAY_VIEWS[safeValue] ? safeValue : "boot";
+}
+
+function displayProfileConfig(route = state.route) {
+  return DISPLAY_PROFILES[normalizeDisplayProfileKey(route && route.profile)];
+}
+
+function displayViewConfig(route = state.route) {
+  return DISPLAY_VIEWS[normalizeDisplayViewKey(route && route.view)];
+}
+
+function displayRoute(view = "boot", profile = "waveshare-1.69") {
+  return {
+    name: "display",
+    view: normalizeDisplayViewKey(view),
+    profile: normalizeDisplayProfileKey(profile),
+  };
+}
 
 function parseRoute(pathname) {
   const cleanPath = pathname.replace(/\/+$/, "") || "/";
@@ -261,6 +331,10 @@ function parseRoute(pathname) {
     return { name: "device" };
   }
 
+  if (parts[1] === "display") {
+    return displayRoute(parts[2], parts[3]);
+  }
+
   return { name: "home" };
 }
 
@@ -284,6 +358,9 @@ function buildRoutePath(route) {
       : "/app/documents";
   }
   if (route.name === "device") return "/app/device";
+  if (route.name === "display") {
+    return `/app/display/${encodeURIComponent(normalizeDisplayViewKey(route.view))}/${encodeURIComponent(normalizeDisplayProfileKey(route.profile))}`;
+  }
   return "/app";
 }
 
@@ -587,9 +664,13 @@ function deviceAuthSnapshot() {
   return (state.status && state.status.deviceAuth) || null;
 }
 
-function deviceAccessLocked() {
+function deviceProtectedFeaturesLocked() {
   const auth = deviceAuthSnapshot();
-  return state.route.name === "device" && Boolean(auth && auth.required && !auth.authenticated);
+  return Boolean(auth && auth.required && !auth.authenticated);
+}
+
+function deviceAccessLocked() {
+  return state.route.name === "device" && deviceProtectedFeaturesLocked();
 }
 
 function clearDeviceProtectedState() {
@@ -4612,6 +4693,9 @@ function prepareRouteDataForLoading() {
   if (routeUsesCatalogSummary()) {
     state.catalogSummary = null;
   }
+  if (state.route.name === "display") {
+    return;
+  }
   if (state.route.name === "home") {
     state.catalogHome = null;
     state.catalogProgress = state.query
@@ -4941,6 +5025,9 @@ async function loadRandomCatalogItem(section = "") {
 }
 
 async function loadRouteData() {
+  if (state.route.name === "display") {
+    return;
+  }
   if (state.route.name === "home") {
     if (state.query) {
       await Promise.all([loadCatalogSummary(), loadCatalogSearch(state.query)]);
@@ -6172,6 +6259,12 @@ function renderBreadcrumbs(show, movie, season, audiobook, documentBrowser) {
     }
   } else if (state.route.name === "device") {
     crumbs.push({ label: "Device Info", href: "/app/device" });
+  } else if (state.route.name === "display") {
+    const displayView = displayViewConfig();
+    const displayProfile = displayProfileConfig();
+    crumbs.push({ label: "Display Preview", href: buildRoutePath(displayRoute(displayView.id, displayProfile.id)) });
+    crumbs.push({ label: displayView.label });
+    crumbs.push({ label: displayProfile.shortLabel });
   }
 
   els.breadcrumbs.innerHTML = "";
@@ -6373,6 +6466,15 @@ function updatePageHeader(show, movie, season, audiobook, documentBrowser) {
         : "Wi-Fi details, library maintenance, metadata health, and other device controls live here.",
       searchPlaceholder: "Search device details",
     };
+  } else if (state.route.name === "display") {
+    const view = displayViewConfig();
+    const profile = displayProfileConfig();
+    meta = {
+      eyebrow: view.eyebrow,
+      title: `${view.title} | ${profile.shortLabel}`,
+      subtitle: `${view.subtitle} Previewed for the ${profile.label} panel.`,
+      searchPlaceholder: "Display previews do not use page search",
+    };
   }
 
   const appTitle = appDisplayName();
@@ -6383,8 +6485,9 @@ function updatePageHeader(show, movie, season, audiobook, documentBrowser) {
     state.route.name === "season" ||
     state.route.name === "audiobook";
   const isAdminPage = state.route.name === "device";
-  els.pageTools.hidden = isDetailPage || isAdminPage;
-  els.pageTools.style.display = isDetailPage || isAdminPage ? "none" : "";
+  const isDisplayPage = state.route.name === "display";
+  els.pageTools.hidden = isDetailPage || isAdminPage || isDisplayPage;
+  els.pageTools.style.display = isDetailPage || isAdminPage || isDisplayPage ? "none" : "";
   els.pageEyebrow.hidden = isDetailPage || !meta.eyebrow;
   els.pageEyebrow.textContent = meta.eyebrow;
   els.pageTitle.hidden = isDetailPage || !meta.title;
@@ -6559,6 +6662,13 @@ function updatePageActions(show, movie, season, documentBrowser) {
     els.actions.appendChild(
       createButton("Open Home", "ghost-button", () => openRoute({ name: "home" })),
     );
+    return;
+  }
+
+  if (state.route.name === "display") {
+    els.actions.appendChild(
+      createButton("Open Device", "ghost-button", () => openRoute({ name: "device" })),
+    );
   }
 }
 
@@ -6573,7 +6683,8 @@ function renderHero(show, movie, season, documentBrowser) {
     state.route.name === "audiobook" ||
     state.route.name === "show" ||
     state.route.name === "season" ||
-    state.route.name === "device"
+    state.route.name === "device" ||
+    state.route.name === "display"
   ) {
     els.hero.hidden = true;
     return;
@@ -7713,6 +7824,272 @@ function posterDebugDetails() {
   };
 }
 
+function displayPreferredUrl(status) {
+  if (!status) {
+    return "/app";
+  }
+  return status.mdnsReady ? status.mdnsUrl || status.appUrl || "/app" : status.ipAppUrl || status.appUrl || "/app";
+}
+
+function createDisplayToolbarButton(label, active, onClick) {
+  const button = createButton(label, active ? "primary-button display-toolbar-button" : "ghost-button display-toolbar-button", onClick);
+  button.setAttribute("aria-pressed", active ? "true" : "false");
+  return button;
+}
+
+function createDisplayMetric(label, value) {
+  const card = document.createElement("article");
+  card.className = "display-metric";
+
+  const metricLabel = document.createElement("p");
+  metricLabel.className = "display-metric-label";
+  metricLabel.textContent = label;
+
+  const metricValue = document.createElement("strong");
+  metricValue.className = "display-metric-value";
+  metricValue.textContent = value;
+
+  card.appendChild(metricLabel);
+  card.appendChild(metricValue);
+  return card;
+}
+
+function createDisplayRow(label, value) {
+  const row = document.createElement("div");
+  row.className = "display-row";
+
+  const rowLabel = document.createElement("span");
+  rowLabel.className = "display-row-label";
+  rowLabel.textContent = label;
+
+  const rowValue = document.createElement("strong");
+  rowValue.className = "display-row-value";
+  rowValue.textContent = value;
+
+  row.appendChild(rowLabel);
+  row.appendChild(rowValue);
+  return row;
+}
+
+function renderDisplayBootView(canvas, status) {
+  const deviceName = (status && status.device) || appDisplayName();
+  const networkReady = Boolean(status && status.networkMode && status.networkMode !== "offline");
+  const storageReady = Boolean(status && status.sdMounted);
+  const libraryCount = Number((status && status.libraryCount) || 0);
+  const steps = [
+    {
+      label: "Network",
+      value: status ? networkModeLabel(status) : "Checking",
+      ready: networkReady,
+    },
+    {
+      label: "Storage",
+      value: storageReady ? "Mounted" : "Waiting",
+      ready: storageReady,
+    },
+    {
+      label: "Library",
+      value: libraryCount > 0 ? `${libraryCount} items` : "Scanning",
+      ready: libraryCount > 0,
+    },
+  ];
+
+  const badge = document.createElement("p");
+  badge.className = "display-badge";
+  badge.textContent = status ? (status.networkMode === "hotspot" ? "Fallback Hotspot" : "Booting") : "Starting";
+
+  const title = document.createElement("h3");
+  title.className = "display-screen-title";
+  title.textContent = deviceName;
+
+  const subtitle = document.createElement("p");
+  subtitle.className = "display-screen-copy";
+  subtitle.textContent = "Getting the portable library ready for offline use.";
+
+  const stepGrid = document.createElement("div");
+  stepGrid.className = "display-step-grid";
+  for (const step of steps) {
+    const card = document.createElement("article");
+    card.className = `display-step${step.ready ? " is-ready" : ""}`;
+    const stepLabel = document.createElement("p");
+    stepLabel.className = "display-step-label";
+    stepLabel.textContent = step.label;
+    const stepValue = document.createElement("strong");
+    stepValue.className = "display-step-value";
+    stepValue.textContent = step.value;
+    card.appendChild(stepLabel);
+    card.appendChild(stepValue);
+    stepGrid.appendChild(card);
+  }
+
+  const footer = document.createElement("p");
+  footer.className = "display-screen-footer";
+  footer.textContent = status
+    ? `${activeNetworkName(status) || hotspotNetworkName(status) || "Network pending"} | ${displayPreferredUrl(status)}`
+    : "Waiting for live device status...";
+
+  canvas.appendChild(badge);
+  canvas.appendChild(title);
+  canvas.appendChild(subtitle);
+  canvas.appendChild(stepGrid);
+  canvas.appendChild(footer);
+}
+
+function renderDisplayWifiView(canvas, status) {
+  const deviceName = (status && status.device) || appDisplayName();
+  const hotspotName = hotspotNetworkName(status) || appNetworkName();
+  const hotspotPassword = status && (status.hotspotPassword || (status.networkMode === "hotspot" ? status.password : ""));
+  const preferredUrl = displayPreferredUrl(status);
+
+  const badge = document.createElement("p");
+  badge.className = "display-badge";
+  badge.textContent = "Join Wi-Fi";
+  canvas.appendChild(badge);
+
+  const title = document.createElement("h3");
+  title.className = "display-screen-title";
+  title.textContent = deviceName;
+  canvas.appendChild(title);
+
+  const subtitle = document.createElement("p");
+  subtitle.className = "display-screen-copy";
+  subtitle.textContent = "Scan once, connect to the hotspot, and open the library.";
+  canvas.appendChild(subtitle);
+
+  if (!status) {
+    const loading = document.createElement("div");
+    loading.className = "display-lock-card";
+    loading.appendChild(createDisplayRow("Status", "Waiting for the Pi"));
+    loading.appendChild(createDisplayRow("Next", "Loading network details"));
+    canvas.appendChild(loading);
+    return;
+  }
+
+  if (deviceProtectedFeaturesLocked()) {
+    const locked = document.createElement("div");
+    locked.className = "display-lock-card";
+    locked.appendChild(createDisplayRow("Preview", "Locked"));
+    locked.appendChild(createDisplayRow("Unlock", "Open /app/device first"));
+    locked.appendChild(createDisplayRow("Reason", "The Wi-Fi password stays protected until the admin view is unlocked."));
+    canvas.appendChild(locked);
+    return;
+  }
+
+  const qrWrap = document.createElement("div");
+  qrWrap.className = "display-qr-wrap";
+  const qr = document.createElement("img");
+  qr.className = "display-qr";
+  qr.alt = "Fallback Wi-Fi QR code";
+  qr.src = `/api/device/wifi-qr.svg?refresh=${Date.now()}`;
+  qrWrap.appendChild(qr);
+
+  const details = document.createElement("div");
+  details.className = "display-info-list";
+  details.appendChild(createDisplayRow("SSID", hotspotName || "Unavailable"));
+  details.appendChild(createDisplayRow("Password", hotspotPassword || "Unavailable"));
+  details.appendChild(createDisplayRow("Open", preferredUrl));
+
+  canvas.appendChild(qrWrap);
+  canvas.appendChild(details);
+}
+
+function renderDisplayStatusView(canvas, status) {
+  const preferredUrl = displayPreferredUrl(status);
+  const libraryCount = Number((status && status.libraryCount) || 0);
+  const streamsLabel = status ? `${status.activeStreams || 0}/${status.maxStreams || 0}` : "0/0";
+  const lastPlayed = status && status.lastPlayed ? `${status.lastPlayed}${status.lastPlayedType ? ` | ${status.lastPlayedType}` : ""}` : "Nothing played yet";
+
+  const badge = document.createElement("p");
+  badge.className = "display-badge";
+  badge.textContent = "Live Status";
+
+  const title = document.createElement("h3");
+  title.className = "display-screen-title";
+  title.textContent = status ? networkModeLabel(status) : "Loading status";
+
+  const subtitle = document.createElement("p");
+  subtitle.className = "display-screen-copy";
+  subtitle.textContent = status
+    ? `${activeNetworkName(status) || hotspotNetworkName(status) || "Network pending"} | ${preferredUrl}`
+    : "Waiting for the Raspberry Pi Zero W to report in.";
+
+  const metrics = document.createElement("div");
+  metrics.className = "display-metric-grid";
+  metrics.appendChild(createDisplayMetric("Clients", String((status && status.clients) || 0)));
+  metrics.appendChild(createDisplayMetric("Media", libraryCount > 0 ? String(libraryCount) : "Pending"));
+  metrics.appendChild(createDisplayMetric("Streams", streamsLabel));
+  metrics.appendChild(createDisplayMetric("Storage", status ? (status.sdMounted ? "Ready" : "Check") : "Check"));
+
+  const footer = document.createElement("div");
+  footer.className = "display-info-list";
+  footer.appendChild(createDisplayRow("Last", lastPlayed));
+  footer.appendChild(createDisplayRow("Updated", formatTimestamp(new Date().toISOString())));
+
+  canvas.appendChild(badge);
+  canvas.appendChild(title);
+  canvas.appendChild(subtitle);
+  canvas.appendChild(metrics);
+  canvas.appendChild(footer);
+}
+
+function renderDisplayPage(container) {
+  const profile = displayProfileConfig();
+  const view = displayViewConfig();
+  const section = document.createElement("section");
+  section.className = "display-preview-page";
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "display-toolbar";
+
+  const viewGroup = document.createElement("div");
+  viewGroup.className = "display-toolbar-group";
+  for (const key of DISPLAY_VIEW_ORDER) {
+    const config = DISPLAY_VIEWS[key];
+    viewGroup.appendChild(
+      createDisplayToolbarButton(config.label, key === view.id, () => openRoute(displayRoute(key, profile.id))),
+    );
+  }
+
+  const profileGroup = document.createElement("div");
+  profileGroup.className = "display-toolbar-group";
+  for (const key of DISPLAY_PROFILE_ORDER) {
+    const config = DISPLAY_PROFILES[key];
+    profileGroup.appendChild(
+      createDisplayToolbarButton(config.shortLabel, key === profile.id, () => openRoute(displayRoute(view.id, key))),
+    );
+  }
+
+  toolbar.appendChild(viewGroup);
+  toolbar.appendChild(profileGroup);
+
+  const stage = document.createElement("div");
+  stage.className = "display-stage";
+
+  const frame = document.createElement("div");
+  frame.className = "display-frame";
+  frame.dataset.displayProfile = profile.id;
+  frame.style.setProperty("--display-width", String(profile.width));
+  frame.style.setProperty("--display-height", String(profile.height));
+
+  const canvas = document.createElement("div");
+  canvas.className = "display-canvas";
+  canvas.dataset.displayView = view.id;
+
+  if (view.id === "wifi") {
+    renderDisplayWifiView(canvas, state.status);
+  } else if (view.id === "status") {
+    renderDisplayStatusView(canvas, state.status);
+  } else {
+    renderDisplayBootView(canvas, state.status);
+  }
+
+  frame.appendChild(canvas);
+  stage.appendChild(frame);
+  section.appendChild(toolbar);
+  section.appendChild(stage);
+  container.appendChild(section);
+}
+
 function renderDevicePage(container) {
   const status = state.status;
   const library = state.library;
@@ -7880,6 +8257,29 @@ function renderDevicePage(container) {
       searchText: `${status.device || ""} ${status.networkMode || ""} ${currentNetworkName || ""} ${hotspotName || ""} ${hotspotPassword || ""} ${preferredUrl || ""} ${status.ipAppUrl || ""} ${status.mdnsHost || ""}`,
     },
     {
+      eyebrow: "Display",
+      title: "Tiny Screen Previews",
+      copy: "Try boot, Wi-Fi QR, and live status layouts sized for the two Waveshare SPI panels before wiring up a dedicated display service.",
+      actions: [
+        {
+          label: 'Boot 1.69"',
+          className: "ghost-button",
+          onClick: () => openRoute(displayRoute("boot", "waveshare-1.69")),
+        },
+        {
+          label: 'Wi-Fi 1.9"',
+          className: "ghost-button",
+          onClick: () => openRoute(displayRoute("wifi", "waveshare-1.9")),
+        },
+        {
+          label: "Status Preview",
+          className: "primary-button",
+          onClick: () => openRoute(displayRoute("status", "waveshare-1.69")),
+        },
+      ],
+      searchText: "display preview screen waveshare boot wifi qr status tiny screen attached lcd st7789",
+    },
+    {
       eyebrow: "Status",
       title: "Device Health",
       rows: [
@@ -8044,7 +8444,16 @@ function stopDeviceStatusPolling() {
 }
 
 function shouldPollDeviceStatus() {
-  return state.route.name === "device" && !deviceAccessLocked() && !document.hidden && !state.uploadingLocally;
+  if (document.hidden) {
+    return false;
+  }
+  if (state.route.name === "device") {
+    return !deviceAccessLocked() && !state.uploadingLocally;
+  }
+  if (state.route.name === "display") {
+    return true;
+  }
+  return false;
 }
 
 function scheduleDeviceStatusPolling(delayMs) {
@@ -8181,6 +8590,7 @@ function renderNav() {
 }
 
 function render() {
+  document.body.dataset.routeName = state.route.name;
   updateBranding();
   const show =
     state.route.name === "show" || state.route.name === "season"
@@ -8198,7 +8608,7 @@ function render() {
   renderPageFilters();
   updatePageActions(show, movie, season, documentBrowser);
   renderHero(show, movie, season, documentBrowser);
-  els.playerSection.hidden = state.route.name === "device";
+  els.playerSection.hidden = state.route.name === "device" || state.route.name === "display";
 
   disconnectCatalogAutoLoadObserver();
   els.content.innerHTML = "";
@@ -8233,6 +8643,8 @@ function render() {
     renderAudiobookDetailPage(els.content, audiobook);
   } else if (state.route.name === "documents") {
     renderDocumentPage(els.content, documentBrowser);
+  } else if (state.route.name === "display") {
+    renderDisplayPage(els.content);
   } else if (state.route.name === "device") {
     renderDevicePage(els.content);
   } else {
