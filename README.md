@@ -58,7 +58,7 @@ Keep `backcountry-broadcast.config.json` and `backcountry-broadcast.user.json` i
 - an external USB drive
 - a removable SD card mounted by the Pi
 
-Treat `backcountry-broadcast.config.json` as the installer-managed base file and put your custom values in `backcountry-broadcast.user.json`, which the installer and updater leave alone. The Device page now saves editable settings into the retained user file automatically.
+Treat `backcountry-broadcast.config.json` as the installer-managed base file and put your custom values in `backcountry-broadcast.user.json`, which the installer and updater leave alone. The Device page now saves editable settings into the retained user file automatically, including the dedicated Screen Settings page for the attached TFT.
 
 Edit that retained config file to set:
 

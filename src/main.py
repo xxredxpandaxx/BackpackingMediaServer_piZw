@@ -74,6 +74,12 @@ DEFAULT_DISPLAY_ENABLED = False
 DEFAULT_DISPLAY_BACKEND = "userspace"
 DEFAULT_DISPLAY_MODEL = "waveshare-1.69"
 DEFAULT_DISPLAY_VIEW = "auto"
+DEFAULT_DISPLAY_STATUS_POLL_SECONDS = 1.0
+DEFAULT_DISPLAY_BUTTON_PINS = {
+    "next": "D6",
+    "previous": "D16",
+    "action": "D26",
+}
 SUPPORTED_DISPLAY_BACKENDS = {
     "userspace",
     "console",
@@ -171,6 +177,25 @@ def normalize_display_backend(value: object) -> str:
 def normalize_display_view(value: object) -> str:
     safe_value = str(value or "").strip().lower()
     return safe_value if safe_value in SUPPORTED_DISPLAY_VIEWS else DEFAULT_DISPLAY_VIEW
+
+
+def normalize_button_pin(value: object) -> str:
+    return str(value or "").strip().upper()
+
+
+def normalize_display_button_pins(value: object) -> dict[str, str]:
+    output = dict(DEFAULT_DISPLAY_BUTTON_PINS)
+    if not isinstance(value, dict):
+        return output
+    for key in output:
+        configured = normalize_button_pin(value.get(key))
+        if configured:
+            output[key] = configured
+    return output
+
+
+def normalize_display_status_poll_seconds(value: object) -> float:
+    return min(30.0, max(0.1, safe_float(value, DEFAULT_DISPLAY_STATUS_POLL_SECONDS, 0.1)))
 
 
 def escape_wifi_qr_value(value: str) -> str:
@@ -972,6 +997,7 @@ def load_settings() -> dict[str, object]:
     )
     mdns_host = sanitize_mdns_host(str(raw_config.get("mdnsHost") or "")) or derived_mdns_host(device_name)
     raw_display_block = raw_config.get("display") if isinstance(raw_config.get("display"), dict) else {}
+    raw_display_buttons = raw_display_block.get("buttons") if isinstance(raw_display_block.get("buttons"), dict) else {}
     display_enabled = env_bool(
         "NOMADSCREEN_DISPLAY_ENABLED",
         config_bool(
@@ -993,6 +1019,14 @@ def load_settings() -> dict[str, object]:
         os.environ.get("NOMADSCREEN_DISPLAY_VIEW")
         or raw_config.get("displayView")
         or raw_display_block.get("view")
+    )
+    display_status_poll_seconds = normalize_display_status_poll_seconds(
+        os.environ.get("NOMADSCREEN_DISPLAY_STATUS_POLL_SECONDS")
+        or raw_config.get("displayStatusPollSeconds")
+        or raw_display_block.get("statusPollSeconds")
+    )
+    display_button_pins = normalize_display_button_pins(
+        raw_config.get("displayButtons") if isinstance(raw_config.get("displayButtons"), dict) else raw_display_buttons
     )
 
     return {
@@ -1019,6 +1053,8 @@ def load_settings() -> dict[str, object]:
         "display_backend": display_backend,
         "display_model": display_model,
         "display_view": display_view,
+        "display_status_poll_seconds": display_status_poll_seconds,
+        "display_button_pins": display_button_pins,
         "bind_address": bind_address,
         "http_port": http_port,
         "filebrowser_port": filebrowser_port,
@@ -3490,6 +3526,10 @@ class AppState:
                 "backend": str(self.settings.get("display_backend") or DEFAULT_DISPLAY_BACKEND),
                 "model": str(self.settings.get("display_model") or DEFAULT_DISPLAY_MODEL),
                 "view": str(self.settings.get("display_view") or DEFAULT_DISPLAY_VIEW),
+                "statusPollSeconds": float(
+                    self.settings.get("display_status_poll_seconds") or DEFAULT_DISPLAY_STATUS_POLL_SECONDS
+                ),
+                "buttons": normalize_display_button_pins(self.settings.get("display_button_pins")),
             },
             "ip": local_ip,
             "appUrl": mdns_url if self.settings["mdns_enabled"] else ip_app_url,
@@ -3536,6 +3576,10 @@ class AppState:
             "displayBackend": str(self.settings.get("display_backend") or DEFAULT_DISPLAY_BACKEND),
             "displayModel": str(self.settings.get("display_model") or DEFAULT_DISPLAY_MODEL),
             "displayView": str(self.settings.get("display_view") or DEFAULT_DISPLAY_VIEW),
+            "displayStatusPollSeconds": float(
+                self.settings.get("display_status_poll_seconds") or DEFAULT_DISPLAY_STATUS_POLL_SECONDS
+            ),
+            "displayButtons": normalize_display_button_pins(self.settings.get("display_button_pins")),
             "devicePasswordConfigured": self.device_access_uses_dedicated_password(),
             "configSource": self.settings["config_source"],
             "userConfigPath": str(self.settings.get("user_config_path") or ""),
@@ -3553,6 +3597,8 @@ class AppState:
         display_backend: object | None = None,
         display_model: object | None = None,
         display_view: object | None = None,
+        display_status_poll_seconds: object | None = None,
+        display_buttons: object | None = None,
     ) -> dict[str, object]:
         safe_device_name = normalize_device_name(str(device_name or ""))[:MAX_DEVICE_NAME_LENGTH]
         if not safe_device_name:
@@ -3570,6 +3616,8 @@ class AppState:
         safe_display_backend = normalize_display_backend(display_backend)
         safe_display_model = normalize_display_model(display_model)
         safe_display_view = normalize_display_view(display_view)
+        safe_display_status_poll_seconds = normalize_display_status_poll_seconds(display_status_poll_seconds)
+        safe_display_buttons = normalize_display_button_pins(display_buttons)
 
         with self.lock:
             user_config_path = Path(self.settings.get("user_config_path") or self.settings["config_path"])
@@ -3585,6 +3633,8 @@ class AppState:
             raw_config["displayBackend"] = safe_display_backend
             raw_config["displayModel"] = safe_display_model
             raw_config["displayView"] = safe_display_view
+            raw_config["displayStatusPollSeconds"] = safe_display_status_poll_seconds
+            raw_config["displayButtons"] = safe_display_buttons
             if safe_device_password:
                 raw_config["devicePassword"] = safe_device_password
             if tmdb_bearer_token is not None:
@@ -3599,6 +3649,8 @@ class AppState:
             display_block["backend"] = safe_display_backend
             display_block["model"] = safe_display_model
             display_block["view"] = safe_display_view
+            display_block["statusPollSeconds"] = safe_display_status_poll_seconds
+            display_block["buttons"] = safe_display_buttons
             raw_config["display"] = display_block
             user_config_path.parent.mkdir(parents=True, exist_ok=True)
             atomic_write_text(user_config_path, json.dumps(raw_config, indent=2, ensure_ascii=False) + "\n")
@@ -3880,6 +3932,8 @@ def api_device_config() -> Response:
             payload.get("displayBackend"),
             payload.get("displayModel"),
             payload.get("displayView"),
+            payload.get("displayStatusPollSeconds"),
+            payload.get("displayButtons"),
         )
     except ValueError as error:
         return no_store_json({"error": str(error)}, 400)
