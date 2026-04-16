@@ -28,6 +28,7 @@ const state = {
     wifiPassword: "",
     tmdbApiKey: "",
     displayEnabled: false,
+    displayBackend: "userspace",
     displayModel: "waveshare-1.69",
     displayView: "auto",
     devicePassword: "",
@@ -200,6 +201,18 @@ const DISPLAY_VIEWS = {
 
 const DISPLAY_VIEW_ORDER = ["boot", "wifi", "status"];
 const DISPLAY_PROFILE_ORDER = ["waveshare-1.69", "waveshare-1.9"];
+const DISPLAY_BACKENDS = {
+  userspace: {
+    id: "userspace",
+    label: "App-driven",
+    shortLabel: "App",
+  },
+  console: {
+    id: "console",
+    label: "Boot console",
+    shortLabel: "Console",
+  },
+};
 
 const els = {
   brandMark: document.getElementById("brand-mark"),
@@ -247,6 +260,11 @@ let playbackSyncQueue = Promise.resolve();
 function normalizeDisplayProfileKey(value) {
   const safeValue = String(value || "").trim();
   return DISPLAY_PROFILES[safeValue] ? safeValue : "waveshare-1.69";
+}
+
+function normalizeDisplayBackend(value) {
+  const safeValue = String(value || "").trim().toLowerCase();
+  return DISPLAY_BACKENDS[safeValue] ? safeValue : "userspace";
 }
 
 function normalizeDisplayViewKey(value) {
@@ -690,6 +708,7 @@ function clearDeviceProtectedState() {
     wifiPassword: "",
     tmdbApiKey: "",
     displayEnabled: false,
+    displayBackend: "userspace",
     displayModel: "waveshare-1.69",
     displayView: "auto",
     devicePassword: "",
@@ -706,6 +725,7 @@ function applyDeviceConfigDraft(config = {}) {
     displayEnabled: Boolean(
       config.displayEnabled != null ? config.displayEnabled : state.deviceConfigDraft.displayEnabled,
     ),
+    displayBackend: normalizeDisplayBackend(config.displayBackend || state.deviceConfigDraft.displayBackend),
     displayModel: normalizeDisplayProfileKey(config.displayModel || state.deviceConfigDraft.displayModel),
     displayView: normalizePhysicalDisplayView(config.displayView || state.deviceConfigDraft.displayView),
     devicePassword: "",
@@ -5602,6 +5622,9 @@ function createDeviceConfigCard() {
       ? storedDraft.displayEnabled
       : ((status.display && status.display.enabled) || false),
   );
+  const initialDisplayBackend = normalizeDisplayBackend(
+    storedDraft.displayBackend || (status.display && status.display.backend) || "userspace",
+  );
   const initialDisplayModel = normalizeDisplayProfileKey(
     storedDraft.displayModel || (status.display && status.display.model) || "waveshare-1.69",
   );
@@ -5702,6 +5725,27 @@ function createDeviceConfigCard() {
   displayEnabledField.appendChild(displayEnabledLabel);
   displayEnabledField.appendChild(displayEnabledInput);
 
+  const displayBackendField = document.createElement("label");
+  displayBackendField.className = "upload-field";
+  const displayBackendLabel = document.createElement("span");
+  displayBackendLabel.className = "upload-label";
+  displayBackendLabel.textContent = "Screen mode";
+  const displayBackendSelect = document.createElement("select");
+  displayBackendSelect.className = "upload-text";
+  displayBackendSelect.name = "display-backend";
+  for (const optionConfig of [
+    { value: "userspace", label: "App-driven UI" },
+    { value: "console", label: "Boot console mirror" },
+  ]) {
+    const option = document.createElement("option");
+    option.value = optionConfig.value;
+    option.textContent = optionConfig.label;
+    displayBackendSelect.appendChild(option);
+  }
+  displayBackendSelect.value = initialDisplayBackend;
+  displayBackendField.appendChild(displayBackendLabel);
+  displayBackendField.appendChild(displayBackendSelect);
+
   const displayModelField = document.createElement("label");
   displayModelField.className = "upload-field";
   const displayModelLabel = document.createElement("span");
@@ -5783,6 +5827,7 @@ function createDeviceConfigCard() {
   fields.appendChild(wifiPasswordField);
   fields.appendChild(tmdbApiKeyField);
   fields.appendChild(displayEnabledField);
+  fields.appendChild(displayBackendField);
   fields.appendChild(displayModelField);
   fields.appendChild(displayViewField);
   fields.appendChild(devicePasswordField);
@@ -5806,6 +5851,7 @@ function createDeviceConfigCard() {
       wifiPassword: wifiPasswordInput.value.trim(),
       tmdbApiKey: tmdbApiKeyInput.value.trim(),
       displayEnabled: displayEnabledInput.checked,
+      displayBackend: normalizeDisplayBackend(displayBackendSelect.value),
       displayModel: normalizeDisplayProfileKey(displayModelSelect.value),
       displayView: normalizePhysicalDisplayView(displayViewSelect.value),
       devicePassword: devicePasswordInput.value.trim(),
@@ -5813,14 +5859,29 @@ function createDeviceConfigCard() {
     };
   };
 
+  const syncDisplayBackendUi = () => {
+    const backend = normalizeDisplayBackend(displayBackendSelect.value);
+    const consoleMode = backend === "console";
+    displayViewSelect.disabled = consoleMode;
+    displayViewField.classList.toggle("upload-field--muted", consoleMode);
+    note.textContent = consoleMode
+      ? "These values are saved on the Pi. Leave the device page password blank to keep the current unlock password. Boot console mode mirrors Linux output to the TFT, so screen content previews are ignored, and you should run sudo ./update.sh then reboot after changing the screen mode, enabling the screen, or swapping models."
+      : "These values are saved on the Pi. Leave the device page password blank to keep the current unlock password. If you have never set one, the Device page uses the fallback Wi-Fi password. Fallback Wi-Fi changes take effect the next time hotspot mode starts, the tiny-screen service picks up display changes automatically, and the TMDb API key is used on the next online rescan.";
+  };
+
   deviceNameInput.addEventListener("input", syncDraft);
   hotspotNameInput.addEventListener("input", syncDraft);
   wifiPasswordInput.addEventListener("input", syncDraft);
   tmdbApiKeyInput.addEventListener("input", syncDraft);
   displayEnabledInput.addEventListener("change", syncDraft);
+  displayBackendSelect.addEventListener("change", () => {
+    syncDisplayBackendUi();
+    syncDraft();
+  });
   displayModelSelect.addEventListener("change", syncDraft);
   displayViewSelect.addEventListener("change", syncDraft);
   devicePasswordInput.addEventListener("input", syncDraft);
+  syncDisplayBackendUi();
   syncDraft();
   applyConfigState(state.deviceConfigFeedback, state.deviceConfigFeedbackTone);
 
@@ -5833,6 +5894,7 @@ function createDeviceConfigCard() {
       wifiPassword: String(state.deviceConfigDraft.wifiPassword || "").trim(),
       tmdbApiKey: String(state.deviceConfigDraft.tmdbApiKey || "").trim(),
       displayEnabled: Boolean(state.deviceConfigDraft.displayEnabled),
+      displayBackend: normalizeDisplayBackend(state.deviceConfigDraft.displayBackend),
       displayModel: normalizeDisplayProfileKey(state.deviceConfigDraft.displayModel),
       displayView: normalizePhysicalDisplayView(state.deviceConfigDraft.displayView),
       devicePassword: String(state.deviceConfigDraft.devicePassword || "").trim(),
@@ -8367,6 +8429,13 @@ function renderDevicePage(container) {
       copy: "Try boot, Wi-Fi QR, and live status layouts sized for the two Waveshare SPI panels before wiring up a dedicated display service.",
       rows: [
         { label: "Physical screen", value: status.display && status.display.enabled ? "Enabled" : "Disabled" },
+        {
+          label: "Mode",
+          value:
+            (status.display && status.display.backend && DISPLAY_BACKENDS[status.display.backend]
+              ? DISPLAY_BACKENDS[status.display.backend].label
+              : "App-driven"),
+        },
         {
           label: "Model",
           value:

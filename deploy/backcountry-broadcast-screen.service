@@ -1,5 +1,5 @@
 [Unit]
-Description=Backcountry Broadcast physical screen
+Description=Backcountry Broadcast display launcher
 After=local-fs.target
 Before=backcountry-broadcast.service
 

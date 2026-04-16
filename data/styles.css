@@ -767,6 +767,10 @@ button {
   grid-column: 1 / -1;
 }
 
+.upload-field--muted {
+  opacity: 0.65;
+}
+
 .upload-label {
   color: var(--muted);
   font-size: 0.78rem;

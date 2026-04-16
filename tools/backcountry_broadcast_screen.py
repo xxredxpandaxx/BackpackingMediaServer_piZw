@@ -7,6 +7,7 @@ import json
 import os
 import re
 import socket
+import subprocess
 import time
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 
 LOG_PREFIX = "[backcountry-broadcast-screen]"
+APP_ROOT = Path(__file__).resolve().parents[1]
 
 DEFAULT_STORAGE_ROOT = Path("/srv/backcountry-broadcast")
 DEFAULT_RUNTIME_CONFIG_NAME = "backcountry-broadcast.config.json"
@@ -29,8 +31,10 @@ DEFAULT_BIND_ADDRESS = "0.0.0.0"
 DEFAULT_HTTP_PORT = 80
 DEFAULT_MDNS_HOST = "backcountrybroadcast"
 DEFAULT_DISPLAY_ENABLED = False
+DEFAULT_DISPLAY_BACKEND = "userspace"
 DEFAULT_DISPLAY_MODEL = "waveshare-1.69"
 DEFAULT_DISPLAY_VIEW = "auto"
+SUPPORTED_DISPLAY_BACKENDS = {"userspace", "console"}
 
 DISPLAY_PROFILES = {
     "waveshare-1.69": {
@@ -66,6 +70,10 @@ DISPLAY_PROFILES = {
 }
 
 SUPPORTED_DISPLAY_VIEWS = {"auto", "boot", "wifi", "status"}
+FBCP_BINARY_NAMES = {
+    "waveshare-1.69": "fbcp-waveshare-1.69",
+    "waveshare-1.9": "fbcp-waveshare-1.9",
+}
 
 
 def log(message: str) -> None:
@@ -105,6 +113,11 @@ def normalize_hotspot_password(value: object) -> str:
 def normalize_display_model(value: object) -> str:
     safe_value = str(value or "").strip().lower()
     return safe_value if safe_value in DISPLAY_PROFILES else DEFAULT_DISPLAY_MODEL
+
+
+def normalize_display_backend(value: object) -> str:
+    safe_value = str(value or "").strip().lower()
+    return safe_value if safe_value in SUPPORTED_DISPLAY_BACKENDS else DEFAULT_DISPLAY_BACKEND
 
 
 def normalize_display_view(value: object) -> str:
@@ -201,6 +214,9 @@ def load_screen_settings() -> dict[str, object]:
         os.environ.get("NOMADSCREEN_DISPLAY_ENABLED"),
         config_bool(raw_config.get("displayEnabled", raw_display.get("enabled")), DEFAULT_DISPLAY_ENABLED),
     )
+    display_backend = normalize_display_backend(
+        os.environ.get("NOMADSCREEN_DISPLAY_BACKEND") or raw_config.get("displayBackend") or raw_display.get("backend")
+    )
     display_model = normalize_display_model(
         os.environ.get("NOMADSCREEN_DISPLAY_MODEL") or raw_config.get("displayModel") or raw_display.get("model")
     )
@@ -230,6 +246,7 @@ def load_screen_settings() -> dict[str, object]:
         "mdns_host": mdns_host,
         "media_directory": media_directory.expanduser(),
         "display_enabled": display_enabled,
+        "display_backend": display_backend,
         "display_model": display_model,
         "display_view": display_view,
     }
@@ -579,6 +596,27 @@ def render_self_test_screen(profile: dict[str, object], model_key: str) -> Image
     return image
 
 
+def console_binary_path(model_key: str) -> Path:
+    return APP_ROOT / "bin" / FBCP_BINARY_NAMES[normalize_display_model(model_key)]
+
+
+def stop_console_process(process: subprocess.Popen[bytes] | None, reason: str = "") -> None:
+    if process is None:
+        return
+    if process.poll() is not None:
+        return
+    try:
+        process.terminate()
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+    except OSError:
+        pass
+    if reason:
+        log(reason)
+
+
 class PhysicalDisplay:
     def __init__(self, model_key: str):
         self.model_key = normalize_display_model(model_key)
@@ -713,16 +751,25 @@ def main() -> int:
         return run_self_test(args.model)
 
     display = None
+    console_process: subprocess.Popen[bytes] | None = None
+    console_signature = ""
     active_model = ""
     last_signature = ""
     last_init_error = ""
+    last_console_error = ""
     blanked_for_disable = False
 
     while True:
         settings = load_screen_settings()
         refresh_seconds = 2 if settings["display_enabled"] else 5
+        backend = normalize_display_backend(settings.get("display_backend"))
 
         if not settings["display_enabled"]:
+            if console_process is not None:
+                stop_console_process(console_process, "Stopped boot console mirror because the physical screen is disabled.")
+                console_process = None
+                console_signature = ""
+                last_console_error = ""
             if display is not None and not blanked_for_disable:
                 try:
                     display.blank()
@@ -734,6 +781,56 @@ def main() -> int:
             continue
 
         blanked_for_disable = False
+        if backend == "console":
+            if display is not None:
+                try:
+                    display.blank()
+                    display.set_backlight(False)
+                except Exception:
+                    pass
+                display = None
+                active_model = ""
+                last_signature = ""
+
+            model_key = normalize_display_model(settings.get("display_model"))
+            binary_path = console_binary_path(model_key)
+            desired_signature = f"{model_key}:{binary_path}"
+            process_exited = console_process is not None and console_process.poll() is not None
+
+            if console_process is None or process_exited or console_signature != desired_signature:
+                if console_process is not None:
+                    stop_console_process(console_process)
+                    console_process = None
+                if not binary_path.exists():
+                    message = f"Console display binary is missing for {model_key}: {binary_path}"
+                    if message != last_console_error:
+                        log(message)
+                        last_console_error = message
+                    time.sleep(10)
+                    continue
+                try:
+                    console_process = subprocess.Popen([str(binary_path)], cwd=str(APP_ROOT))
+                    console_signature = desired_signature
+                    last_console_error = ""
+                    log(f"Started boot console mirror for {model_key}.")
+                except OSError as error:
+                    if str(error) != last_console_error:
+                        log(f"Could not start boot console mirror: {error}")
+                        last_console_error = str(error)
+                    console_process = None
+                    console_signature = ""
+                    time.sleep(10)
+                    continue
+
+            time.sleep(refresh_seconds)
+            continue
+
+        if console_process is not None:
+            stop_console_process(console_process, "Stopped boot console mirror and returned to app-driven screen mode.")
+            console_process = None
+            console_signature = ""
+            last_console_error = ""
+
         if display is None or active_model != str(settings["display_model"]):
             try:
                 display = PhysicalDisplay(str(settings["display_model"]))

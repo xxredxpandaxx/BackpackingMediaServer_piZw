@@ -21,6 +21,10 @@ TMP_DIR="${NOMADSCREEN_TMP_DIR:-/var/tmp/backcountry-broadcast-install}"
 UPLOAD_TMP_DIR="${NOMADSCREEN_UPLOAD_TMP_DIR:-}"
 REPO_REF="${NOMADSCREEN_REPO_REF:-}"
 RESTART_NETWORK=0
+BOOT_CONFIG_PATH="${NOMADSCREEN_BOOT_CONFIG_PATH:-}"
+WAVESHARE_FBCP_URL="${NOMADSCREEN_WAVESHARE_FBCP_URL:-https://files.waveshare.com/upload/1/18/Waveshare_fbcp.zip}"
+DISPLAY_BOOT_CONFIG_CHANGED=0
+DISPLAY_CONSOLE_KMS_WARNING=0
 
 usage() {
   cat <<'EOF'
@@ -264,6 +268,195 @@ ensure_install_context() {
   [[ -n "${FILEBROWSER_PORT}" ]] || FILEBROWSER_PORT="8081"
 }
 
+resolve_boot_config_path() {
+  if [[ -n "${BOOT_CONFIG_PATH}" ]]; then
+    return
+  fi
+  if [[ -f "/boot/firmware/config.txt" ]]; then
+    BOOT_CONFIG_PATH="/boot/firmware/config.txt"
+  else
+    BOOT_CONFIG_PATH="/boot/config.txt"
+  fi
+}
+
+read_display_runtime_settings() {
+  python3 - "${STORAGE_ROOT}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+DEFAULTS = {
+    "displayEnabled": False,
+    "displayBackend": "userspace",
+    "displayModel": "waveshare-1.69",
+}
+
+def read_json(path: Path) -> dict:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+def merge(base, override):
+    if isinstance(base, dict) and isinstance(override, dict):
+        merged = dict(base)
+        for key, value in override.items():
+            merged[key] = merge(merged[key], value) if key in merged else value
+        return merged
+    return override
+
+config = {}
+for name in ("backcountry-broadcast.config.json", "nomadscreen.config.json"):
+    path = root / name
+    if path.exists():
+        config = read_json(path)
+        break
+
+for name in ("backcountry-broadcast.user.json", "nomadscreen.user.json"):
+    path = root / name
+    if path.exists():
+        config = merge(config, read_json(path))
+        break
+
+display = config.get("display") if isinstance(config.get("display"), dict) else {}
+
+def as_bool(value, default=False):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+enabled = as_bool(config.get("displayEnabled", display.get("enabled")), DEFAULTS["displayEnabled"])
+backend = str(config.get("displayBackend") or display.get("backend") or DEFAULTS["displayBackend"]).strip().lower() or DEFAULTS["displayBackend"]
+model = str(config.get("displayModel") or display.get("model") or DEFAULTS["displayModel"]).strip().lower() or DEFAULTS["displayModel"]
+print(f"{int(enabled)}|{backend}|{model}")
+PY
+}
+
+console_hdmi_cvt() {
+  case "$1" in
+    waveshare-1.9)
+      printf '640 340 60 6 0 0 0\n'
+      ;;
+    *)
+      printf '560 480 60 6 0 0 0\n'
+      ;;
+  esac
+}
+
+console_cmake_flag() {
+  case "$1" in
+    waveshare-1.9)
+      printf 'WAVESHARE_1INCH9_LCD\n'
+      ;;
+    *)
+      printf 'WAVESHARE_1INCH69_LCD\n'
+      ;;
+  esac
+}
+
+install_waveshare_fbcp() {
+  local download_root
+  local archive_path
+  local source_root
+  local cmake_flag
+  local build_dir
+  local model
+
+  log "Building Waveshare console-mirror binaries"
+  run_root apt-get update
+  run_root apt-get install -y cmake unzip
+  download_root="${TMP_DIR}/waveshare-fbcp"
+  archive_path="${download_root}/Waveshare_fbcp.zip"
+  run_root rm -rf "${download_root}"
+  run_root mkdir -p "${download_root}"
+  run_root chown -R "${INSTALL_USER}:${INSTALL_GROUP}" "${download_root}"
+  run_root mkdir -p "${INSTALL_DIR}/bin"
+  run_root chown -R "${INSTALL_USER}:${INSTALL_GROUP}" "${INSTALL_DIR}/bin"
+
+  run_as_install_user curl -fsSL "${WAVESHARE_FBCP_URL}" -o "${archive_path}"
+  run_as_install_user unzip -oq "${archive_path}" -d "${download_root}"
+  source_root="$(
+    find "${download_root}" -mindepth 1 -maxdepth 3 -type f -name CMakeLists.txt \
+      | head -n 1 \
+      | xargs -r dirname
+  )"
+  [[ -n "${source_root}" && -f "${source_root}/CMakeLists.txt" ]] || die "Could not locate Waveshare fbcp source after download"
+
+  for model in "waveshare-1.69" "waveshare-1.9"; do
+    cmake_flag="$(console_cmake_flag "${model}")"
+    build_dir="${download_root}/build-${model}"
+    run_root rm -rf "${build_dir}"
+    run_root mkdir -p "${build_dir}"
+    run_root chown -R "${INSTALL_USER}:${INSTALL_GROUP}" "${build_dir}"
+    (
+      cd "${build_dir}"
+      run_as_install_user cmake \
+        -DSPI_BUS_CLOCK_DIVISOR=20 \
+        "-D${cmake_flag}=ON" \
+        -DBACKLIGHT_CONTROL=ON \
+        -DSTATISTICS=0 \
+        "${source_root}"
+      run_as_install_user cmake --build . --parallel
+    )
+    [[ -x "${build_dir}/fbcp" ]] || die "Waveshare fbcp build did not produce fbcp for ${model}"
+    run_root install -D -m 0755 "${build_dir}/fbcp" "${INSTALL_DIR}/bin/fbcp-${model}"
+  done
+}
+
+apply_display_boot_config() {
+  local display_enabled
+  local display_backend
+  local display_model
+  local tmp_config
+  local hdmi_cvt
+
+  resolve_boot_config_path
+  if [[ ! -f "${BOOT_CONFIG_PATH}" ]]; then
+    log "Skipping console display boot config because ${BOOT_CONFIG_PATH} does not exist yet"
+    return
+  fi
+
+  IFS='|' read -r display_enabled display_backend display_model < <(read_display_runtime_settings)
+  tmp_config="$(mktemp)"
+  awk '
+    BEGIN { skipping = 0 }
+    /^# BEGIN BACKCOUNTRY BROADCAST CONSOLE DISPLAY$/ { skipping = 1; next }
+    /^# END BACKCOUNTRY BROADCAST CONSOLE DISPLAY$/ { skipping = 0; next }
+    !skipping { print }
+  ' "${BOOT_CONFIG_PATH}" >"${tmp_config}"
+
+  if [[ "${display_enabled}" == "1" && "${display_backend}" == "console" ]]; then
+    hdmi_cvt="$(console_hdmi_cvt "${display_model}")"
+    cat >>"${tmp_config}" <<EOF
+# BEGIN BACKCOUNTRY BROADCAST CONSOLE DISPLAY
+dtparam=spi=on
+hdmi_force_hotplug=1
+hdmi_group=2
+hdmi_mode=87
+display_rotate=0
+hdmi_cvt=${hdmi_cvt}
+# END BACKCOUNTRY BROADCAST CONSOLE DISPLAY
+EOF
+    if grep -Eq '^[[:space:]]*dtoverlay=vc4-kms-v3d' "${BOOT_CONFIG_PATH}"; then
+      DISPLAY_CONSOLE_KMS_WARNING=1
+      log "Console display mode is selected, but ${BOOT_CONFIG_PATH} still enables vc4-kms-v3d. If the TFT stays blank at boot, switch that line to vc4-fkms-v3d or comment it out per the Waveshare fbcp instructions."
+    fi
+  fi
+
+  if ! cmp -s "${tmp_config}" "${BOOT_CONFIG_PATH}"; then
+    log "Updating ${BOOT_CONFIG_PATH} for the selected display mode"
+    run_root install -m 0644 "${tmp_config}" "${BOOT_CONFIG_PATH}"
+    DISPLAY_BOOT_CONFIG_CHANGED=1
+  fi
+  rm -f "${tmp_config}"
+}
+
 prepare_tmp_dir() {
   log "Preparing temp build directory at ${TMP_DIR}"
   run_root mkdir -p "${TMP_DIR}"
@@ -367,13 +560,37 @@ install_python_deps() {
     run_as_install_user env TMPDIR="${TMP_DIR}" python3 -m venv "${INSTALL_DIR}/.venv"
   fi
 
-  log "Ensuring Python build prerequisites are installed"
-  run_root apt-get update
-  run_root apt-get install -y python3-dev build-essential
+  ensure_python_build_prereqs "${INSTALL_DIR}/.venv/bin/python"
 
   log "Installing Python dependencies"
   run_as_install_user env TMPDIR="${TMP_DIR}" PIP_DISABLE_PIP_VERSION_CHECK=1 \
     "${INSTALL_DIR}/.venv/bin/pip" install --no-cache-dir -r "${INSTALL_DIR}/requirements.txt"
+}
+
+python_dev_package() {
+  local python_bin="${1:-python3}"
+  local python_version
+
+  python_version="$("${python_bin}" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)"
+  if [[ -n "${python_version}" ]]; then
+    printf 'python%s-dev\n' "${python_version}"
+  fi
+}
+
+ensure_python_build_prereqs() {
+  local python_bin="${1:-python3}"
+  local python_dev_pkg
+
+  log "Ensuring Python build prerequisites are installed"
+  run_root apt-get update
+  python_dev_pkg="$(python_dev_package "${python_bin}")"
+  if [[ -n "${python_dev_pkg}" ]]; then
+    if run_root apt-get install -y build-essential "${python_dev_pkg}"; then
+      return
+    fi
+    log "Falling back to generic python3-dev because ${python_dev_pkg} was not available"
+  fi
+  run_root apt-get install -y build-essential python3-dev
 }
 
 ensure_filebrowser_prereqs() {
@@ -491,7 +708,7 @@ write_screen_service() {
 
   cat >"${tmp_service}" <<EOF
 [Unit]
-Description=Backcountry Broadcast physical screen
+Description=Backcountry Broadcast display launcher
 After=local-fs.target
 Before=${SERVICE_NAME}.service
 
@@ -664,6 +881,12 @@ print_success() {
   log "Screen service: ${SCREEN_SERVICE_NAME}.service"
   log "File Browser service: ${FILEBROWSER_SERVICE_NAME}.service"
   log "File Browser password file: ${STORAGE_ROOT}/filebrowser/admin-password.txt"
+  if [[ "${DISPLAY_BOOT_CONFIG_CHANGED}" == "1" ]]; then
+    log "Reboot the Pi to apply the new TFT boot-console settings."
+  fi
+  if [[ "${DISPLAY_CONSOLE_KMS_WARNING}" == "1" ]]; then
+    log "If the TFT stays blank in console mode, update ${BOOT_CONFIG_PATH} to stop using vc4-kms-v3d as Waveshare recommends for fbcp."
+  fi
   if [[ "${RESTART_NETWORK}" != "1" ]]; then
     if [[ "${legacy_network_pending}" == "1" ]]; then
       log "Run 'sudo ./update.sh --restart-network' later to finish renaming the Wi-Fi fallback service without breaking the current session."
@@ -682,7 +905,9 @@ migrate_legacy_runtime_names
 ensure_repo
 update_repo
 install_python_deps
+install_waveshare_fbcp
 install_filebrowser_binary
+apply_display_boot_config
 write_network_service
 write_service
 write_screen_service

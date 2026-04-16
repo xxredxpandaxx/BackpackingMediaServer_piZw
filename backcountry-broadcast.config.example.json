@@ -10,6 +10,7 @@
   "bindAddress": "0.0.0.0",
   "mdnsEnabled": false,
   "displayEnabled": false,
+  "displayBackend": "userspace",
   "displayModel": "waveshare-1.69",
   "displayView": "auto",
   "metadataRefreshOnRescan": true,

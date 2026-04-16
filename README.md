@@ -26,7 +26,7 @@ The project now uses Backcountry Broadcast naming for the repo files, default se
 - `backcountry-broadcast.config.example.json`: sample runtime config for `/srv/backcountry-broadcast/backcountry-broadcast.config.json`
 - `deploy/network/`: fallback Wi-Fi script and `systemd` unit for known-network-first hotspot mode
 - `deploy/backcountry-broadcast.service`: example `systemd` unit
-- `deploy/backcountry-broadcast-screen.service`: example `systemd` unit for a small SPI status screen
+- `deploy/backcountry-broadcast-screen.service`: example `systemd` unit for the TFT display launcher
 
 ## Storage layout
 
@@ -69,7 +69,7 @@ Edit that retained config file to set:
 - how long the Pi should wait for a known Wi-Fi network before it creates its own access point
 - TMDb metadata settings and image-download options
 - optional Pi server settings such as `httpPort`, `bindAddress`, and `mdnsEnabled`
-- optional tiny-screen settings such as `displayEnabled`, `displayModel`, and `displayView`
+- optional tiny-screen settings such as `displayEnabled`, `displayBackend`, `displayModel`, and `displayView`
 
 The backend and the fallback hotspot service both derive the `.local` host name automatically from `deviceName`.
 
@@ -118,6 +118,7 @@ What that installer does:
 - creates `/srv/backcountry-broadcast/backcountry-broadcast.user.json` for retained custom settings if needed
 - creates the standard `~/media` folder layout without overwriting existing files
 - creates `/opt/backcountry-broadcast/.venv` and installs Python dependencies
+- builds the Waveshare `fbcp` console-mirror binaries for the supported SPI panels
 - installs File Browser into `/usr/local/bin/filebrowser`
 - prepares `/srv/backcountry-broadcast/filebrowser` for the File Browser database and captured password
 - applies the bundled File Browser branding from `/opt/backcountry-broadcast/deploy/filebrowser-branding`
@@ -125,6 +126,7 @@ What that installer does:
 - writes and enables `backcountry-broadcast-network.service`
 - writes and enables `backcountry-broadcast.service`
 - writes and enables `backcountry-broadcast-screen.service`
+- updates the Pi boot config for TFT console mode when `displayBackend` is set to `console`
 - writes and enables `backcountry-broadcast-filebrowser.service`
 - captures the initial File Browser admin password so the Device page can show it
 
@@ -138,10 +140,12 @@ That updater:
 
 - pulls the latest code into `/opt/backcountry-broadcast`
 - refreshes Python dependencies
+- rebuilds the Waveshare `fbcp` console-mirror binaries
 - makes sure File Browser is installed
 - reapplies the bundled File Browser branding
 - rewrites the service units with your current paths
 - refreshes `backcountry-broadcast-screen.service`
+- updates the Pi boot config for TFT console mode when `displayBackend` is set to `console`
 - refreshes `backcountry-broadcast-filebrowser.service`
 - keeps large web uploads pointed at `/var/tmp/backcountry-broadcast-upload`
 - restarts `backcountry-broadcast`
@@ -265,8 +269,11 @@ To preload known networks, use Raspberry Pi Imager advanced settings before firs
 - `mdnsEnabled`
 - `mdnsHost`
 - `displayEnabled`: enable the physical SPI screen service
+- `displayBackend`: `userspace` for the app-driven TFT UI or `console` to mirror the Pi boot console through Waveshare `fbcp`
 - `displayModel`: `waveshare-1.69` or `waveshare-1.9`
 - `displayView`: `auto`, `boot`, `wifi`, or `status`
+
+When you switch `displayBackend` to `console`, turn the TFT on, or change `displayModel`, run `sudo ./update.sh` and reboot so the Pi can rebuild the matching `fbcp` binary and refresh `/boot/firmware/config.txt` or `/boot/config.txt` for the TFT console mode.
 
 The physical screen service assumes the standard Waveshare Raspberry Pi wiring for ST7789 SPI LCDs:
 
