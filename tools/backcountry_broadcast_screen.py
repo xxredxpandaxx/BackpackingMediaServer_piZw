@@ -34,9 +34,16 @@ DEFAULT_DISPLAY_ENABLED = False
 DEFAULT_DISPLAY_BACKEND = "userspace"
 DEFAULT_DISPLAY_MODEL = "waveshare-1.69"
 DEFAULT_DISPLAY_VIEW = "auto"
+DEFAULT_DISPLAY_REFRESH_FPS = 10.0
+DEFAULT_DISABLED_REFRESH_SECONDS = 5.0
+DISPLAY_BUTTON_POLL_SECONDS = 0.02
 SUPPORTED_DISPLAY_BACKENDS = {"userspace", "console"}
 DISPLAY_BUTTON_VIEW_ORDER = ("boot", "wifi", "status")
-DISPLAY_VIEW_CYCLE_PIN = "D6"
+DEFAULT_DISPLAY_BUTTON_PINS = {
+    "next": "D6",
+    "previous": "D16",
+    "action": "D26",
+}
 
 DISPLAY_PROFILES = {
     "waveshare-1.69": {
@@ -127,12 +134,43 @@ def normalize_display_view(value: object) -> str:
     return safe_value if safe_value in SUPPORTED_DISPLAY_VIEWS else DEFAULT_DISPLAY_VIEW
 
 
+def normalize_button_pin(value: object) -> str:
+    return str(value or "").strip()
+
+
+def normalize_display_button_pins(value: object) -> dict[str, str]:
+    output = dict(DEFAULT_DISPLAY_BUTTON_PINS)
+    if not isinstance(value, dict):
+        return output
+    for key in output:
+        configured = normalize_button_pin(value.get(key))
+        if configured:
+            output[key] = configured
+    return output
+
+
+def normalize_display_refresh_fps(value: object) -> float:
+    try:
+        fps = float(value)
+    except (TypeError, ValueError):
+        return DEFAULT_DISPLAY_REFRESH_FPS
+    return min(30.0, max(1.0, fps))
+
+
 def cycle_display_view(current_view: str) -> str:
     safe_current = str(current_view or "").strip().lower()
     if safe_current not in DISPLAY_BUTTON_VIEW_ORDER:
         return DISPLAY_BUTTON_VIEW_ORDER[0]
     current_index = DISPLAY_BUTTON_VIEW_ORDER.index(safe_current)
     return DISPLAY_BUTTON_VIEW_ORDER[(current_index + 1) % len(DISPLAY_BUTTON_VIEW_ORDER)]
+
+
+def previous_display_view(current_view: str) -> str:
+    safe_current = str(current_view or "").strip().lower()
+    if safe_current not in DISPLAY_BUTTON_VIEW_ORDER:
+        return DISPLAY_BUTTON_VIEW_ORDER[-1]
+    current_index = DISPLAY_BUTTON_VIEW_ORDER.index(safe_current)
+    return DISPLAY_BUTTON_VIEW_ORDER[(current_index - 1) % len(DISPLAY_BUTTON_VIEW_ORDER)]
 
 
 def sanitize_mdns_host(value: object) -> str:
@@ -203,6 +241,7 @@ def load_screen_settings() -> dict[str, object]:
     storage_root = runtime_storage_root()
     raw_config = runtime_config_values(storage_root)
     raw_display = raw_config.get("display") if isinstance(raw_config.get("display"), dict) else {}
+    raw_display_buttons = raw_display.get("buttons") if isinstance(raw_display.get("buttons"), dict) else {}
     raw_wifi = raw_config.get("wifi") if isinstance(raw_config.get("wifi"), dict) else {}
     device_name = normalize_device_name(raw_config.get("deviceName") or raw_config.get("serverName"))
     hotspot_ssid = normalize_hotspot_ssid(
@@ -233,6 +272,14 @@ def load_screen_settings() -> dict[str, object]:
     display_view = normalize_display_view(
         os.environ.get("NOMADSCREEN_DISPLAY_VIEW") or raw_config.get("displayView") or raw_display.get("view")
     )
+    display_refresh_fps = normalize_display_refresh_fps(
+        os.environ.get("NOMADSCREEN_DISPLAY_REFRESH_FPS")
+        or raw_config.get("displayRefreshFps")
+        or raw_display.get("refreshFps")
+    )
+    display_button_pins = normalize_display_button_pins(
+        raw_config.get("displayButtons") if isinstance(raw_config.get("displayButtons"), dict) else raw_display_buttons
+    )
     mdns_enabled = config_bool(os.environ.get("NOMADSCREEN_MDNS"), config_bool(raw_config.get("mdnsEnabled"), False))
     mdns_host = sanitize_mdns_host(raw_config.get("mdnsHost")) or derived_mdns_host(device_name)
     media_root = (
@@ -259,6 +306,8 @@ def load_screen_settings() -> dict[str, object]:
         "display_backend": display_backend,
         "display_model": display_model,
         "display_view": display_view,
+        "display_refresh_fps": display_refresh_fps,
+        "display_button_pins": display_button_pins,
     }
 
 
@@ -734,6 +783,23 @@ class ButtonInput:
         return False
 
 
+class DisplayButtonManager:
+    def __init__(self, pin_map: dict[str, str] | None = None):
+        pins = normalize_display_button_pins(pin_map or {})
+        self.next_button = ButtonInput(pins.get("next") or "")
+        self.previous_button = ButtonInput(pins.get("previous") or "")
+        self.action_button = ButtonInput(pins.get("action") or "")
+        self._signature = self.signature_for(pins)
+
+    @staticmethod
+    def signature_for(pin_map: dict[str, str] | None = None) -> str:
+        pins = normalize_display_button_pins(pin_map or {})
+        return json.dumps(pins, sort_keys=True)
+
+    def matches(self, pin_map: dict[str, str] | None = None) -> bool:
+        return self._signature == self.signature_for(pin_map)
+
+
 class PhysicalDisplay:
     def __init__(self, model_key: str):
         self.model_key = normalize_display_model(model_key)
@@ -814,6 +880,8 @@ def state_signature(settings: dict[str, object], status: dict[str, object] | Non
         "display_enabled": bool(settings["display_enabled"]),
         "display_model": str(settings["display_model"]),
         "display_view": str(view),
+        "display_refresh_fps": float(settings.get("display_refresh_fps") or DEFAULT_DISPLAY_REFRESH_FPS),
+        "display_button_pins": dict(settings.get("display_button_pins") or {}),
         "device_name": str(settings["device_name"]),
         "hotspot_ssid": str(settings["hotspot_ssid"]),
         "wifi_password": str(settings["wifi_password"]),
@@ -868,13 +936,52 @@ def run_self_test(model_override: str | None = None) -> int:
         return 0
 
 
-def wait_for_timeout_or_button(timeout_seconds: float, button: ButtonInput | None) -> bool:
+def wait_for_timeout_or_button(timeout_seconds: float, buttons: DisplayButtonManager | None) -> str | None:
     deadline = time.monotonic() + max(0.0, float(timeout_seconds))
     while time.monotonic() < deadline:
-        if button is not None and button.poll_pressed():
-            return True
-        time.sleep(0.08)
-    return button is not None and button.poll_pressed()
+        if buttons is not None:
+            if buttons.next_button.poll_pressed():
+                return "next"
+            if buttons.previous_button.poll_pressed():
+                return "previous"
+            if buttons.action_button.poll_pressed():
+                return "action"
+        time.sleep(DISPLAY_BUTTON_POLL_SECONDS)
+    if buttons is not None:
+        if buttons.next_button.poll_pressed():
+            return "next"
+        if buttons.previous_button.poll_pressed():
+            return "previous"
+        if buttons.action_button.poll_pressed():
+            return "action"
+    return None
+
+
+def handle_button_action(
+    action: str | None,
+    settings: dict[str, object],
+    status: dict[str, object] | None,
+    manual_view_override: str | None,
+) -> tuple[str | None, bool]:
+    if not action:
+        return manual_view_override, False
+
+    current_view = choose_view(settings, status, manual_view_override)
+    if action == "next":
+        next_view = cycle_display_view(current_view)
+        log(f"Display next button pressed. Switched to {next_view} view.")
+        return next_view, True
+    if action == "previous":
+        previous_view = previous_display_view(current_view)
+        log(f"Display previous button pressed. Switched to {previous_view} view.")
+        return previous_view, True
+    if action == "action":
+        if manual_view_override is None:
+            log(f"Display action button pressed. Locked manual view on {current_view}.")
+            return current_view, True
+        log("Display action button pressed. Returned to configured auto/manual view selection.")
+        return None, True
+    return manual_view_override, False
 
 
 def main() -> int:
@@ -889,14 +996,22 @@ def main() -> int:
     last_signature = ""
     last_init_error = ""
     last_console_error = ""
-    button_input = ButtonInput(DISPLAY_VIEW_CYCLE_PIN)
+    button_manager: DisplayButtonManager | None = None
     manual_view_override: str | None = None
     blanked_for_disable = False
 
     while True:
         settings = load_screen_settings()
-        refresh_seconds = 2 if settings["display_enabled"] else 5
+        refresh_seconds = (
+            1.0 / max(1.0, float(settings.get("display_refresh_fps") or DEFAULT_DISPLAY_REFRESH_FPS))
+            if settings["display_enabled"]
+            else DEFAULT_DISABLED_REFRESH_SECONDS
+        )
         backend = normalize_display_backend(settings.get("display_backend"))
+        button_pins = settings.get("display_button_pins") if isinstance(settings.get("display_button_pins"), dict) else {}
+
+        if button_manager is None or not button_manager.matches(button_pins):
+            button_manager = DisplayButtonManager(button_pins)
 
         if not settings["display_enabled"]:
             if console_process is not None:
@@ -912,7 +1027,7 @@ def main() -> int:
                     pass
                 blanked_for_disable = True
             manual_view_override = None
-            wait_for_timeout_or_button(refresh_seconds, button_input)
+            wait_for_timeout_or_button(refresh_seconds, button_manager)
             continue
 
         blanked_for_disable = False
@@ -996,9 +1111,9 @@ def main() -> int:
                 active_model = ""
                 time.sleep(5)
                 continue
-        if wait_for_timeout_or_button(refresh_seconds, button_input):
-            manual_view_override = cycle_display_view(view)
-            log(f"Display button pressed on GPIO6. Switched to {manual_view_override} view.")
+        button_action = wait_for_timeout_or_button(refresh_seconds, button_manager)
+        manual_view_override, should_redraw = handle_button_action(button_action, settings, status, manual_view_override)
+        if should_redraw:
             immediate_view = choose_view(settings, status, manual_view_override)
             immediate_signature = state_signature(settings, status, immediate_view)
             try:

@@ -13,6 +13,12 @@
   "displayBackend": "userspace",
   "displayModel": "waveshare-1.69",
   "displayView": "auto",
+  "displayRefreshFps": 10,
+  "displayButtons": {
+    "next": "D6",
+    "previous": "D16",
+    "action": "D26"
+  },
   "metadataRefreshOnRescan": true,
   "metadataRefreshTimeoutSeconds": 1800,
   "tmdbApiKey": "",
