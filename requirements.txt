@@ -6,3 +6,4 @@ qrcode>=8,<9
 Pillow>=10.4,<12
 Adafruit-Blinka>=8.70,<10
 adafruit-circuitpython-rgb-display>=3.14,<4
+RPi.GPIO>=0.7.1,<0.8

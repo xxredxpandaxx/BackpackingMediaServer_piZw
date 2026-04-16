@@ -367,6 +367,10 @@ install_python_deps() {
     run_as_install_user env TMPDIR="${TMP_DIR}" python3 -m venv "${INSTALL_DIR}/.venv"
   fi
 
+  log "Ensuring Python build prerequisites are installed"
+  run_root apt-get update
+  run_root apt-get install -y python3-dev build-essential
+
   log "Installing Python dependencies"
   run_as_install_user env TMPDIR="${TMP_DIR}" PIP_DISABLE_PIP_VERSION_CHECK=1 \
     "${INSTALL_DIR}/.venv/bin/pip" install --no-cache-dir -r "${INSTALL_DIR}/requirements.txt"

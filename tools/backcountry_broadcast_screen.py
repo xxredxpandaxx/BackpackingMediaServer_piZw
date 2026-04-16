@@ -585,9 +585,17 @@ class PhysicalDisplay:
         self.profile = dict(DISPLAY_PROFILES[self.model_key])
         self._backlight = None
 
-        import board
-        import digitalio
-        import adafruit_rgb_display.st7789 as st7789
+        try:
+            import board
+            import digitalio
+            import adafruit_rgb_display.st7789 as st7789
+        except ModuleNotFoundError as error:
+            if str(getattr(error, "name", "")) == "RPi":
+                raise RuntimeError(
+                    "RPi.GPIO is missing in the virtual environment. "
+                    "Run update.sh or install RPi.GPIO into /opt/backcountry-broadcast/.venv."
+                ) from error
+            raise
 
         pins = dict(self.profile["pins"])
         spi = board.SPI()

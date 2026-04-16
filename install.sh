@@ -156,7 +156,7 @@ ensure_install_user() {
 install_packages() {
   log "Installing required packages"
   run_root apt-get update
-  run_root apt-get install -y curl git python3 python3-venv ca-certificates network-manager
+  run_root apt-get install -y curl git python3 python3-venv python3-dev build-essential ca-certificates network-manager
 }
 
 clean_generated_checkout_files() {
