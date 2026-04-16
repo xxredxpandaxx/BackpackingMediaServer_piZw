@@ -1251,51 +1251,11 @@ class DisplayButtonManager:
                 time.sleep(poll_sleep)
 
 
-class BacklightController:
-    def __init__(self, pin_name: str):
-        self.pin_name = str(pin_name or "").strip()
-        self._digital = None
-        self._pwm = None
-
-        bcm_pin = pin_name_to_bcm(self.pin_name)
-        if bcm_pin is not None:
-            try:
-                from RPi import GPIO  # type: ignore
-
-                GPIO.setwarnings(False)
-                GPIO.setmode(GPIO.BCM)
-                GPIO.setup(bcm_pin, GPIO.OUT)
-                pwm = GPIO.PWM(bcm_pin, 1000)
-                pwm.start(100)
-                self._pwm = pwm
-                log(f"Backlight PWM enabled on GPIO pin {self.pin_name}.")
-                return
-            except Exception as error:
-                log(f"Could not enable PWM backlight on {self.pin_name}: {error}")
-
-        try:
-            import board
-            import digitalio
-
-            self._digital = digitalio.DigitalInOut(getattr(board, self.pin_name))
-            self._digital.switch_to_output(value=True)
-        except Exception as error:
-            log(f"Could not initialize digital backlight control on {self.pin_name}: {error}")
-            self._digital = None
-
-    def apply(self, enabled: bool, brightness: object) -> None:
-        safe_brightness = normalize_display_brightness(brightness)
-        if self._pwm is not None:
-            self._pwm.ChangeDutyCycle(safe_brightness if enabled else 0)
-            return
-        if self._digital is not None:
-            self._digital.value = bool(enabled and safe_brightness > 0)
-
-
 class PhysicalDisplay:
     def __init__(self, model_key: str):
         self.model_key = normalize_display_model(model_key)
         self.profile = dict(DISPLAY_PROFILES[self.model_key])
+        self._backlight = None
 
         try:
             import board
@@ -1314,6 +1274,9 @@ class PhysicalDisplay:
         cs_pin = digitalio.DigitalInOut(getattr(board, pins["cs"]))
         dc_pin = digitalio.DigitalInOut(getattr(board, pins["dc"]))
         reset_pin = digitalio.DigitalInOut(getattr(board, pins["reset"])) if pins.get("reset") else None
+        if pins.get("backlight"):
+            self._backlight = digitalio.DigitalInOut(getattr(board, pins["backlight"]))
+            self._backlight.switch_to_output(value=True)
 
         # These offsets match the standard ST7789 geometry Waveshare uses for these two SPI panels.
         self._display = st7789.ST7789(
@@ -1328,6 +1291,10 @@ class PhysicalDisplay:
             y_offset=int(self.profile["y_offset"]),
             rotation=int(self.profile["rotation"]),
         )
+
+    def set_backlight(self, enabled: bool) -> None:
+        if self._backlight is not None:
+            self._backlight.value = bool(enabled)
 
     def show(self, image: Image.Image) -> None:
         width = int(self.profile["width"])
@@ -1410,12 +1377,19 @@ def render_for_view(
 ) -> Image.Image:
     profile = DISPLAY_PROFILES[normalize_display_model(settings["display_model"])]
     if view == SETTINGS_VIEW_KEY:
-        return render_settings_screen(profile, settings, status, ui_state)
-    if view == "wifi":
-        return render_wifi_screen(profile, settings, status)
-    if view == "status":
-        return render_status_screen(profile, settings, status)
-    return render_boot_screen(profile, settings, status)
+        image = render_settings_screen(profile, settings, status, ui_state)
+    elif view == "wifi":
+        image = render_wifi_screen(profile, settings, status)
+    elif view == "status":
+        image = render_status_screen(profile, settings, status)
+    else:
+        image = render_boot_screen(profile, settings, status)
+
+    brightness = normalize_display_brightness(settings.get("display_brightness"))
+    if brightness >= 100:
+        return image
+    factor = max(0.05, brightness / 100.0)
+    return Image.blend(Image.new("RGB", image.size, "black"), image, factor)
 
 
 def parse_args() -> argparse.Namespace:
@@ -1432,10 +1406,8 @@ def parse_args() -> argparse.Namespace:
 def run_self_test(model_override: str | None = None) -> int:
     settings = load_screen_settings()
     model_key = normalize_display_model(model_override or settings.get("display_model"))
-    backlight_pin = str(DISPLAY_PROFILES[model_key]["pins"].get("backlight") or "")
-    backlight = BacklightController(backlight_pin)
-    backlight.apply(True, DEFAULT_DISPLAY_BRIGHTNESS)
     display = PhysicalDisplay(model_key)
+    display.set_backlight(True)
     display.show(render_self_test_screen(DISPLAY_PROFILES[model_key], model_key))
     log(f"Rendered self-test pattern for {model_key}. Press Ctrl+C when finished.")
     try:
@@ -1581,8 +1553,6 @@ def main() -> int:
         return run_self_test(args.model)
 
     display = None
-    backlight_controller: BacklightController | None = None
-    backlight_model = ""
     console_process: subprocess.Popen[bytes] | None = None
     console_signature = ""
     active_model = ""
@@ -1610,18 +1580,9 @@ def main() -> int:
         backend = normalize_display_backend(settings.get("display_backend"))
         model_key = normalize_display_model(settings.get("display_model"))
         button_pins = settings.get("display_button_pins") if isinstance(settings.get("display_button_pins"), dict) else {}
-        backlight_pin = str(DISPLAY_PROFILES[model_key]["pins"].get("backlight") or "")
 
         if button_manager is None or not button_manager.matches(button_pins):
             button_manager = DisplayButtonManager(button_pins)
-        if backlight_controller is None or backlight_model != model_key:
-            backlight_controller = BacklightController(backlight_pin)
-            backlight_model = model_key
-        if backlight_controller is not None:
-            try:
-                backlight_controller.apply(bool(settings["display_enabled"]) and backlight_enabled, settings.get("display_brightness"))
-            except Exception as error:
-                log(f"Could not update backlight brightness: {error}")
 
         if not settings["display_enabled"]:
             if console_process is not None:
@@ -1632,6 +1593,7 @@ def main() -> int:
             if display is not None and not blanked_for_disable:
                 try:
                     display.blank()
+                    display.set_backlight(False)
                 except Exception:
                     pass
                 blanked_for_disable = True
@@ -1648,6 +1610,7 @@ def main() -> int:
             if display is not None:
                 try:
                     display.blank()
+                    display.set_backlight(False)
                 except Exception:
                     pass
                 display = None
@@ -1695,6 +1658,7 @@ def main() -> int:
         if display is None or active_model != str(settings["display_model"]):
             try:
                 display = PhysicalDisplay(str(settings["display_model"]))
+                display.set_backlight(backlight_enabled)
                 active_model = str(settings["display_model"])
                 last_signature = ""
                 last_init_error = ""
@@ -1748,8 +1712,8 @@ def main() -> int:
         if interaction.toggle_backlight:
             backlight_enabled = not backlight_enabled
             try:
-                if backlight_controller is not None:
-                    backlight_controller.apply(backlight_enabled, settings.get("display_brightness"))
+                if display is not None:
+                    display.set_backlight(backlight_enabled)
                 if not backlight_enabled:
                     if display is not None:
                         display.blank()
