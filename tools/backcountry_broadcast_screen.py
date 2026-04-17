@@ -42,6 +42,7 @@ DEFAULT_DISPLAY_BRIGHTNESS = 100
 DEFAULT_CONFIG_CHECK_SECONDS = 2.0
 DEFAULT_DISABLED_REFRESH_SECONDS = 5.0
 DISPLAY_BUTTON_POLL_SECONDS = 0.05
+DISPLAY_BUTTON_HEADLESS_POLL_SECONDS = 0.35
 DISPLAY_BUTTON_BOUNCE_MS = 140
 DISPLAY_BUTTON_LONG_PRESS_SECONDS = 0.65
 SUPPORTED_DISPLAY_BACKENDS = {"userspace", "console"}
@@ -1104,12 +1105,13 @@ def stop_console_process(process: subprocess.Popen[bytes] | None, reason: str = 
 
 
 class ButtonInput:
-    def __init__(self, pin_name: str):
+    def __init__(self, pin_name: str, wake_event: threading.Event | None = None):
         self.pin_name = str(pin_name or "").strip()
         self._button = None
         self._pressed_latch = False
         self._edge_event = None
         self._callback_cleanup = None
+        self._wake_event = wake_event
 
         try:
             import board
@@ -1160,6 +1162,8 @@ class ButtonInput:
 
             def on_press(channel: int) -> None:
                 edge_event.set()
+                if self._wake_event is not None:
+                    self._wake_event.set()
 
             GPIO.add_event_detect(bcm_pin, GPIO.FALLING, callback=on_press, bouncetime=DISPLAY_BUTTON_BOUNCE_MS)
             self._edge_event = edge_event
@@ -1192,9 +1196,10 @@ class ButtonInput:
 class DisplayButtonManager:
     def __init__(self, pin_map: dict[str, str] | None = None):
         pins = normalize_display_button_pins(pin_map or {})
-        self.next_button = ButtonInput(pins.get("next") or "")
-        self.previous_button = ButtonInput(pins.get("previous") or "")
-        self.action_button = ButtonInput(pins.get("action") or "")
+        self._wake_event = threading.Event()
+        self.next_button = ButtonInput(pins.get("next") or "", wake_event=self._wake_event)
+        self.previous_button = ButtonInput(pins.get("previous") or "", wake_event=self._wake_event)
+        self.action_button = ButtonInput(pins.get("action") or "", wake_event=self._wake_event)
         self._signature = self.signature_for(pins)
         self._buttons = (
             ("next", self.next_button),
@@ -1233,20 +1238,25 @@ class DisplayButtonManager:
             return f"{action}:long"
         return action
 
-    def wait_for_action(self, timeout_seconds: float) -> str | None:
-        timeout = max(0.0, float(timeout_seconds))
-        deadline = time.monotonic() + timeout
+    def wait_for_action(self, timeout_seconds: float | None, poll_seconds: float = DISPLAY_BUTTON_POLL_SECONDS) -> str | None:
+        timeout = None if timeout_seconds is None else max(0.0, float(timeout_seconds))
+        deadline = None if timeout is None else time.monotonic() + timeout
+        safe_poll_seconds = max(0.01, float(poll_seconds))
         while True:
             for action, button in self._buttons:
                 if button.consume_edge() or button.poll_pressed():
                     return self._classify_gesture(action)
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return None
-            poll_sleep = min(DISPLAY_BUTTON_POLL_SECONDS, remaining)
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                poll_sleep = min(safe_poll_seconds, remaining)
+            else:
+                poll_sleep = safe_poll_seconds
             edge_events = [button.edge_event for _, button in self._buttons if button.edge_event is not None]
             if edge_events:
-                edge_events[0].wait(poll_sleep)
+                self._wake_event.wait(poll_sleep)
+                self._wake_event.clear()
             else:
                 time.sleep(poll_sleep)
 
@@ -1536,11 +1546,19 @@ def handle_settings_button_action(
     return InteractionResult(should_redraw=True)
 
 
-def wait_for_action_or_timeout(timeout_seconds: float, buttons: DisplayButtonManager | None) -> str | None:
+def wait_for_action_or_timeout(
+    timeout_seconds: float | None,
+    buttons: DisplayButtonManager | None,
+    *,
+    poll_seconds: float = DISPLAY_BUTTON_POLL_SECONDS,
+) -> str | None:
     if buttons is None:
+        if timeout_seconds is None:
+            time.sleep(max(1.0, poll_seconds))
+            return None
         time.sleep(max(0.0, float(timeout_seconds)))
         return None
-    return buttons.wait_for_action(timeout_seconds)
+    return buttons.wait_for_action(timeout_seconds, poll_seconds=poll_seconds)
 
 
 def seconds_until(deadline: float, fallback: float = 0.0) -> float:
@@ -1569,6 +1587,31 @@ def main() -> int:
     next_config_check_at = 0.0
 
     while True:
+        if not backlight_enabled:
+            if display is not None:
+                try:
+                    display.blank()
+                    display.set_backlight(False)
+                except Exception as error:
+                    log(f"Could not enter headless screen mode cleanly: {error}")
+            button_action = wait_for_action_or_timeout(
+                None,
+                button_manager,
+                poll_seconds=DISPLAY_BUTTON_HEADLESS_POLL_SECONDS,
+            )
+            if button_action:
+                backlight_enabled = True
+                if display is not None:
+                    try:
+                        display.set_backlight(True)
+                    except Exception as error:
+                        log(f"Could not wake the screen backlight: {error}")
+                status = None
+                next_status_poll_at = 0.0
+                next_config_check_at = 0.0
+                last_signature = ""
+            continue
+
         now = time.monotonic()
         if now >= next_config_check_at:
             settings = load_screen_settings()
