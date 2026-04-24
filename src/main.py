@@ -28,6 +28,7 @@ except ImportError:
     SvgPathImage = None
 
 from audiobook_metadata import extract_audiobook_embedded_metadata
+from media_paths import classify_media_type, normalize_virtual_path, path_is_relative_to
 
 
 APP_ROOT = Path(__file__).resolve().parents[1]
@@ -66,10 +67,6 @@ DEFAULT_MAX_STREAMS = 12
 DEFAULT_CLIENT_WINDOW_SECONDS = 300
 DEFAULT_METADATA_REFRESH_TIMEOUT_SECONDS = 1800
 DEFAULT_FILEBROWSER_PORT = 8081
-DEFAULT_UPLOAD_TMP_DIRECTORY_NAME = "backcountry-broadcast-upload"
-LEGACY_UPLOAD_TMP_DIRECTORY_NAME = "nomadscreen-upload"
-DEFAULT_UPLOAD_STAGING_PREFIX = ".backcountry-broadcast-upload-"
-LEGACY_UPLOAD_STAGING_PREFIX = ".nomadscreen-upload-"
 DEFAULT_DISPLAY_ENABLED = False
 DEFAULT_DISPLAY_BACKEND = "userspace"
 DEFAULT_DISPLAY_MODEL = "waveshare-1.69"
@@ -125,15 +122,6 @@ SECTION_ORDER = {
     "audiobooks": 3,
     "documents": 4,
 }
-
-UPLOAD_SECTION_CONFIG = {
-    "movies": {"label": "Movies", "base_path": "/media/movies", "media_types": {"video"}},
-    "tv": {"label": "TV Shows", "base_path": "/media/tv", "media_types": {"video"}},
-    "music": {"label": "Music", "base_path": "/media/music", "media_types": {"audio"}},
-    "audiobooks": {"label": "Audiobooks", "base_path": "/media/audiobooks", "media_types": {"audio"}},
-    "documents": {"label": "Documents", "base_path": "/media/documents", "media_types": {"document", "image"}},
-}
-
 
 def normalize_device_name(value: str) -> str:
     return " ".join(str(value or "").split()).strip()
@@ -388,26 +376,6 @@ def configure_sqlite_connection(connection: sqlite3.Connection) -> sqlite3.Conne
     return connection
 
 
-def normalize_virtual_path(raw_path: str) -> str:
-    normalized = str(raw_path or "").strip().replace("\\", "/")
-    if not normalized:
-        return ""
-    if not normalized.startswith("/"):
-        normalized = "/" + normalized
-    while "//" in normalized:
-        normalized = normalized.replace("//", "/")
-    pieces = []
-    for piece in normalized.split("/"):
-        if not piece or piece == ".":
-            continue
-        if piece == "..":
-            if pieces:
-                pieces.pop()
-            continue
-        pieces.append(piece)
-    return "/" + "/".join(pieces)
-
-
 def lowercase_copy(value: str) -> str:
     return str(value or "").lower()
 
@@ -548,19 +516,6 @@ def audiobook_collection_key(series_name: object, album: object, path: object) -
     return slugify_text(audiobook_collection_name(series_name, album, path))
 
 
-def classify_media_type(path: str) -> str:
-    lowered = lowercase_copy(path)
-    if lowered.endswith((".mp4", ".mkv", ".mov", ".webm", ".m4v", ".avi")):
-        return "video"
-    if lowered.endswith((".mp3", ".m4a", ".m4b", ".aac", ".wav", ".flac", ".ogg")):
-        return "audio"
-    if lowered.endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")):
-        return "image"
-    if lowered.endswith((".pdf", ".txt", ".md", ".csv", ".gpx", ".kml", ".doc", ".docx")):
-        return "document"
-    return ""
-
-
 def section_from_path(segments: list[str], media_type: str) -> str:
     if len(segments) >= 2 and segments[0] == "media":
         section = lowercase_copy(segments[1])
@@ -660,19 +615,6 @@ def safe_float(value: object, default: float, minimum: float = 0.0) -> float:
     return parsed if parsed >= minimum else default
 
 
-def default_upload_temp_directory() -> Path:
-    if os.name == "posix":
-        return Path(f"/var/tmp/{DEFAULT_UPLOAD_TMP_DIRECTORY_NAME}")
-    return Path(tempfile.gettempdir()) / DEFAULT_UPLOAD_TMP_DIRECTORY_NAME
-
-
-def sanitize_upload_filename(raw_filename: str) -> str:
-    file_name = Path(str(raw_filename or "").replace("\\", "/")).name.strip().replace("\x00", "")
-    if not file_name or file_name in {".", ".."} or file_name.startswith("."):
-        return ""
-    return file_name
-
-
 def sanitize_relative_segments(raw_path: str) -> list[str]:
     segments = []
     for piece in str(raw_path or "").replace("\\", "/").split("/"):
@@ -683,121 +625,8 @@ def sanitize_relative_segments(raw_path: str) -> list[str]:
     return segments
 
 
-def build_upload_destination_path(section: str, folder: str) -> str:
-    section_config = UPLOAD_SECTION_CONFIG.get(section)
-    if section_config is None:
-        return ""
-
-    base_path = normalize_virtual_path(str(section_config["base_path"]))
-    pieces = split_path(base_path) + sanitize_relative_segments(folder)
-    destination = normalize_virtual_path("/" + "/".join(pieces))
-    if not destination:
-        return ""
-    if destination != base_path and not destination.startswith(base_path + "/"):
-        return ""
-    return destination
-
-
-def upload_section_from_destination(destination_path: str) -> str:
-    normalized = normalize_virtual_path(destination_path)
-    for section, config in UPLOAD_SECTION_CONFIG.items():
-        base_path = normalize_virtual_path(str(config["base_path"]))
-        if normalized == base_path or normalized.startswith(base_path + "/"):
-            return section
-    return ""
-
-
-def normalize_upload_destination(raw_path: str) -> str:
-    normalized = normalize_virtual_path(raw_path)
-    return normalized if upload_section_from_destination(normalized) else ""
-
-
-def upload_folder_from_destination(destination_path: str, section: str) -> str:
-    section_config = UPLOAD_SECTION_CONFIG.get(section)
-    if section_config is None:
-        return ""
-    base_path = normalize_virtual_path(str(section_config["base_path"]))
-    normalized = normalize_upload_destination(destination_path)
-    if not normalized or normalized == base_path:
-        return ""
-    if normalized.startswith(base_path + "/"):
-        return normalized[len(base_path) + 1 :]
-    return ""
-
-
-def build_upload_virtual_path_from_destination(destination: str, relative_path: str, fallback_name: str = "") -> str:
-    safe_destination = normalize_upload_destination(destination)
-    if not safe_destination:
-        return ""
-
-    segments = sanitize_relative_segments(relative_path)
-    if not segments and fallback_name:
-        fallback = sanitize_upload_filename(fallback_name)
-        segments = [fallback] if fallback else []
-    if not segments:
-        return ""
-
-    file_name = sanitize_upload_filename(segments[-1] or fallback_name)
-    if not file_name:
-        return ""
-
-    pieces = split_path(safe_destination) + segments[:-1] + [file_name]
-    target_path = normalize_virtual_path("/" + "/".join(pieces))
-    if not target_path or target_path == safe_destination:
-        return ""
-    if not target_path.startswith(safe_destination.rstrip("/") + "/"):
-        return ""
-    return target_path
-
-
-def build_upload_virtual_path(section: str, folder: str, file_name: str) -> str:
-    destination = build_upload_destination_path(section, folder)
-    if not destination:
-        return ""
-    return build_upload_virtual_path_from_destination(destination, file_name, file_name)
-
-
-def ensure_unique_path(target_path: Path) -> Path:
-    if not target_path.exists():
-        return target_path
-
-    stem = target_path.stem
-    suffix = target_path.suffix
-    counter = 2
-    while True:
-        candidate = target_path.with_name(f"{stem} ({counter}){suffix}")
-        if not candidate.exists():
-            return candidate
-        counter += 1
-
-
 def iso_timestamp_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def atomic_save_upload(uploaded_file: object, destination_path: Path, staging_root: Path) -> Path:
-    staging_root.mkdir(parents=True, exist_ok=True)
-    descriptor, temp_name = tempfile.mkstemp(
-        prefix=DEFAULT_UPLOAD_STAGING_PREFIX,
-        suffix=".part",
-        dir=str(staging_root),
-    )
-    temp_path = Path(temp_name)
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            uploaded_file.save(handle)
-            handle.flush()
-            os.fsync(handle.fileno())
-        final_path = ensure_unique_path(destination_path)
-        os.replace(temp_path, final_path)
-        fsync_directory(final_path.parent)
-        return final_path
-    except Exception:
-        try:
-            temp_path.unlink()
-        except OSError:
-            pass
-        raise
 
 
 def playback_client_key(remote_address: str | None) -> str:
@@ -810,7 +639,7 @@ def normalize_iso_timestamp(value: object) -> str:
     return safe_value if safe_value else iso_timestamp_now()
 
 
-def normalize_upload_id(raw_value: object) -> str:
+def normalize_status_id(raw_value: object) -> str:
     output = []
     previous_dash = False
     for character in str(raw_value or "").strip():
@@ -948,15 +777,6 @@ def load_settings() -> dict[str, object]:
         if not metadata_refresh_script.exists() and LEGACY_METADATA_REFRESH_SCRIPT.exists():
             metadata_refresh_script = LEGACY_METADATA_REFRESH_SCRIPT
     metadata_refresh_script = metadata_refresh_script.expanduser()
-    upload_tmp_value = os.environ.get("NOMADSCREEN_UPLOAD_TMP_DIR", "").strip()
-    if upload_tmp_value:
-        upload_tmp_directory = Path(upload_tmp_value).expanduser()
-        if not upload_tmp_directory.is_absolute():
-            upload_tmp_directory = storage_root / upload_tmp_directory
-    else:
-        upload_tmp_directory = default_upload_temp_directory()
-    upload_tmp_directory = upload_tmp_directory.expanduser()
-
     bind_address = (
         os.environ.get("NOMADSCREEN_BIND", "").strip()
         or str(raw_config.get("bindAddress") or DEFAULT_BIND_ADDRESS)
@@ -1045,7 +865,6 @@ def load_settings() -> dict[str, object]:
         "metadata_refresh_script": metadata_refresh_script,
         "metadata_refresh_on_rescan": metadata_refresh_on_rescan,
         "metadata_refresh_timeout_seconds": metadata_refresh_timeout_seconds,
-        "upload_tmp_directory": upload_tmp_directory,
         "config_path": config_path,
         "config_source_path": config_source_path,
         "user_config_path": user_config_path,
@@ -1087,9 +906,8 @@ class AppState:
         self.lock = threading.RLock()
         self.settings = load_settings()
         self.settings_signature = self.runtime_settings_signature(self.settings)
-        self.upload_temp_ready = False
-        self.configure_upload_temp_directory()
         self.media_library: list[dict[str, object]] = []
+        self.scan_item_cache: dict[tuple[str, int, int], dict[str, object]] = {}
         self.item_metadata: list[dict[str, object]] = []
         self.show_metadata: dict[str, dict[str, object]] = {}
         self.metadata_available = False
@@ -1103,11 +921,9 @@ class AppState:
         self.recent_clients: dict[str, float] = {}
         self.storage_ready = False
         self.show_count = 0
-        self.upload_status = self.default_upload_status()
         self.metadata_refresh_status = self.default_metadata_refresh_status()
         self.device_auth_sessions: dict[str, float] = {}
         self.load_device_auth_sessions()
-        self.prepare_upload_staging_directory()
         self.scan_library()
 
     def runtime_settings_signature(self, settings: dict[str, object]) -> tuple[tuple[str, int | None, int | None], ...]:
@@ -1133,8 +949,6 @@ class AppState:
                 return False
             self.settings = load_settings()
             self.settings_signature = self.runtime_settings_signature(self.settings)
-            self.configure_upload_temp_directory()
-            self.prepare_upload_staging_directory()
             return True
 
     def device_auth_sessions_path(self) -> Path:
@@ -1188,135 +1002,6 @@ class AppState:
             self.device_auth_sessions = sessions
             if changed:
                 self._persist_device_auth_sessions_unlocked()
-
-    def default_upload_status(self) -> dict[str, object]:
-        return {
-            "id": "",
-            "active": False,
-            "phase": "idle",
-            "destination": "",
-            "section": "",
-            "folder": "",
-            "fileCount": 0,
-            "uploadedCount": 0,
-            "bytesSent": 0,
-            "bytesTotal": 0,
-            "percent": 0,
-            "message": "",
-            "error": "",
-            "warnings": [],
-            "startedAt": "",
-            "updatedAt": "",
-            "completedAt": "",
-        }
-
-    def upload_status_payload(self) -> dict[str, object]:
-        with self.lock:
-            payload = dict(self.upload_status)
-        payload["warnings"] = list(payload.get("warnings") or [])
-        return payload
-
-    def set_upload_status(
-        self,
-        upload_id: str,
-        *,
-        active: bool | None = None,
-        phase: str | None = None,
-        destination: str | None = None,
-        section: str | None = None,
-        folder: str | None = None,
-        file_count: int | None = None,
-        uploaded_count: int | None = None,
-        bytes_sent: int | None = None,
-        bytes_total: int | None = None,
-        message: str | None = None,
-        error: str | None = None,
-        warnings: list[str] | None = None,
-    ) -> dict[str, object]:
-        safe_upload_id = normalize_upload_id(upload_id) or f"upload-{int(time.time() * 1000)}"
-        safe_phase = lowercase_copy(phase) if phase is not None else None
-        if safe_phase not in {None, "idle", "uploading", "processing", "completed", "error"}:
-            safe_phase = "uploading"
-        safe_destination = normalize_upload_destination(destination) if destination is not None else None
-        safe_section = lowercase_copy(section) if section is not None else None
-        safe_folder = "/".join(sanitize_relative_segments(folder)) if folder is not None else None
-        if safe_destination:
-            safe_section = upload_section_from_destination(safe_destination)
-            safe_folder = upload_folder_from_destination(safe_destination, safe_section)
-        elif safe_section:
-            if safe_section not in UPLOAD_SECTION_CONFIG:
-                safe_section = ""
-                safe_folder = ""
-            else:
-                safe_destination = build_upload_destination_path(safe_section, safe_folder or "")
-        safe_message = " ".join(str(message or "").split()).strip()[:240] if message is not None else None
-        safe_error = " ".join(str(error or "").split()).strip()[:240] if error is not None else None
-        safe_warnings = (
-            [" ".join(str(entry or "").split()).strip()[:240] for entry in warnings if str(entry or "").strip()]
-            if warnings is not None
-            else None
-        )
-        now = iso_timestamp_now()
-
-        with self.lock:
-            current = dict(self.upload_status)
-            if str(current.get("id") or "") != safe_upload_id:
-                current = self.default_upload_status()
-                current["id"] = safe_upload_id
-                current["startedAt"] = now
-            elif not str(current.get("startedAt") or ""):
-                current["startedAt"] = now
-
-            if safe_phase is not None:
-                current["phase"] = safe_phase
-            if safe_destination is not None:
-                current["destination"] = safe_destination
-            if safe_section is not None:
-                current["section"] = safe_section
-            if safe_folder is not None:
-                current["folder"] = safe_folder
-            if file_count is not None:
-                current["fileCount"] = max(int(file_count), 0)
-            if uploaded_count is not None:
-                current["uploadedCount"] = max(int(uploaded_count), 0)
-            if bytes_total is not None:
-                current["bytesTotal"] = max(int(bytes_total), 0)
-            if bytes_sent is not None:
-                current["bytesSent"] = max(int(bytes_sent), 0)
-            if current["bytesTotal"] > 0 and current["bytesSent"] > current["bytesTotal"]:
-                current["bytesSent"] = current["bytesTotal"]
-            if safe_message is not None:
-                current["message"] = safe_message
-            if safe_error is not None:
-                current["error"] = safe_error
-            if safe_warnings is not None:
-                current["warnings"] = safe_warnings
-
-            if current["phase"] == "processing" and current["bytesTotal"] > 0:
-                current["bytesSent"] = current["bytesTotal"]
-            if current["phase"] == "completed":
-                current["bytesSent"] = current["bytesTotal"] or current["bytesSent"]
-                current["completedAt"] = now
-            elif current["phase"] != "completed":
-                current["completedAt"] = ""
-
-            if current["bytesTotal"] > 0:
-                current["percent"] = int(round((current["bytesSent"] / current["bytesTotal"]) * 100))
-            elif current["phase"] in {"processing", "completed"} and current["bytesSent"] > 0:
-                current["percent"] = 100
-            else:
-                current["percent"] = 0
-
-            if active is not None:
-                current["active"] = bool(active)
-            else:
-                current["active"] = current["phase"] in {"uploading", "processing"}
-            if current["phase"] in {"idle", "completed", "error"}:
-                current["active"] = False
-
-            current["updatedAt"] = now
-            self.upload_status = current
-            return self.upload_status_payload()
 
     def default_metadata_refresh_status(self) -> dict[str, object]:
         return {
@@ -1419,7 +1104,7 @@ class AppState:
         append_line: str | None = None,
         exit_code: int | None = None,
     ) -> dict[str, object]:
-        safe_refresh_id = normalize_upload_id(refresh_id) or f"metadata-{int(time.time() * 1000)}"
+        safe_refresh_id = normalize_status_id(refresh_id) or f"metadata-{int(time.time() * 1000)}"
         safe_phase = lowercase_copy(phase) if phase is not None else None
         if safe_phase not in {None, "idle", "skipped", "preparing", "running", "completed", "error"}:
             safe_phase = "running"
@@ -1663,34 +1348,6 @@ class AppState:
 
     def metadata_root_path(self) -> Path:
         return (self.media_root_path() / DEFAULT_METADATA_DIRECTORY_NAME).resolve(strict=False)
-
-    def upload_staging_root_path(self) -> Path:
-        return (self.metadata_root_path() / "uploads").resolve(strict=False)
-
-    def upload_temp_root_path(self) -> Path:
-        return Path(self.settings["upload_tmp_directory"]).resolve(strict=False)
-
-    def configure_upload_temp_directory(self) -> None:
-        upload_temp_directory = self.upload_temp_root_path()
-        try:
-            upload_temp_directory.mkdir(parents=True, exist_ok=True)
-            tempfile.tempdir = str(upload_temp_directory)
-            self.upload_temp_ready = True
-        except OSError:
-            self.upload_temp_ready = False
-
-    def prepare_upload_staging_directory(self) -> None:
-        staging_root = self.upload_staging_root_path()
-        try:
-            staging_root.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            return
-        for prefix in (DEFAULT_UPLOAD_STAGING_PREFIX, LEGACY_UPLOAD_STAGING_PREFIX):
-            for candidate in staging_root.glob(f"{prefix}*.part"):
-                try:
-                    candidate.unlink()
-                except OSError:
-                    continue
 
     def metadata_refresh_script_path(self) -> Path:
         return Path(self.settings["metadata_refresh_script"]).resolve(strict=False)
@@ -2032,14 +1689,12 @@ class AppState:
 
     def resolve_virtual_path(self, virtual_path: str) -> Path | None:
         normalized = normalize_virtual_path(virtual_path)
-        if not normalized or not normalized.startswith(DEFAULT_MEDIA_ROOT):
+        if normalized != DEFAULT_MEDIA_ROOT and not normalized.startswith(DEFAULT_MEDIA_ROOT + "/"):
             return None
-        media_root = self.media_root_path()
+        media_root = self.media_root_path().resolve(strict=False)
         relative_path = normalized[len(DEFAULT_MEDIA_ROOT) :].lstrip("/")
         candidate = (media_root / relative_path).resolve(strict=False)
-        storage_text = str(media_root).lower()
-        candidate_text = str(candidate).lower()
-        if candidate_text != storage_text and not candidate_text.startswith(storage_text + os.sep.lower()):
+        if candidate != media_root and not path_is_relative_to(candidate, media_root):
             return None
         return candidate
 
@@ -2270,53 +1925,64 @@ class AppState:
                     media_type = classify_media_type(virtual_path)
                     if not media_type:
                         continue
-                    item = {
-                        "title": title_from_path(virtual_path),
-                        "path": normalize_virtual_path(virtual_path),
-                        "type": media_type,
-                        "section": "library",
-                        "extension": Path(virtual_path).suffix.lstrip(".").upper(),
-                        "sortTitle": title_from_path(virtual_path),
-                        "overview": "",
-                        "tagline": "",
-                        "year": "",
-                        "releaseDate": "",
-                        "genres": "",
-                        "contentRating": "",
-                        "artist": "",
-                        "album": "",
-                        "narrators": "",
-                        "publisher": "",
-                        "language": "",
-                        "tags": "",
-                        "seriesName": "",
-                        "seriesIndex": "",
-                        "posterPath": "",
-                        "backdropPath": "",
-                        "metadataSource": "",
-                        "tmdbRating": 0.0,
-                        "runtimeMinutes": 0.0,
-                        "matchConfidence": 0.0,
-                        "showTitle": "",
-                        "showSlug": "",
-                        "seasonLabel": "",
-                        "seasonNumber": 0,
-                        "episodeNumber": 0,
-                        "hasMetadata": False,
-                        "bytes": actual_path.stat().st_size if actual_path.exists() else 0,
-                    }
-                    self.decorate_item(item)
-                    if item["section"] == "audiobooks":
-                        embedded = extract_audiobook_embedded_metadata(actual_path, self.metadata_root_path())
-                        for field, value in embedded.items():
-                            if isinstance(value, str):
-                                if value:
+                    try:
+                        stat_result = actual_path.stat()
+                    except OSError:
+                        continue
+                    normalized_virtual_path = normalize_virtual_path(virtual_path)
+                    cache_key = (normalized_virtual_path, int(stat_result.st_mtime_ns), int(stat_result.st_size))
+                    cached_item = self.scan_item_cache.get(cache_key)
+                    if cached_item is not None:
+                        item = dict(cached_item)
+                    else:
+                        item = {
+                            "title": title_from_path(virtual_path),
+                            "path": normalized_virtual_path,
+                            "type": media_type,
+                            "section": "library",
+                            "extension": Path(virtual_path).suffix.lstrip(".").upper(),
+                            "sortTitle": title_from_path(virtual_path),
+                            "overview": "",
+                            "tagline": "",
+                            "year": "",
+                            "releaseDate": "",
+                            "genres": "",
+                            "contentRating": "",
+                            "artist": "",
+                            "album": "",
+                            "narrators": "",
+                            "publisher": "",
+                            "language": "",
+                            "tags": "",
+                            "seriesName": "",
+                            "seriesIndex": "",
+                            "posterPath": "",
+                            "backdropPath": "",
+                            "metadataSource": "",
+                            "tmdbRating": 0.0,
+                            "runtimeMinutes": 0.0,
+                            "matchConfidence": 0.0,
+                            "showTitle": "",
+                            "showSlug": "",
+                            "seasonLabel": "",
+                            "seasonNumber": 0,
+                            "episodeNumber": 0,
+                            "hasMetadata": False,
+                            "bytes": int(stat_result.st_size),
+                        }
+                        self.decorate_item(item)
+                        if item["section"] == "audiobooks":
+                            embedded = extract_audiobook_embedded_metadata(actual_path, self.metadata_root_path())
+                            for field, value in embedded.items():
+                                if isinstance(value, str):
+                                    if value:
+                                        item[field] = value
+                                elif isinstance(value, (int, float)):
+                                    if float(value) > 0:
+                                        item[field] = value
+                                elif value:
                                     item[field] = value
-                            elif isinstance(value, (int, float)):
-                                if float(value) > 0:
-                                    item[field] = value
-                            elif value:
-                                item[field] = value
+                        self.scan_item_cache[cache_key] = dict(item)
                     self.apply_item_metadata(item, item_entries, show_entries)
                     scanned_items.append(item)
 
@@ -2342,6 +2008,13 @@ class AppState:
             pass
 
         with self.lock:
+            if len(self.scan_item_cache) > len(scanned_items) + 64:
+                scanned_path_keys = {normalize_virtual_path(str(item.get("path") or "")) for item in scanned_items}
+                self.scan_item_cache = {
+                    key: value
+                    for key, value in self.scan_item_cache.items()
+                    if key[0] in scanned_path_keys
+                }
             self.media_library = scanned_items
             self.item_metadata = item_entries
             self.show_metadata = show_entries
@@ -3462,47 +3135,6 @@ class AppState:
             "sections": sections,
         }
 
-    def upload_destinations_payload(self) -> dict[str, object]:
-        paths: set[str] = set()
-        roots: list[dict[str, str]] = []
-
-        for section, config in UPLOAD_SECTION_CONFIG.items():
-            root_path = normalize_virtual_path(str(config["base_path"]))
-            roots.append(
-                {
-                    "section": section,
-                    "label": str(config["label"]),
-                    "path": root_path,
-                }
-            )
-            paths.add(root_path)
-            actual_root = self.resolve_virtual_path(root_path)
-            if actual_root is None or not actual_root.exists() or not actual_root.is_dir():
-                continue
-
-            for root, dirs, _files in os.walk(actual_root):
-                dirs[:] = [directory for directory in dirs if directory.casefold() not in METADATA_HIDDEN_DIRECTORY_NAMES]
-                virtual_path = self.virtual_media_path(Path(root))
-                if not virtual_path:
-                    continue
-                normalized = normalize_virtual_path(virtual_path)
-                if normalized:
-                    paths.add(normalized)
-
-        ordered_paths = sorted(
-            paths,
-            key=lambda path: (
-                SECTION_ORDER.get(upload_section_from_destination(path), 99),
-                len(split_path(path)),
-                lowercase_copy(path),
-            ),
-        )
-        return {
-            "count": len(ordered_paths),
-            "paths": ordered_paths,
-            "roots": roots,
-        }
-
     def status_payload(self, authenticated: bool = False) -> dict[str, object]:
         self.reload_settings_if_changed()
         local_ip = self.best_local_ip()
@@ -3590,8 +3222,6 @@ class AppState:
             "libraryCount": len(self.media_library),
             "mediaRoot": str(self.settings["media_directory"]),
             "mediaVirtualRoot": DEFAULT_MEDIA_ROOT,
-            "uploadTempRoot": str(self.settings["upload_tmp_directory"]) if is_authenticated else "",
-            "uploadTempReady": self.upload_temp_ready if is_authenticated else False,
             "clients": self.active_client_count(),
             "lastPlayed": self.last_played_title,
             "lastPlayedType": self.last_played_type,
@@ -3602,7 +3232,6 @@ class AppState:
             "metadataItemCount": len(self.item_metadata),
             "metadataShowCount": len(self.show_metadata),
             "preferServerLibrary": self.metadata_index_stale,
-            "upload": self.upload_status_payload() if is_authenticated else self.default_upload_status(),
             "metadataRefresh": metadata_refresh,
             "fileManager": file_manager,
             "deviceAuth": self.device_auth_payload(is_authenticated),
@@ -3705,8 +3334,6 @@ class AppState:
             atomic_write_text(user_config_path, json.dumps(raw_config, indent=2, ensure_ascii=False) + "\n")
             self.settings = load_settings()
             self.settings_signature = self.runtime_settings_signature(self.settings)
-            self.configure_upload_temp_directory()
-            self.prepare_upload_staging_directory()
 
         message = (
             "Saved device settings to the retained user settings file. "
@@ -3932,7 +3559,8 @@ def api_device_auth_status() -> Response:
 def api_device_auth_login() -> Response:
     payload = request.get_json(silent=True) or {}
     password = normalize_hotspot_password(str(payload.get("password") or ""))
-    if not password or password != state.device_access_password():
+    expected_password = state.device_access_password()
+    if not password or not secrets.compare_digest(password, expected_password):
         return unauthorized_device_response("That password did not unlock the Device page.")
     token, max_age = state.create_device_auth_session()
     response = no_store_json(
@@ -4024,31 +3652,6 @@ def api_playback_state_delete() -> Response:
     except sqlite3.Error:
         return no_store_json({"error": "Playback history could not be cleared right now."}, 500)
     return no_store_json(result)
-
-
-@app.post("/api/upload-progress")
-@require_device_access
-def api_upload_progress() -> Response:
-    payload = request.get_json(silent=True) or {}
-    upload_id = normalize_upload_id(payload.get("uploadId"))
-    if not upload_id:
-        return no_store_json({"error": "Missing uploadId"}, 400)
-
-    upload = state.set_upload_status(
-        upload_id,
-        active=lowercase_copy(str(payload.get("phase") or "uploading")) not in {"completed", "error", "idle"},
-        phase=str(payload.get("phase") or "uploading"),
-        destination=str(payload.get("destination") or ""),
-        section=str(payload.get("section") or ""),
-        folder=str(payload.get("folder") or ""),
-        file_count=safe_int(payload.get("fileCount"), 0, 0),
-        uploaded_count=safe_int(payload.get("uploadedCount"), 0, 0),
-        bytes_sent=safe_int(payload.get("bytesSent"), 0, 0),
-        bytes_total=safe_int(payload.get("bytesTotal"), 0, 0),
-        message=str(payload.get("message") or ""),
-        error=str(payload.get("error") or ""),
-    )
-    return no_store_json({"ok": True, "upload": upload}, 202)
 
 
 @app.get("/api/library")
@@ -4185,12 +3788,6 @@ def api_catalog_lookup() -> Response:
     return no_store_json({"ok": True, **result})
 
 
-@app.get("/api/upload-destinations")
-@require_device_access
-def api_upload_destinations() -> Response:
-    return no_store_json(state.upload_destinations_payload())
-
-
 @app.route("/api/stream", methods=["GET", "HEAD", "OPTIONS"])
 def api_stream() -> Response:
     if not state.storage_ready:
@@ -4203,197 +3800,6 @@ def api_asset() -> Response:
     if not state.storage_ready:
         return plain_text_response("Media storage unavailable", 503)
     return serve_storage_file(track_playback=False)
-
-
-@app.post("/api/upload")
-@require_device_access
-def api_upload() -> Response:
-    upload_id = normalize_upload_id(request.form.get("uploadId")) or f"upload-{int(time.time() * 1000)}"
-    raw_destination = str(request.form.get("destination") or "")
-    destination = normalize_upload_destination(raw_destination)
-    if not destination:
-        legacy_section = lowercase_copy(str(request.form.get("section") or ""))
-        legacy_folder = str(request.form.get("folder") or "")
-        destination = build_upload_destination_path(legacy_section, legacy_folder)
-
-    section = upload_section_from_destination(destination)
-    section_config = UPLOAD_SECTION_CONFIG.get(section)
-    if not destination or section_config is None:
-        allowed_roots = ", ".join(str(config["base_path"]) for config in UPLOAD_SECTION_CONFIG.values())
-        state.set_upload_status(
-            upload_id,
-            phase="error",
-            destination=raw_destination,
-            message="Upload failed. Pick a destination under one of the library roots.",
-            error=f"Choose a destination inside {allowed_roots}",
-        )
-        return no_store_json({"error": f"Choose a destination inside {allowed_roots}"}, 400)
-
-    files = [uploaded for uploaded in request.files.getlist("files") if str(uploaded.filename or "").strip()]
-    if not files:
-        state.set_upload_status(
-            upload_id,
-            phase="error",
-            destination=destination,
-            section=section,
-            message="Upload failed. Choose at least one file first.",
-            error="Choose at least one file to upload",
-        )
-        return no_store_json({"error": "Choose at least one file to upload"}, 400)
-
-    relative_paths = request.form.getlist("relativePaths")
-    normalized_folder = upload_folder_from_destination(destination, section)
-    current_upload = state.upload_status_payload()
-    known_total_bytes = (
-        int(current_upload.get("bytesTotal") or 0) if str(current_upload.get("id") or "") == upload_id else 0
-    )
-    state.set_upload_status(
-        upload_id,
-        active=True,
-        phase="processing",
-        destination=destination,
-        section=section,
-        folder=normalized_folder,
-        file_count=len(files),
-        uploaded_count=0,
-        bytes_sent=known_total_bytes,
-        bytes_total=known_total_bytes,
-        message="Transfer finished. Saving files on the Pi...",
-        error="",
-        warnings=[],
-    )
-    uploaded_items: list[dict[str, object]] = []
-    warnings: list[str] = []
-    saved_bytes = 0
-
-    for index, uploaded in enumerate(files):
-        requested_relative_path = (
-            str(relative_paths[index])
-            if index < len(relative_paths) and str(relative_paths[index] or "").strip()
-            else str(uploaded.filename or "")
-        )
-        file_name = sanitize_upload_filename(Path(requested_relative_path).name) or sanitize_upload_filename(
-            str(uploaded.filename or "")
-        )
-        if not file_name:
-            warnings.append("Skipped a file with an invalid name.")
-            continue
-
-        virtual_path = build_upload_virtual_path_from_destination(destination, requested_relative_path, file_name)
-        if not virtual_path:
-            warnings.append(f"Skipped {file_name}: invalid destination.")
-            continue
-
-        media_type = classify_media_type(virtual_path)
-        allowed_types = set(section_config["media_types"])
-        if media_type not in allowed_types:
-            warnings.append(f"Skipped {file_name}: unsupported file type for {section_config['label']}.")
-            continue
-
-        actual_path = state.resolve_virtual_path(virtual_path)
-        if actual_path is None:
-            warnings.append(f"Skipped {file_name}: destination could not be resolved.")
-            continue
-
-        try:
-            actual_path.parent.mkdir(parents=True, exist_ok=True)
-            final_path = atomic_save_upload(uploaded, actual_path, state.upload_staging_root_path())
-            saved_bytes += final_path.stat().st_size
-            final_virtual_path = state.virtual_media_path(final_path)
-            if not final_virtual_path:
-                warnings.append(f"Skipped {file_name}: destination could not be resolved after save.")
-                continue
-            uploaded_items.append(
-                {
-                    "name": final_path.name,
-                    "path": normalize_virtual_path(final_virtual_path),
-                    "bytes": final_path.stat().st_size,
-                    "section": section,
-                    "type": media_type,
-                }
-            )
-            processing_bytes = known_total_bytes or saved_bytes
-            state.set_upload_status(
-                upload_id,
-                active=True,
-                phase="processing",
-                destination=destination,
-                section=section,
-                folder=normalized_folder,
-                file_count=len(files),
-                uploaded_count=len(uploaded_items),
-                bytes_sent=processing_bytes,
-                bytes_total=processing_bytes,
-                message=f"Saving files on the Pi ({len(uploaded_items)}/{len(files)})...",
-                warnings=warnings,
-            )
-        except OSError as error:
-            error_message = str(getattr(error, "strerror", "") or error).strip()
-            warnings.append(f"Failed to save {file_name}{': ' + error_message if error_message else '.'}")
-
-    if not uploaded_items:
-        state.set_upload_status(
-            upload_id,
-            phase="error",
-            destination=destination,
-            section=section,
-            folder=normalized_folder,
-            file_count=len(files),
-            uploaded_count=0,
-            bytes_sent=known_total_bytes,
-            bytes_total=known_total_bytes,
-            message="Upload failed before any files were saved.",
-            error="No files were uploaded",
-            warnings=warnings,
-        )
-        return no_store_json({"error": "No files were uploaded", "warnings": warnings}, 400)
-
-    processing_bytes = known_total_bytes or saved_bytes
-    state.set_upload_status(
-        upload_id,
-        active=True,
-        phase="processing",
-        destination=destination,
-        section=section,
-        folder=normalized_folder,
-        file_count=len(files),
-        uploaded_count=len(uploaded_items),
-        bytes_sent=processing_bytes,
-        bytes_total=processing_bytes,
-        message="Upload complete. Rescanning the library...",
-        warnings=warnings,
-    )
-    state.scan_library()
-    upload_status = state.set_upload_status(
-        upload_id,
-        phase="completed",
-        destination=destination,
-        section=section,
-        folder=normalized_folder,
-        file_count=len(files),
-        uploaded_count=len(uploaded_items),
-        bytes_sent=processing_bytes,
-        bytes_total=processing_bytes,
-        message=f"Uploaded {len(uploaded_items)} file{'s' if len(uploaded_items) != 1 else ''}.",
-        error="",
-        warnings=warnings,
-    )
-    return no_store_json(
-        {
-            "ok": True,
-            "uploadId": upload_id,
-            "destination": destination,
-            "section": section,
-            "folder": normalized_folder,
-            "count": len(uploaded_items),
-            "savedBytes": saved_bytes,
-            "mediaRoot": str(state.settings["media_directory"]),
-            "uploaded": uploaded_items,
-            "warnings": warnings,
-            "upload": upload_status,
-        },
-        201,
-    )
 
 
 @app.post("/api/rescan")

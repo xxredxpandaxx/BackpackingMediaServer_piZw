@@ -38,7 +38,7 @@ The server expects a storage root that contains:
 - `media/.backcountry-broadcast/library.json` when metadata has been generated
 - `media/.backcountry-broadcast/library.db` after the Pi scans the library
 
-For local development, the app now keeps its default runtime files under `.backcountry-broadcast-runtime/` inside the repo so test media and generated metadata do not clutter the project root. On the Pi, `NOMADSCREEN_STORAGE_ROOT` holds config/runtime files such as `backcountry-broadcast.config.json` and the retained `backcountry-broadcast.user.json`, while `NOMADSCREEN_MEDIA_ROOT` can point at the real media library path. The installer now defaults that media path to `~/media`. Large web uploads are staged under `/var/tmp/backcountry-broadcast-upload` so they do not fill the Pi Zero W's small `/tmp` RAM disk.
+For local development, the app now keeps its default runtime files under `.backcountry-broadcast-runtime/` inside the repo so test media and generated metadata do not clutter the project root. On the Pi, `NOMADSCREEN_STORAGE_ROOT` holds config/runtime files such as `backcountry-broadcast.config.json` and the retained `backcountry-broadcast.user.json`, while `NOMADSCREEN_MEDIA_ROOT` can point at the real media library path. The installer now defaults that media path to `~/media`.
 
 ### Recommended media layout
 
@@ -86,6 +86,14 @@ Watch history now lives in the SQLite database on the Pi instead of only in brow
    pip install -r requirements.txt
    ```
 
+   For development tools:
+
+   ```bash
+   pip install -r requirements-dev.txt
+   ```
+
+   On the Pi, the installer also installs `requirements-pi.txt` for GPIO and display support.
+
 3. Start the server:
 
    ```bash
@@ -99,6 +107,15 @@ Watch history now lives in the SQLite database on the Pi instead of only in brow
    ```
 
 5. Open `http://<device-or-pi-address>/app`.
+
+## Development Checks
+
+The project keeps checks light so they are usable on small boards and normal laptops:
+
+```bash
+pytest
+ruff check .
+```
 
 ## Raspberry Pi Zero W setup
 
@@ -122,7 +139,6 @@ What that installer does:
 - installs File Browser into `/usr/local/bin/filebrowser`
 - prepares `/srv/backcountry-broadcast/filebrowser` for the File Browser database and captured password
 - applies the bundled File Browser branding from `/opt/backcountry-broadcast/deploy/filebrowser-branding`
-- prepares `/var/tmp/backcountry-broadcast-upload` for large browser uploads
 - writes and enables `backcountry-broadcast-network.service`
 - writes and enables `backcountry-broadcast.service`
 - writes and enables `backcountry-broadcast-screen.service`
@@ -147,7 +163,6 @@ That updater:
 - refreshes `backcountry-broadcast-screen.service`
 - updates the Pi boot config for TFT console mode when `displayBackend` is set to `console`
 - refreshes `backcountry-broadcast-filebrowser.service`
-- keeps large web uploads pointed at `/var/tmp/backcountry-broadcast-upload`
 - restarts `backcountry-broadcast`
 - restarts `backcountry-broadcast-filebrowser`
 - leaves `backcountry-broadcast-network` alone by default so you do not get kicked off the Pi's Wi-Fi mid-update
@@ -177,11 +192,12 @@ curl -fsSL https://raw.githubusercontent.com/xxredxpandaxx/BackpackingMediaServe
 3. Copy `backcountry-broadcast.config.example.json` to your runtime storage root as `backcountry-broadcast.config.json`, for example `/srv/backcountry-broadcast/backcountry-broadcast.config.json`.
 4. Create `/srv/backcountry-broadcast/backcountry-broadcast.user.json` with `{}` and put your custom settings there.
 5. Create your media folders under the real media path, for example `~/media/{movies,tv,music,audiobooks,documents}`.
-6. Create a virtual environment and install the dependency:
+6. Create a virtual environment and install the dependencies:
 
    ```bash
    python3 -m venv /opt/backcountry-broadcast/.venv
    /opt/backcountry-broadcast/.venv/bin/pip install -r /opt/backcountry-broadcast/requirements.txt
+   /opt/backcountry-broadcast/.venv/bin/pip install -r /opt/backcountry-broadcast/requirements-pi.txt
    ```
 
 7. Install File Browser and create its state directory:
@@ -223,15 +239,15 @@ curl -fsSL https://raw.githubusercontent.com/xxredxpandaxx/BackpackingMediaServe
    sudo chmod 600 /srv/backcountry-broadcast/filebrowser/admin-password.txt
    ```
 
-9. Open `/app/device` and use the built-in upload panel to send files over Wi-Fi, or open the File Management card there to launch File Browser and log in with the captured initial admin password.
+9. Open `/app/device`, launch File Browser from the File Management card, and log in with the captured initial admin password.
 
 ## Loading content over Wi-Fi
 
-Once the Pi is online, the fastest path is the upload panel on `/app/device`, which saves files into the library and rescans automatically. Big uploads stage through `/var/tmp/backcountry-broadcast-upload` first, so free space there matters too even though the finished media lands in `~/media`.
+Once the Pi is online, the fastest browser-based path is File Browser from `/app/device`. It handles file uploads, renames, moves, and deletes directly against `~/media`, which keeps the Backcountry Broadcast server focused on low-power streaming, cataloging, and metadata work.
 
 When you tap `Rescan Library` on the Device page, the Pi now checks for internet access first. If it is online and TMDb credentials are configured, it runs `tools/backcountry_broadcast_refresh_metadata.py` before the normal library scan so movie metadata and downloaded artwork stay fresh. If the Pi is offline, it falls back to the normal local rescan without failing the request.
 
-You can still move media into `~/media` with whatever network workflow fits your setup, then run `/api/rescan` or use the Device page in the web UI.
+You can also move media into `~/media` with whatever network workflow fits your setup, then run `/api/rescan` or use the Device page in the web UI.
 
 Common choices are:
 
@@ -334,4 +350,4 @@ Typical metadata flow:
 - The frontend still exposes a "Device" page, but it now reports Raspberry Pi service status instead of onboard firmware state.
 - The Pi-side automatic rescan path uses `tools/backcountry_broadcast_refresh_metadata.py`.
 - On Raspberry Pi OS Bookworm and newer, NetworkManager remembers known Wi-Fi networks and the project only creates its own hotspot when those networks are unavailable.
-- Config saves, metadata JSON writes, media-file finalization, and the SQLite catalog now use crash-safer write patterns so a sudden battery pull is much less likely to corrupt the library. An upload that is interrupted mid-transfer can still be lost, but it should stay isolated to a temporary staging file instead of damaging existing media.
+- Config saves, metadata JSON writes, and the SQLite catalog use crash-safer write patterns so a sudden battery pull is much less likely to corrupt the library.

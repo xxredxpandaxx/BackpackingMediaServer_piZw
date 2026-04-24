@@ -57,38 +57,30 @@
 
         <section id="hero-spotlight" class="hero-spotlight"></section>
         <section id="page-content" class="page-content"></section>
-
-        <section class="player-section">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Player</p>
-              <h3>Now Open</h3>
-            </div>
-            <p id="player-caption">Choose a movie, episode, song, audiobook, or file to preview it here.</p>
+        <section id="audio-player-section" class="audio-player-section" hidden>
+          <div>
+            <p class="eyebrow">Audio Player</p>
+            <h3 id="audio-player-title">Nothing playing</h3>
+            <p id="audio-player-summary" class="audio-player-summary"></p>
           </div>
-          <div class="player-card">
-            <video id="video-player" controls playsinline></video>
-            <audio id="audio-player" controls></audio>
-            <iframe id="document-viewer" title="Selected file preview"></iframe>
-              <div id="empty-player" class="empty-player">
-                Pick something from the library to start opening files from the server.
-              </div>
-            <img id="image-player" alt="Selected media preview" />
-          </div>
-          <div class="player-details">
-            <div>
-              <p class="eyebrow">Selected Media</p>
-              <h4 id="player-title">Nothing selected yet</h4>
-              <p id="player-summary" class="player-summary">
-                Metadata and artwork will show up here when you open something from the library.
-              </p>
-            </div>
-            <div id="player-actions" class="player-actions"></div>
-            <div id="player-facts" class="player-facts"></div>
-          </div>
+          <audio id="audio-player" controls preload="metadata"></audio>
+          <button id="audio-player-close" class="ghost-button" type="button">Close</button>
         </section>
       </main>
     </div>
+
+    <section id="media-player-overlay" class="media-player-overlay" hidden>
+      <div class="media-player-toolbar">
+        <p id="player-caption"></p>
+        <button id="player-close" class="ghost-button" type="button">Close</button>
+      </div>
+      <div class="player-card">
+        <video id="video-player" controls playsinline></video>
+        <iframe id="document-viewer" title="Selected file preview"></iframe>
+        <div id="empty-player" class="empty-player"></div>
+        <img id="image-player" alt="Selected media preview" />
+      </div>
+    </section>
 
     <template id="library-card-template">
       <article class="library-card">

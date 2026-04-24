@@ -18,7 +18,6 @@ MEDIA_ROOT="${NOMADSCREEN_MEDIA_ROOT:-}"
 HTTP_PORT="${NOMADSCREEN_PORT:-}"
 FILEBROWSER_PORT="${NOMADSCREEN_FILEBROWSER_PORT:-}"
 TMP_DIR="${NOMADSCREEN_TMP_DIR:-/var/tmp/backcountry-broadcast-install}"
-UPLOAD_TMP_DIR="${NOMADSCREEN_UPLOAD_TMP_DIR:-}"
 REPO_REF="${NOMADSCREEN_REPO_REF:-}"
 RESTART_NETWORK=0
 BOOT_CONFIG_PATH="${NOMADSCREEN_BOOT_CONFIG_PATH:-}"
@@ -44,7 +43,6 @@ Options:
   --port PORT             HTTP port for the service (default: preserved from installed service)
   --ref REF               Branch or ref to update to (default: current checked-out branch)
   --tmp-dir PATH          Temp build dir for pip work (default: /var/tmp/backcountry-broadcast-install)
-  --upload-tmp-dir PATH   Temp dir for large web uploads (default: preserved from installed service or /var/tmp/backcountry-broadcast-upload)
   --restart-network       Restart the Wi-Fi fallback service too
   -h, --help              Show this help
 EOF
@@ -209,11 +207,6 @@ parse_args() {
         TMP_DIR="$2"
         shift 2
         ;;
-      --upload-tmp-dir)
-        [[ $# -ge 2 ]] || die "--upload-tmp-dir requires a value"
-        UPLOAD_TMP_DIR="$2"
-        shift 2
-        ;;
       --restart-network)
         RESTART_NETWORK=1
         shift
@@ -258,13 +251,11 @@ ensure_install_context() {
 
   [[ -n "${STORAGE_ROOT}" ]] || STORAGE_ROOT="$(read_unit_environment "${service_path}" "NOMADSCREEN_STORAGE_ROOT" || true)"
   [[ -n "${MEDIA_ROOT}" ]] || MEDIA_ROOT="$(read_unit_environment "${service_path}" "NOMADSCREEN_MEDIA_ROOT" || true)"
-  [[ -n "${UPLOAD_TMP_DIR}" ]] || UPLOAD_TMP_DIR="$(read_unit_environment "${service_path}" "NOMADSCREEN_UPLOAD_TMP_DIR" || true)"
   [[ -n "${HTTP_PORT}" ]] || HTTP_PORT="$(read_unit_environment "${service_path}" "NOMADSCREEN_PORT" || true)"
   [[ -n "${FILEBROWSER_PORT}" ]] || FILEBROWSER_PORT="$(read_unit_environment "${service_path}" "NOMADSCREEN_FILEBROWSER_PORT" || true)"
 
   [[ -n "${STORAGE_ROOT}" ]] || STORAGE_ROOT="/srv/backcountry-broadcast"
   [[ -n "${MEDIA_ROOT}" ]] || MEDIA_ROOT="${INSTALL_HOME}/media"
-  [[ -n "${UPLOAD_TMP_DIR}" ]] || UPLOAD_TMP_DIR="/var/tmp/backcountry-broadcast-upload"
   [[ -n "${HTTP_PORT}" ]] || HTTP_PORT="80"
   [[ -n "${FILEBROWSER_PORT}" ]] || FILEBROWSER_PORT="8081"
 }
@@ -484,9 +475,6 @@ prepare_tmp_dir() {
   log "Preparing temp build directory at ${TMP_DIR}"
   run_root mkdir -p "${TMP_DIR}"
   run_root chown -R "${INSTALL_USER}:${INSTALL_GROUP}" "${TMP_DIR}"
-  log "Preparing upload temp directory at ${UPLOAD_TMP_DIR}"
-  run_root mkdir -p "${UPLOAD_TMP_DIR}"
-  run_root chown -R "${INSTALL_USER}:${INSTALL_GROUP}" "${UPLOAD_TMP_DIR}"
 }
 
 prepare_filebrowser_storage() {
@@ -588,6 +576,10 @@ install_python_deps() {
   log "Installing Python dependencies"
   run_as_install_user env TMPDIR="${TMP_DIR}" PIP_DISABLE_PIP_VERSION_CHECK=1 \
     "${INSTALL_DIR}/.venv/bin/pip" install --no-cache-dir -r "${INSTALL_DIR}/requirements.txt"
+  if [[ -f "${INSTALL_DIR}/requirements-pi.txt" ]]; then
+    run_as_install_user env TMPDIR="${TMP_DIR}" PIP_DISABLE_PIP_VERSION_CHECK=1 \
+      "${INSTALL_DIR}/.venv/bin/pip" install --no-cache-dir -r "${INSTALL_DIR}/requirements-pi.txt"
+  fi
 }
 
 python_dev_package() {
@@ -701,15 +693,16 @@ WorkingDirectory=${INSTALL_DIR}
 Environment=PYTHONUNBUFFERED=1
 Environment=NOMADSCREEN_STORAGE_ROOT=${STORAGE_ROOT}
 Environment=NOMADSCREEN_MEDIA_ROOT=${MEDIA_ROOT}
-Environment=NOMADSCREEN_UPLOAD_TMP_DIR=${UPLOAD_TMP_DIR}
 Environment=NOMADSCREEN_PORT=${HTTP_PORT}
 Environment=NOMADSCREEN_FILEBROWSER_PORT=${FILEBROWSER_PORT}
-Environment=TMPDIR=${UPLOAD_TMP_DIR}
 ExecStart=${INSTALL_DIR}/.venv/bin/python ${INSTALL_DIR}/src/main.py
 Restart=on-failure
 RestartSec=5
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=${STORAGE_ROOT} ${MEDIA_ROOT}
 
 [Install]
 WantedBy=multi-user.target
@@ -782,6 +775,9 @@ ExecStart=/usr/local/bin/filebrowser --address 0.0.0.0 --port ${FILEBROWSER_PORT
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=${state_dir} ${MEDIA_ROOT}
 
 [Install]
 WantedBy=multi-user.target
@@ -897,7 +893,6 @@ print_success() {
   log "App directory: ${INSTALL_DIR}"
   log "Storage root: ${STORAGE_ROOT}"
   log "Media library: ${MEDIA_ROOT}"
-  log "Upload temp dir: ${UPLOAD_TMP_DIR}"
   log "Service restarted: ${SERVICE_NAME}.service"
   log "Screen service: ${SCREEN_SERVICE_NAME}.service"
   log "File Browser service: ${FILEBROWSER_SERVICE_NAME}.service"

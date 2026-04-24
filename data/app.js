@@ -16,12 +16,6 @@ const state = {
   watchedOverrides: {},
   pendingResume: null,
   lastProgressSaveAt: 0,
-  uploadDraft: {
-    destination: "/media/tv",
-    newFolder: "",
-  },
-  uploadFeedback: "",
-  uploadFeedbackTone: "",
   deviceConfigDraft: {
     deviceName: "",
     hotspotSsid: "",
@@ -112,9 +106,6 @@ const state = {
   deviceAuthFeedback: "",
   deviceAuthFeedbackTone: "",
   preferServerLibrary: false,
-  uploadingLocally: false,
-  uploadSelectionLocked: false,
-  uploadDestinations: [],
 };
 
 const BACKCOUNTRY_STORAGE_PREFIX = "backcountry-broadcast-";
@@ -128,44 +119,6 @@ const PROGRESS_SAVE_INTERVAL_MS = 5000;
 const RESUME_MIN_SECONDS = 30;
 const CATALOG_PAGE_SIZE = 40;
 const CATALOG_SEARCH_LIMIT = 60;
-const UPLOAD_ROOTS = [
-  {
-    value: "movies",
-    label: "Movies",
-    root: "/media/movies",
-    newFolderPlaceholder: "Favorites",
-    help: "Upload standalone video files here.",
-  },
-  {
-    value: "tv",
-    label: "TV Shows",
-    root: "/media/tv",
-    newFolderPlaceholder: "Show Name/Season 1",
-    help: "Use show and season folders so episodes stay grouped correctly.",
-  },
-  {
-    value: "music",
-    label: "Music",
-    root: "/media/music",
-    newFolderPlaceholder: "Artist/Album",
-    help: "Use folders like Artist/Album for cleaner browsing.",
-  },
-  {
-    value: "audiobooks",
-    label: "Audiobooks",
-    root: "/media/audiobooks",
-    newFolderPlaceholder: "Author/Series",
-    help: "Use folders to keep books and series organized.",
-  },
-  {
-    value: "documents",
-    label: "Documents",
-    root: "/media/documents",
-    newFolderPlaceholder: "Maps/Trip Name",
-    help: "Great for PDFs, images, maps, permits, and checklists.",
-  },
-];
-
 const DISPLAY_PROFILES = {
   "waveshare-1.69": {
     id: "waveshare-1.69",
@@ -237,7 +190,12 @@ const els = {
   pageTitle: document.getElementById("page-title"),
   pageSubtitle: document.getElementById("page-subtitle"),
   pageTools: document.querySelector(".page-tools"),
-  playerSection: document.querySelector(".player-section"),
+  playerSection: document.getElementById("media-player-overlay"),
+  playerClose: document.getElementById("player-close"),
+  audioSection: document.getElementById("audio-player-section"),
+  audioTitle: document.getElementById("audio-player-title"),
+  audioSummary: document.getElementById("audio-player-summary"),
+  audioClose: document.getElementById("audio-player-close"),
   search: document.getElementById("search-input"),
   pageFilterSlot: document.getElementById("page-filter-slot"),
   actions: document.getElementById("page-actions"),
@@ -245,10 +203,6 @@ const els = {
   content: document.getElementById("page-content"),
   playerCaption: document.getElementById("player-caption"),
   playerCard: document.querySelector(".player-card"),
-  playerTitle: document.getElementById("player-title"),
-  playerSummary: document.getElementById("player-summary"),
-  playerActions: document.getElementById("player-actions"),
-  playerFacts: document.getElementById("player-facts"),
   video: document.getElementById("video-player"),
   audio: document.getElementById("audio-player"),
   document: document.getElementById("document-viewer"),
@@ -261,11 +215,8 @@ const els = {
 
 let deviceStatusPollTimer = 0;
 let deviceStatusPollInFlight = false;
-let lastCompletedUploadRefreshKey = "";
-let uploadDestinationsRequest = null;
 let deviceConfigRequest = null;
 let catalogGenresRequest = null;
-let liveUploadActivityTargets = new Set();
 let liveMetadataActivityTargets = new Set();
 let routeQueryRefreshTimer = 0;
 let catalogAutoLoadObserver = null;
@@ -554,194 +505,6 @@ function appNetworkName() {
   return (state.status && (state.status.hotspotSsid || state.status.ssid)) || appDisplayName();
 }
 
-function sanitizeUploadSegments(value) {
-  return String(value || "")
-    .replace(/\\/g, "/")
-    .split("/")
-    .map((piece) => piece.trim())
-    .filter((piece) => piece && piece !== "." && piece !== "..");
-}
-
-function normalizeUploadDestinationPath(value) {
-  const segments = sanitizeUploadSegments(value);
-  if (!segments.length || lowerPath(segments[0]) !== "media") {
-    return "";
-  }
-  const normalized = `/${segments.join("/")}`;
-  return UPLOAD_ROOTS.some((entry) => normalized === entry.root || normalized.startsWith(`${entry.root}/`))
-    ? normalized
-    : "";
-}
-
-function normalizeUploadSubfolder(value) {
-  return sanitizeUploadSegments(value).join("/");
-}
-
-function uploadRootConfigForPath(path) {
-  const normalized = normalizeUploadDestinationPath(path);
-  return (
-    UPLOAD_ROOTS.find((entry) => normalized === entry.root || normalized.startsWith(`${entry.root}/`)) ||
-    UPLOAD_ROOTS[0]
-  );
-}
-
-function uploadDestinationSuggestions() {
-  const suggestions = new Set(UPLOAD_ROOTS.map((entry) => entry.root));
-  for (const path of state.uploadDestinations || []) {
-    const normalized = normalizeUploadDestinationPath(path);
-    if (normalized) {
-      suggestions.add(normalized);
-    }
-  }
-  return Array.from(suggestions).sort((left, right) => {
-    const leftConfig = uploadRootConfigForPath(left);
-    const rightConfig = uploadRootConfigForPath(right);
-    const leftDepth = sanitizeUploadSegments(left).length;
-    const rightDepth = sanitizeUploadSegments(right).length;
-    const leftOrder = UPLOAD_ROOTS.findIndex((entry) => entry.root === leftConfig.root);
-    const rightOrder = UPLOAD_ROOTS.findIndex((entry) => entry.root === rightConfig.root);
-    return leftOrder - rightOrder || leftDepth - rightDepth || left.localeCompare(right);
-  });
-}
-
-function defaultUploadDestination() {
-  return uploadDestinationSuggestions()[0] || UPLOAD_ROOTS[0].root;
-}
-
-function buildUploadDestination(destination, newFolder) {
-  const normalizedDestination = normalizeUploadDestinationPath(destination);
-  if (!normalizedDestination) {
-    return "";
-  }
-  const subfolder = normalizeUploadSubfolder(newFolder);
-  return subfolder ? `${normalizedDestination}/${subfolder}` : normalizedDestination;
-}
-
-function uploadDestinationPreview(destination, newFolder) {
-  return buildUploadDestination(destination, newFolder);
-}
-
-function uploadDestinationHelp(destination) {
-  const config = uploadRootConfigForPath(destination);
-  return config ? config.help : "Choose a destination under /media and upload files there.";
-}
-
-function uploadDestinationTitle(path) {
-  const normalized = normalizeUploadDestinationPath(path);
-  if (!normalized) {
-    return "";
-  }
-  const config = uploadRootConfigForPath(normalized);
-  if (normalized === config.root) {
-    return config.label;
-  }
-  return titleFromPath(normalized);
-}
-
-function uploadDestinationBreadcrumbs(path) {
-  const normalized = normalizeUploadDestinationPath(path);
-  if (!normalized) {
-    return [];
-  }
-
-  const segments = sanitizeUploadSegments(normalized);
-  const breadcrumbs = [];
-  let current = "";
-  for (let index = 0; index < segments.length; index += 1) {
-    current += `/${segments[index]}`;
-    if (index === 0) {
-      continue;
-    }
-    const candidate = normalizeUploadDestinationPath(current);
-    if (!candidate) {
-      continue;
-    }
-    breadcrumbs.push({
-      path: candidate,
-      label: index === 1 ? uploadRootConfigForPath(candidate).label : titleFromPath(candidate),
-    });
-  }
-  return breadcrumbs;
-}
-
-function uploadParentDestination(path) {
-  const breadcrumbs = uploadDestinationBreadcrumbs(path);
-  if (breadcrumbs.length <= 1) {
-    return "";
-  }
-  return breadcrumbs[breadcrumbs.length - 2].path;
-}
-
-function uploadChildDestinations(path) {
-  const normalized = normalizeUploadDestinationPath(path);
-  if (!normalized) {
-    return [];
-  }
-
-  const prefix = `${normalized}/`;
-  const targetDepth = sanitizeUploadSegments(normalized).length + 1;
-  return uploadDestinationSuggestions()
-    .filter(
-      (candidate) =>
-        candidate !== normalized &&
-        candidate.startsWith(prefix) &&
-        sanitizeUploadSegments(candidate).length === targetDepth,
-    )
-    .sort((left, right) => uploadDestinationTitle(left).localeCompare(uploadDestinationTitle(right)));
-}
-
-function collectUploadEntries(looseFiles, folderFiles) {
-  const entries = [];
-  const seen = new Set();
-
-  const pushEntry = (file, relativePath) => {
-    if (!file) {
-      return;
-    }
-    const normalizedRelativePath = sanitizeUploadSegments(relativePath || file.name).join("/") || file.name;
-    const key = `${normalizedRelativePath}|${file.size}|${file.lastModified}`;
-    if (seen.has(key)) {
-      return;
-    }
-    seen.add(key);
-    entries.push({ file, relativePath: normalizedRelativePath });
-  };
-
-  for (const file of Array.from(looseFiles || [])) {
-    pushEntry(file, file.name);
-  }
-  for (const file of Array.from(folderFiles || [])) {
-    pushEntry(file, file.webkitRelativePath || file.name);
-  }
-  return entries;
-}
-
-function describeUploadSelection(looseFiles, folderFiles) {
-  const looseCount = Array.from(looseFiles || []).length;
-  const folderEntries = Array.from(folderFiles || []);
-  const topLevelFolders = new Set();
-  for (const file of folderEntries) {
-    const relativePath = String(file.webkitRelativePath || "");
-    const topLevel = sanitizeUploadSegments(relativePath)[0];
-    if (topLevel) {
-      topLevelFolders.add(topLevel);
-    }
-  }
-
-  return joinBits(
-    [
-      looseCount ? `${looseCount} loose file${looseCount === 1 ? "" : "s"}` : "",
-      folderEntries.length
-        ? `${topLevelFolders.size || 1} folder${topLevelFolders.size === 1 ? "" : "s"} (${folderEntries.length} files)`
-        : "",
-    ].filter(Boolean),
-  );
-}
-
-function uploadStatusSnapshot() {
-  return (state.status && state.status.upload) || null;
-}
-
 function deviceAuthSnapshot() {
   return (state.status && state.status.deviceAuth) || null;
 }
@@ -756,7 +519,6 @@ function deviceAccessLocked() {
 }
 
 function clearDeviceProtectedState() {
-  state.uploadDestinations = [];
   state.deviceConfigLoaded = false;
   state.deviceConfigDraft = {
     deviceName: "",
@@ -805,120 +567,6 @@ function applyDeviceConfigDraft(config = {}) {
         : state.deviceConfigDraft.devicePasswordConfigured,
     ),
   };
-}
-
-function uploadStatusPhase(upload) {
-  return String((upload && upload.phase) || "idle").toLowerCase();
-}
-
-function uploadHasActivity(upload) {
-  const phase = uploadStatusPhase(upload);
-  return Boolean(upload && (upload.active || upload.id || phase === "completed" || phase === "error"));
-}
-
-function uploadPercent(upload) {
-  const reported = Number(upload && upload.percent);
-  if (Number.isFinite(reported) && reported >= 0) {
-    return Math.max(0, Math.min(100, Math.round(reported)));
-  }
-
-  const bytesSent = Number((upload && upload.bytesSent) || 0);
-  const bytesTotal = Number((upload && upload.bytesTotal) || 0);
-  if (bytesTotal > 0) {
-    return Math.max(0, Math.min(100, Math.round((bytesSent / bytesTotal) * 100)));
-  }
-  return 0;
-}
-
-function uploadPhaseLabel(upload) {
-  const phase = uploadStatusPhase(upload);
-  if (phase === "uploading") return "Uploading";
-  if (phase === "processing") return "Processing";
-  if (phase === "completed") return "Complete";
-  if (phase === "error") return "Needs attention";
-  return "Standing by";
-}
-
-function uploadPhaseTone(upload) {
-  const phase = uploadStatusPhase(upload);
-  if (phase === "completed") return "success";
-  if (phase === "error") return "error";
-  if (phase === "uploading" || phase === "processing") return "pending";
-  return "";
-}
-
-function uploadIsActive(upload) {
-  const phase = uploadStatusPhase(upload);
-  return Boolean(upload && (upload.active || phase === "uploading" || phase === "processing"));
-}
-
-function uploadDestinationLabel(upload) {
-  if (!uploadHasActivity(upload)) {
-    return "Waiting for the next upload";
-  }
-  if (upload && upload.destination) {
-    return upload.destination;
-  }
-  const root =
-    (UPLOAD_ROOTS.find((entry) => entry.value === (upload && upload.section)) || UPLOAD_ROOTS[0]).root;
-  return uploadDestinationPreview(root, upload && upload.folder);
-}
-
-function uploadFileCountLabel(upload) {
-  const fileCount = Number((upload && upload.fileCount) || 0);
-  const uploadedCount = Number((upload && upload.uploadedCount) || 0);
-  if (!fileCount) {
-    return "Waiting for file list";
-  }
-  if (uploadStatusPhase(upload) === "completed") {
-    return `${uploadedCount || fileCount} of ${fileCount} saved`;
-  }
-  if (uploadedCount > 0) {
-    return `${uploadedCount} of ${fileCount} saved`;
-  }
-  return `${fileCount} file${fileCount === 1 ? "" : "s"}`;
-}
-
-function uploadTransferredLabel(upload) {
-  const bytesSent = Number((upload && upload.bytesSent) || 0);
-  const bytesTotal = Number((upload && upload.bytesTotal) || 0);
-  if (bytesTotal > 0) {
-    return `${formatBytes(bytesSent)} / ${formatBytes(bytesTotal)}`;
-  }
-  if (bytesSent > 0) {
-    return formatBytes(bytesSent);
-  }
-  return uploadHasActivity(upload) ? "Starting now" : "Waiting";
-}
-
-function uploadStatusCopy(upload) {
-  const phase = uploadStatusPhase(upload);
-  if (!uploadHasActivity(upload)) {
-    return "";
-  }
-  if (phase === "error") {
-    return upload.error || upload.message || "The last upload did not finish cleanly.";
-  }
-  if (upload.message) {
-    return upload.message;
-  }
-  if (phase === "uploading") {
-    return "Receiving files over Wi-Fi now.";
-  }
-  if (phase === "processing") {
-    return "Transfer finished. The Pi is saving files and refreshing the library.";
-  }
-  if (phase === "completed") {
-    return "Upload finished and the refreshed library is ready.";
-  }
-  return "Standing by for the next upload.";
-}
-
-function uploadCompletionRefreshKey(upload) {
-  if (uploadStatusPhase(upload) !== "completed" || !upload || !upload.id) {
-    return "";
-  }
-  return `${upload.id}|${upload.completedAt || upload.updatedAt || ""}`;
 }
 
 function metadataRefreshSnapshot() {
@@ -1102,107 +750,6 @@ function renderMetadataRefreshActivity(target, refresh) {
     warning.className = "upload-activity-warning";
     warning.textContent = refresh.error;
     target.appendChild(warning);
-  }
-}
-
-function renderUploadActivity(target, upload) {
-  target.innerHTML = "";
-  target.className = "upload-activity";
-
-  const header = document.createElement("div");
-  header.className = "upload-activity-header";
-
-  const heading = document.createElement("p");
-  heading.className = "upload-activity-title";
-  heading.textContent = "Shared Upload Status";
-
-  const badge = document.createElement("span");
-  badge.className = "upload-phase-badge";
-  const tone = uploadPhaseTone(upload);
-  if (tone) {
-    badge.classList.add(`upload-phase-badge--${tone}`);
-  }
-  badge.textContent = uploadPhaseLabel(upload);
-
-  header.appendChild(heading);
-  header.appendChild(badge);
-  target.appendChild(header);
-
-  const copy = document.createElement("p");
-  copy.className = "upload-activity-copy";
-  copy.textContent = uploadStatusCopy(upload);
-  target.appendChild(copy);
-
-  const track = document.createElement("div");
-  track.className = "upload-progress-track";
-  const fill = document.createElement("div");
-  fill.className = "upload-progress-fill";
-  fill.style.width = `${uploadPercent(upload)}%`;
-  track.appendChild(fill);
-  target.appendChild(track);
-
-  const progressLabel = document.createElement("p");
-  progressLabel.className = "upload-progress-label";
-  progressLabel.textContent = uploadHasActivity(upload)
-    ? `${uploadPercent(upload)}% complete`
-    : "Waiting for the next transfer";
-  target.appendChild(progressLabel);
-
-  const metrics = document.createElement("div");
-  metrics.className = "upload-activity-metrics";
-  const rows = [
-    { label: "Destination", value: uploadDestinationLabel(upload) },
-    { label: "Files", value: uploadFileCountLabel(upload) },
-    { label: "Transferred", value: uploadTransferredLabel(upload) },
-    {
-      label: "Updated",
-      value: formatTimestamp((upload && (upload.completedAt || upload.updatedAt)) || "") || "Waiting",
-    },
-  ];
-
-  for (const row of rows) {
-    const metric = document.createElement("div");
-    metric.className = "upload-metric";
-    const metricLabel = document.createElement("span");
-    metricLabel.className = "upload-metric-label";
-    metricLabel.textContent = row.label;
-    const metricValue = document.createElement("strong");
-    metricValue.className = "upload-metric-value";
-    metricValue.textContent = row.value;
-    metric.appendChild(metricLabel);
-    metric.appendChild(metricValue);
-    metrics.appendChild(metric);
-  }
-  target.appendChild(metrics);
-
-  if (upload && Array.isArray(upload.warnings) && upload.warnings.length) {
-    const warning = document.createElement("p");
-    warning.className = "upload-activity-warning";
-    warning.textContent = upload.warnings.join(" ");
-    target.appendChild(warning);
-  }
-}
-
-function pruneLiveUploadActivityTargets() {
-  for (const target of Array.from(liveUploadActivityTargets)) {
-    if (!target || !target.isConnected) {
-      liveUploadActivityTargets.delete(target);
-    }
-  }
-}
-
-function registerLiveUploadActivityTarget(target) {
-  pruneLiveUploadActivityTargets();
-  if (target) {
-    liveUploadActivityTargets.add(target);
-  }
-  return target;
-}
-
-function refreshLiveUploadActivity(upload = uploadStatusSnapshot()) {
-  pruneLiveUploadActivityTargets();
-  for (const target of liveUploadActivityTargets) {
-    renderUploadActivity(target, upload);
   }
 }
 
@@ -2030,7 +1577,6 @@ function resetLocalState(keepWatchHistory) {
   }
 
   resetPlayers();
-  renderPlayerDetails(null);
 }
 
 function reloadAppWithFreshUrl() {
@@ -3434,36 +2980,11 @@ function openItemInNewTab(item) {
   document.body.removeChild(link);
 }
 
-function renderPlayerDetails(item, probe) {
-  els.playerFacts.innerHTML = "";
-  els.playerActions.innerHTML = "";
-
-  if (!item) {
-    els.playerTitle.textContent = "Nothing selected yet";
-    els.playerSummary.textContent =
-      "Metadata, artwork, and file details will show up here when you open something from the library.";
-    els.playerActions.hidden = true;
-    return;
-  }
-
-  els.playerTitle.textContent = item.title;
-  els.playerSummary.textContent = itemSummary(item);
-  els.playerActions.hidden = !item.streamUrl;
-  if (item.streamUrl) {
-    if (isPdfDocument(item)) {
-      els.playerActions.appendChild(createButton("Open PDF", "primary-button", () => openItemInNewTab(item)));
-    }
-    els.playerActions.appendChild(createButton("Download", "ghost-button", () => downloadMediaItem(item)));
-  }
-
-  for (const fact of itemDetailFacts(item, probe)) {
-    els.playerFacts.appendChild(createFactPill(fact));
-  }
-}
-
 function resetPlayers() {
   els.video.pause();
   els.audio.pause();
+  els.playerSection.hidden = true;
+  els.audioSection.hidden = true;
   els.video.style.display = "none";
   els.audio.style.display = "none";
   els.document.style.display = "none";
@@ -3480,6 +3001,29 @@ function resetPlayers() {
   els.playerCard.classList.remove("player-card--artwork");
   els.video.load();
   els.audio.load();
+  setMediaSessionPlaybackState("none");
+}
+
+function closeFullscreenPlayer() {
+  persistActivePlaybackProgress(true, false, true);
+  if (document.fullscreenElement) {
+    document.exitFullscreen().catch(() => {});
+  }
+  resetPlayers();
+  state.playingItem = null;
+  state.pendingResume = null;
+}
+
+function closeAudioPlayer() {
+  persistActivePlaybackProgress(true, false, true);
+  els.audio.pause();
+  els.audio.removeAttribute("src");
+  els.audio.load();
+  els.audioSection.hidden = true;
+  if (state.playingItem && state.playingItem.type === "audio") {
+    state.playingItem = null;
+    state.pendingResume = null;
+  }
 }
 
 function applyPlayerArtwork(item) {
@@ -3504,6 +3048,88 @@ function applyPlayerArtwork(item) {
       els.video.poster = posterUrl;
     } else {
       els.video.removeAttribute("poster");
+    }
+  }
+}
+
+function showFullscreenPlayer(item) {
+  els.playerSection.hidden = false;
+  els.playerCaption.textContent = item ? item.title : "";
+}
+
+function showAudioPlayer(item) {
+  els.audioSection.hidden = false;
+  els.audioTitle.textContent = item.title || "Audio";
+  els.audioSummary.textContent = itemSummary(item);
+}
+
+function requestPlayerFullscreen(item) {
+  const target = item && item.type === "video" && els.video.requestFullscreen
+    ? els.video
+    : els.playerSection;
+  if (target && target.requestFullscreen) {
+    target.requestFullscreen().catch(() => {});
+  }
+}
+
+function updateMediaSession(item) {
+  if (!("mediaSession" in navigator) || !item) {
+    return;
+  }
+
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: item.title || "Backcountry Broadcast",
+      artist: item.artist || item.narrators || item.showTitle || "",
+      album: item.album || item.seriesName || "",
+      artwork: item.posterUrl
+        ? [
+            {
+              src: item.posterUrl,
+              sizes: "512x512",
+              type: "image/jpeg",
+            },
+          ]
+        : [],
+    });
+  } catch (error) {
+    console.warn("Unable to update media session metadata", error);
+  }
+}
+
+function setMediaSessionPlaybackState(value) {
+  if ("mediaSession" in navigator) {
+    navigator.mediaSession.playbackState = value;
+  }
+}
+
+function configureMediaSessionControls() {
+  if (!("mediaSession" in navigator) || !navigator.mediaSession.setActionHandler) {
+    return;
+  }
+
+  const handlers = {
+    play: () => activePlaybackElement()?.play().catch(() => {}),
+    pause: () => activePlaybackElement()?.pause(),
+    seekbackward: () => {
+      const element = activePlaybackElement();
+      if (element) {
+        element.currentTime = Math.max(0, element.currentTime - 15);
+      }
+    },
+    seekforward: () => {
+      const element = activePlaybackElement();
+      if (element) {
+        element.currentTime = Math.min(element.duration || element.currentTime + 30, element.currentTime + 30);
+      }
+    },
+  };
+
+  for (const [action, handler] of Object.entries(handlers)) {
+    try {
+      navigator.mediaSession.setActionHandler(action, handler);
+    } catch (_error) {
+      // Some browsers expose Media Session but not every action.
     }
   }
 }
@@ -3540,15 +3166,23 @@ async function playItem(item, options = {}) {
   state.lastProgressSaveAt = 0;
   state.pendingResume = null;
   applyPlayerArtwork(item);
-  renderPlayerDetails(item);
 
   if (!item.streamUrl) {
-    els.empty.style.display = "grid";
-    els.playerCaption.textContent = `${item.title} | no stream is available for this item`;
+    els.pageSubtitle.textContent = `${item.title} has no stream available.`;
+    return;
+  }
+
+  if (isPdfDocument(item)) {
+    openItemInNewTab(item);
+    state.playingItem = null;
+    els.pageSubtitle.textContent = `${item.title} opened in a new tab.`;
     return;
   }
 
   els.empty.style.display = "none";
+  if (item.type !== "audio") {
+    showFullscreenPlayer(item);
+  }
 
   if (item.type === "video" || (item.type === "audio" && item.section === "audiobooks")) {
     const startAt =
@@ -3569,24 +3203,23 @@ async function playItem(item, options = {}) {
     els.video.src = item.streamUrl;
     els.video.load();
     els.video.style.display = "block";
+    requestPlayerFullscreen(item);
     els.video.play().catch(() => {});
   } else if (item.type === "audio") {
+    showAudioPlayer(item);
     els.audio.src = item.streamUrl;
     els.audio.load();
     els.audio.style.display = "block";
+    updateMediaSession(item);
     els.audio.play().catch(() => {});
   } else if (item.type === "document") {
-    if (isPdfDocument(item)) {
-      openItemInNewTab(item);
-      els.empty.style.display = "grid";
-      els.empty.textContent = "This PDF opened in a new tab so your browser can handle scrolling, paging, and zooming.";
-    } else {
-      els.document.src = item.streamUrl;
-      els.document.style.display = "block";
-    }
+    els.document.src = item.streamUrl;
+    els.document.style.display = "block";
+    requestPlayerFullscreen(item);
   } else {
     els.image.src = item.streamUrl;
     els.image.style.display = "block";
+    requestPlayerFullscreen(item);
   }
 
   els.playerCaption.textContent =
@@ -3596,9 +3229,6 @@ async function playItem(item, options = {}) {
       isPdfDocument(item) ? "Opened in a new tab" : "",
       item.type === "video" || item.type === "audio" ? "Streaming now" : "",
     ]) || `${item.title} loaded`;
-
-  renderPlayerDetails(item);
-  document.querySelector(".player-section").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function attachPlayerDiagnostics() {
@@ -3631,6 +3261,13 @@ function attachPlayerDiagnostics() {
   els.audio.addEventListener("timeupdate", () => persistActivePlaybackProgress(false, false, false));
   els.audio.addEventListener("pause", () => persistActivePlaybackProgress(true, false, false));
   els.audio.addEventListener("ended", () => persistActivePlaybackProgress(true, true, true));
+  els.video.addEventListener("play", () => setMediaSessionPlaybackState("playing"));
+  els.video.addEventListener("pause", () => setMediaSessionPlaybackState("paused"));
+  els.video.addEventListener("ended", () => setMediaSessionPlaybackState("none"));
+  els.audio.addEventListener("play", () => setMediaSessionPlaybackState("playing"));
+  els.audio.addEventListener("pause", () => setMediaSessionPlaybackState("paused"));
+  els.audio.addEventListener("ended", () => setMediaSessionPlaybackState("none"));
+  configureMediaSessionControls();
 }
 
 function clearSearch() {
@@ -5309,222 +4946,6 @@ function observeCatalogAutoLoad(target, loadMore) {
   catalogAutoLoadObserver.observe(target);
 }
 
-function createUploadId() {
-  return `upload-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function postSharedUploadProgress(payload) {
-  return fetch("/api/upload-progress", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  }).catch(() => null);
-}
-
-async function uploadLibraryFiles(destination, entries, handlers = {}) {
-  const uploadId = createUploadId();
-  const totalBytes = entries.reduce((sum, entry) => sum + Math.max(Number((entry.file && entry.file.size) || 0) || 0, 0), 0);
-  const formData = new FormData();
-  formData.append("uploadId", uploadId);
-  formData.append("destination", destination);
-  for (const entry of entries) {
-    formData.append("files", entry.file, entry.file.name);
-    formData.append("relativePaths", entry.relativePath || entry.file.name);
-  }
-  let lastProgressSentAt = 0;
-
-  const emitProgress = (update) => {
-    if (typeof handlers.onProgress === "function") {
-      handlers.onProgress(update);
-    }
-  };
-
-  const progressUpdate = (update) => ({
-    uploadId,
-    destination,
-    fileCount: entries.length,
-    ...update,
-  });
-
-  const sendProgress = (update, force = false) => {
-    const now = Date.now();
-    if (!force && now - lastProgressSentAt < 400) {
-      return;
-    }
-    lastProgressSentAt = now;
-    void postSharedUploadProgress({
-      uploadId,
-      destination,
-      fileCount: entries.length,
-      bytesTotal: totalBytes,
-      ...update,
-    });
-  };
-
-  const initialMessage = `Starting upload of ${entries.length} file${entries.length === 1 ? "" : "s"}...`;
-  emitProgress(progressUpdate({
-    phase: "uploading",
-    bytesSent: 0,
-    bytesTotal: totalBytes,
-    percent: 0,
-    message: initialMessage,
-  }));
-  sendProgress(
-    {
-      phase: "uploading",
-      bytesSent: 0,
-      message: initialMessage,
-    },
-    true,
-  );
-
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", "/api/upload");
-    xhr.responseType = "json";
-
-    const parsePayload = () => {
-      if (xhr.response && typeof xhr.response === "object") {
-        return xhr.response;
-      }
-      if (!xhr.responseText) {
-        return {};
-      }
-      try {
-        return JSON.parse(xhr.responseText);
-      } catch (_error) {
-        return {};
-      }
-    };
-
-    xhr.upload.addEventListener("progress", (event) => {
-      const bytesTotal = Math.max(event.lengthComputable ? event.total : 0, totalBytes);
-      const bytesSent = Math.max(0, Math.min(event.loaded || 0, bytesTotal || event.loaded || 0));
-      const percent = bytesTotal > 0 ? Math.round((bytesSent / bytesTotal) * 100) : 0;
-      const message = percent
-        ? `Uploading ${entries.length} file${entries.length === 1 ? "" : "s"}... ${percent}%`
-        : `Uploading ${entries.length} file${entries.length === 1 ? "" : "s"}...`;
-      const update = progressUpdate({
-        phase: "uploading",
-        bytesSent,
-        bytesTotal,
-        percent,
-        message,
-      });
-      emitProgress(update);
-      sendProgress(
-        {
-          phase: "uploading",
-          bytesSent,
-          bytesTotal,
-          message,
-        },
-        percent >= 100,
-      );
-    });
-
-    xhr.upload.addEventListener("load", () => {
-      const message = "Transfer finished. The Pi is saving files and rescanning the library...";
-      const update = progressUpdate({
-        phase: "processing",
-        bytesSent: totalBytes,
-        bytesTotal: totalBytes,
-        percent: 100,
-        message,
-      });
-      emitProgress(update);
-      sendProgress(
-        {
-          phase: "processing",
-          bytesSent: totalBytes,
-          bytesTotal: totalBytes,
-          message,
-        },
-        true,
-      );
-    });
-
-    xhr.addEventListener("load", () => {
-      const payload = parsePayload();
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve(payload);
-        return;
-      }
-
-      const errorMessage = payload.error || `Upload failed with HTTP ${xhr.status}`;
-      emitProgress(progressUpdate({
-        phase: "error",
-        bytesSent: totalBytes,
-        bytesTotal: totalBytes,
-        percent: 100,
-        message: errorMessage,
-        error: errorMessage,
-      }));
-      sendProgress(
-        {
-          phase: "error",
-          bytesSent: totalBytes,
-          bytesTotal: totalBytes,
-          message: errorMessage,
-          error: errorMessage,
-        },
-        true,
-      );
-      reject(new Error(errorMessage));
-    });
-
-    xhr.addEventListener("error", () => {
-      const errorMessage = "Upload failed because the connection to the Pi was interrupted.";
-      emitProgress(progressUpdate({
-        phase: "error",
-        bytesSent: 0,
-        bytesTotal: totalBytes,
-        percent: 0,
-        message: errorMessage,
-        error: errorMessage,
-      }));
-      sendProgress(
-        {
-          phase: "error",
-          bytesSent: 0,
-          bytesTotal: totalBytes,
-          message: errorMessage,
-          error: errorMessage,
-        },
-        true,
-      );
-      reject(new Error(errorMessage));
-    });
-
-    xhr.addEventListener("abort", () => {
-      const errorMessage = "Upload was canceled before it finished.";
-      emitProgress(progressUpdate({
-        phase: "error",
-        bytesSent: 0,
-        bytesTotal: totalBytes,
-        percent: 0,
-        message: errorMessage,
-        error: errorMessage,
-      }));
-      sendProgress(
-        {
-          phase: "error",
-          bytesSent: 0,
-          bytesTotal: totalBytes,
-          message: errorMessage,
-          error: errorMessage,
-        },
-        true,
-      );
-      reject(new Error(errorMessage));
-    });
-
-    xhr.send(formData);
-  });
-}
-
 function createInfoCard(config) {
   const card = document.createElement("article");
   card.className = "info-card";
@@ -5599,7 +5020,7 @@ function createDeviceLockCard() {
   const copy = document.createElement("p");
   copy.className = "info-copy";
   copy.textContent = auth.usesDedicatedPassword
-    ? "Enter the device page password to view network details, uploads, metadata controls, and File Browser credentials."
+    ? "Enter the device page password to view network details, metadata controls, and File Browser credentials."
     : "Enter the fallback Wi-Fi password to unlock the Device page. You can set a separate device page password after you get in.";
 
   const form = document.createElement("form");
@@ -5906,7 +5327,6 @@ function createDeviceConfigCard() {
       state.deviceConfigLoaded = true;
       if (payload.status) {
         state.status = payload.status;
-        refreshLiveUploadActivity(uploadStatusSnapshot());
         refreshLiveMetadataActivity(metadataRefreshSnapshot());
       }
       const wifiChanged =
@@ -6246,7 +5666,6 @@ function createScreenSettingsCard() {
       state.deviceConfigLoaded = true;
       if (payload.status) {
         state.status = payload.status;
-        refreshLiveUploadActivity(uploadStatusSnapshot());
         refreshLiveMetadataActivity(metadataRefreshSnapshot());
       }
       state.deviceConfigFeedback = payload.message || "Saved screen settings.";
@@ -6309,369 +5728,6 @@ function createMetadataRefreshCard() {
   card.appendChild(activity);
   return card;
 }
-
-function createUploadCard() {
-  const draft = state.uploadDraft || {};
-  const initialDestination = normalizeUploadDestinationPath(draft.destination) || defaultUploadDestination();
-  let selectedDestination = initialDestination;
-  const config = uploadRootConfigForPath(initialDestination);
-  const sharedUpload = uploadStatusSnapshot();
-  const card = document.createElement("article");
-  card.className = "info-card info-card--upload";
-
-  const eyebrow = document.createElement("p");
-  eyebrow.className = "eyebrow";
-  eyebrow.textContent = "Upload";
-
-  const title = document.createElement("h3");
-  title.textContent = "Add Media Over Wi-Fi";
-
-  const copy = document.createElement("p");
-  copy.className = "info-copy";
-  copy.textContent =
-    "Browse the media tree, click the folder you want, and upload straight into it. You can still add a new subfolder on top of the selected destination, or send a whole folder tree and preserve its structure.";
-
-  const activity = document.createElement("div");
-  registerLiveUploadActivityTarget(activity);
-  renderUploadActivity(activity, sharedUpload);
-
-  const form = document.createElement("form");
-  form.className = "upload-form";
-
-  const fields = document.createElement("div");
-  fields.className = "upload-grid";
-
-  const destinationField = document.createElement("div");
-  destinationField.className = "upload-field upload-field--full";
-  const destinationLabel = document.createElement("span");
-  destinationLabel.className = "upload-label";
-  destinationLabel.textContent = "Destination folder";
-  const destinationShell = document.createElement("div");
-  destinationShell.className = "upload-destination-shell";
-  const destinationCurrent = document.createElement("div");
-  destinationCurrent.className = "upload-current-destination";
-  const destinationCurrentLabel = document.createElement("span");
-  destinationCurrentLabel.className = "upload-current-label";
-  destinationCurrentLabel.textContent = "Selected";
-  const destinationCurrentValue = document.createElement("strong");
-  destinationCurrentValue.className = "upload-current-value";
-  const rootRow = document.createElement("div");
-  rootRow.className = "upload-root-row";
-  const breadcrumbRow = document.createElement("div");
-  breadcrumbRow.className = "upload-breadcrumb-row";
-  const browser = document.createElement("div");
-  browser.className = "upload-browser";
-  const browserActions = document.createElement("div");
-  browserActions.className = "upload-browser-actions";
-  const browserList = document.createElement("div");
-  browserList.className = "upload-browser-list";
-  destinationCurrent.appendChild(destinationCurrentLabel);
-  destinationCurrent.appendChild(destinationCurrentValue);
-  destinationShell.appendChild(destinationCurrent);
-  destinationShell.appendChild(rootRow);
-  destinationShell.appendChild(breadcrumbRow);
-  destinationShell.appendChild(browser);
-  browser.appendChild(browserActions);
-  browser.appendChild(browserList);
-  destinationField.appendChild(destinationLabel);
-  destinationField.appendChild(destinationShell);
-
-  const newFolderField = document.createElement("label");
-  newFolderField.className = "upload-field";
-  const newFolderLabel = document.createElement("span");
-  newFolderLabel.className = "upload-label";
-  newFolderLabel.textContent = "New subfolder (optional)";
-  const newFolderInput = document.createElement("input");
-  newFolderInput.className = "upload-text";
-  newFolderInput.type = "text";
-  newFolderInput.name = "upload-new-folder";
-  newFolderInput.value = draft.newFolder || "";
-  newFolderInput.placeholder = config.newFolderPlaceholder;
-  newFolderField.appendChild(newFolderLabel);
-  newFolderField.appendChild(newFolderInput);
-
-  const fileField = document.createElement("label");
-  fileField.className = "upload-field";
-  const fileLabel = document.createElement("span");
-  fileLabel.className = "upload-label";
-  fileLabel.textContent = "Loose files";
-  const fileInput = document.createElement("input");
-  fileInput.className = "upload-file";
-  fileInput.type = "file";
-  fileInput.name = "upload-files";
-  fileInput.multiple = true;
-  fileField.appendChild(fileLabel);
-  fileField.appendChild(fileInput);
-
-  const folderField = document.createElement("label");
-  folderField.className = "upload-field";
-  const folderLabel = document.createElement("span");
-  folderLabel.className = "upload-label";
-  folderLabel.textContent = "Whole folder";
-  const folderInput = document.createElement("input");
-  folderInput.className = "upload-file";
-  folderInput.type = "file";
-  folderInput.name = "upload-folder-tree";
-  folderInput.multiple = true;
-  folderInput.setAttribute("webkitdirectory", "");
-  folderInput.setAttribute("directory", "");
-  folderField.appendChild(folderLabel);
-  folderField.appendChild(folderInput);
-
-  const note = document.createElement("p");
-  note.className = "upload-note";
-
-  const feedback = document.createElement("p");
-  feedback.className = "upload-status";
-
-  const actions = document.createElement("div");
-  actions.className = "upload-actions";
-  const submit = document.createElement("button");
-  submit.type = "submit";
-  submit.className = "primary-button";
-  submit.textContent = "Upload And Rescan";
-  actions.appendChild(submit);
-
-  fields.appendChild(destinationField);
-  fields.appendChild(newFolderField);
-  fields.appendChild(fileField);
-  fields.appendChild(folderField);
-  form.appendChild(fields);
-  form.appendChild(note);
-  form.appendChild(feedback);
-  form.appendChild(actions);
-
-  const applyUploadState = (message, tone) => {
-    feedback.textContent = message || "";
-    feedback.className = "upload-status";
-    if (tone) {
-      feedback.classList.add(`upload-status--${tone}`);
-    }
-  };
-
-  const syncSelectionLock = () => {
-    state.uploadSelectionLocked = Boolean(
-      (fileInput.files && fileInput.files.length) ||
-      (folderInput.files && folderInput.files.length) ||
-      state.uploadingLocally,
-    );
-  };
-
-  const renderDestinationPicker = () => {
-    const activeConfig = uploadRootConfigForPath(selectedDestination);
-    destinationCurrentValue.textContent = selectedDestination;
-
-    rootRow.innerHTML = "";
-    for (const root of UPLOAD_ROOTS) {
-      const button = createButton(root.label, "ghost-button upload-root-button", () => {
-        selectedDestination = root.root;
-        state.uploadDraft.destination = selectedDestination;
-        renderDestinationPicker();
-        syncHints();
-      });
-      if (selectedDestination === root.root || selectedDestination.startsWith(`${root.root}/`)) {
-        button.classList.add("is-active");
-      }
-      rootRow.appendChild(button);
-    }
-
-    breadcrumbRow.innerHTML = "";
-    const breadcrumbs = uploadDestinationBreadcrumbs(selectedDestination);
-    const nestedBreadcrumbs = breadcrumbs.slice(1);
-    breadcrumbRow.hidden = nestedBreadcrumbs.length === 0;
-    for (const crumb of nestedBreadcrumbs) {
-      const button = createButton(crumb.label, "ghost-button upload-breadcrumb-button", () => {
-        selectedDestination = crumb.path;
-        state.uploadDraft.destination = selectedDestination;
-        renderDestinationPicker();
-        syncHints();
-      });
-      if (crumb.path === selectedDestination) {
-        button.classList.add("is-active");
-      }
-      breadcrumbRow.appendChild(button);
-    }
-
-    browserActions.innerHTML = "";
-    const parentPath = uploadParentDestination(selectedDestination);
-    if (parentPath) {
-      browserActions.appendChild(
-        createButton(`Up To ${uploadDestinationTitle(parentPath)}`, "ghost-button upload-nav-button", () => {
-          selectedDestination = parentPath;
-          state.uploadDraft.destination = selectedDestination;
-          renderDestinationPicker();
-          syncHints();
-        }),
-      );
-    } else {
-      const helper = document.createElement("p");
-      helper.className = "upload-browser-helper";
-      helper.textContent = `Browsing ${activeConfig.label}`;
-      browserActions.appendChild(helper);
-    }
-
-    browserList.innerHTML = "";
-    const childDestinations = uploadChildDestinations(selectedDestination);
-    if (!childDestinations.length) {
-      const empty = document.createElement("p");
-      empty.className = "upload-browser-empty";
-      empty.textContent = "No deeper folders here yet. Use New subfolder to create one during upload.";
-      browserList.appendChild(empty);
-      return;
-    }
-
-    for (const childPath of childDestinations) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "upload-folder-button";
-      const titleText = document.createElement("strong");
-      titleText.className = "upload-folder-button-title";
-      titleText.textContent = uploadDestinationTitle(childPath);
-      const metaText = document.createElement("span");
-      metaText.className = "upload-folder-button-meta";
-      metaText.textContent = childPath;
-      button.appendChild(titleText);
-      button.appendChild(metaText);
-      button.addEventListener("click", () => {
-        selectedDestination = childPath;
-        state.uploadDraft.destination = selectedDestination;
-        renderDestinationPicker();
-        syncHints();
-      });
-      browserList.appendChild(button);
-    }
-  };
-
-  const syncHints = () => {
-    const activeConfig = uploadRootConfigForPath(selectedDestination || initialDestination);
-    const finalDestination = uploadDestinationPreview(selectedDestination, newFolderInput.value);
-    const selectedSummary = describeUploadSelection(fileInput.files, folderInput.files);
-    const actualMediaRoot = (state.status && state.status.mediaRoot) || "";
-    newFolderInput.placeholder = activeConfig.newFolderPlaceholder;
-    note.textContent = `${uploadDestinationHelp(selectedDestination)} Selected folder: ${selectedDestination}. Final destination: ${finalDestination || selectedDestination}.${actualMediaRoot ? ` Files are stored on the Pi under ${actualMediaRoot}.` : ""}${selectedSummary ? ` Selected: ${selectedSummary}.` : " Select loose files, a whole folder, or both."}`;
-    state.uploadDraft.destination = selectedDestination;
-    state.uploadDraft.newFolder = newFolderInput.value.trim();
-  };
-
-  const handleSelectionChange = () => {
-    syncSelectionLock();
-    syncHints();
-  };
-
-  newFolderInput.addEventListener("input", syncHints);
-  fileInput.addEventListener("change", handleSelectionChange);
-  folderInput.addEventListener("change", handleSelectionChange);
-  renderDestinationPicker();
-  syncSelectionLock();
-  syncHints();
-  applyUploadState(state.uploadFeedback, state.uploadFeedbackTone);
-
-  const applySharedUploadPreview = (upload) => {
-    if (state.status) {
-      state.status.upload = {
-        ...((state.status && state.status.upload) || {}),
-        ...upload,
-      };
-    }
-    refreshLiveUploadActivity(upload);
-  };
-
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-
-    syncSelectionLock();
-    const entries = collectUploadEntries(fileInput.files, folderInput.files);
-    if (!entries.length) {
-      state.uploadFeedback = "Choose at least one file or folder to upload.";
-      state.uploadFeedbackTone = "error";
-      applyUploadState(state.uploadFeedback, state.uploadFeedbackTone);
-      return;
-    }
-
-    const destination = buildUploadDestination(selectedDestination, newFolderInput.value);
-    if (!destination) {
-      state.uploadFeedback = "Pick a destination under /media before uploading.";
-      state.uploadFeedbackTone = "error";
-      applyUploadState(state.uploadFeedback, state.uploadFeedbackTone);
-      return;
-    }
-
-    state.uploadDraft.destination = selectedDestination;
-    state.uploadDraft.newFolder = newFolderInput.value.trim();
-    state.uploadingLocally = true;
-    syncSelectionLock();
-
-    form.querySelectorAll("input, button").forEach((element) => {
-      element.disabled = true;
-    });
-    applyUploadState(`Uploading ${entries.length} file${entries.length === 1 ? "" : "s"} to ${destination}...`, "pending");
-    els.pageSubtitle.textContent = `Uploading files to ${destination}...`;
-
-    try {
-      const payload = await uploadLibraryFiles(destination, entries, {
-        onProgress: (progress) => {
-          applySharedUploadPreview(progress);
-          applyUploadState(progress.message || "Uploading files...", "pending");
-          els.pageSubtitle.textContent = progress.message || "Uploading files...";
-        },
-      });
-      const warningText =
-        Array.isArray(payload.warnings) && payload.warnings.length ? ` ${payload.warnings.join(" ")}` : "";
-      const savedBytesText = Number(payload.savedBytes || 0) > 0 ? ` Saved ${formatBytes(payload.savedBytes)}.` : "";
-      const mediaRootText = payload.mediaRoot ? ` Stored under ${payload.mediaRoot}.` : "";
-      state.uploadFeedback = `Uploaded ${payload.count} file${payload.count === 1 ? "" : "s"} to ${payload.destination || destination}. The library has been rescanned.${savedBytesText}${mediaRootText}${warningText}`;
-      state.uploadFeedbackTone = Array.isArray(payload.warnings) && payload.warnings.length ? "pending" : "success";
-      state.preferServerLibrary = true;
-      if (payload.upload) {
-        applySharedUploadPreview(payload.upload);
-      }
-      fileInput.value = "";
-      folderInput.value = "";
-      state.uploadSelectionLocked = false;
-      els.pageSubtitle.textContent = state.uploadFeedback;
-      state.uploadingLocally = false;
-      syncHints();
-      try {
-        await refreshAllWithRetry({ attempts: 4, delayMs: 700 });
-      } catch (refreshError) {
-        console.warn("Upload completed but the post-upload refresh failed", refreshError);
-        state.uploadFeedback = `${state.uploadFeedback} The files are on the Pi, but this browser could not refresh the library view yet. Try Refresh Device Data in a moment.`;
-        state.uploadFeedbackTone = "pending";
-        els.pageSubtitle.textContent = state.uploadFeedback;
-        applyUploadState(state.uploadFeedback, state.uploadFeedbackTone);
-        form.querySelectorAll("input, select, button").forEach((element) => {
-          element.disabled = false;
-        });
-      }
-    } catch (error) {
-      state.uploadFeedback = error.message || "Upload failed.";
-      state.uploadFeedbackTone = "error";
-      els.pageSubtitle.textContent = `Upload failed: ${state.uploadFeedback}`;
-      applyUploadState(state.uploadFeedback, state.uploadFeedbackTone);
-      applySharedUploadPreview({
-        ...(uploadStatusSnapshot() || {}),
-        active: false,
-        phase: "error",
-        destination,
-        message: state.uploadFeedback,
-        error: state.uploadFeedback,
-      });
-      state.uploadingLocally = false;
-      syncSelectionLock();
-      form.querySelectorAll("input, button").forEach((element) => {
-        element.disabled = false;
-      });
-    }
-  });
-
-  card.appendChild(eyebrow);
-  card.appendChild(title);
-  card.appendChild(copy);
-  card.appendChild(activity);
-  card.appendChild(form);
-  return card;
-}
-
 function renderBreadcrumbs(show, movie, season, audiobook, documentBrowser) {
   const crumbs = [{ label: "Home", href: "/app" }];
   const audiobookBrowseTarget = currentAudiobookBrowseTarget();
@@ -7407,7 +6463,7 @@ function renderHero(show, movie, season, documentBrowser) {
     eyebrow.textContent = "Device Control";
     title.textContent = status.device || appDisplayName();
     subtitle.textContent = deviceAccessLocked()
-      ? "Unlock the Device page to manage uploads, network settings, metadata refreshes, and file tools."
+      ? "Unlock the Device page to manage network settings, metadata refreshes, and file tools."
       : status.sdMounted
         ? deviceNetworkSubtitle(status, preferredUrl)
         : "The admin page shows network details, storage health, and library maintenance controls.";
@@ -8867,15 +7923,9 @@ function renderDevicePage(container) {
         { label: "Media storage", value: status.sdMounted ? "Mounted and ready" : "Not available" },
         { label: "Connected clients", value: String(status.clients || 0) },
         { label: "Media root", value: status.mediaRoot || "/media" },
-        {
-          label: "Upload staging",
-          value: status.uploadTempRoot
-            ? `${status.uploadTempRoot}${status.uploadTempReady === false ? " (check permissions)" : ""}`
-            : "Unavailable",
-        },
         { label: "Last playback", value: lastPlayed || "Nothing played yet" },
       ],
-      searchText: `${status.sdMounted ? "mounted ready" : "not available"} ${status.clients || 0} ${status.mediaRoot || ""} ${status.uploadTempRoot || ""} ${lastPlayed || ""}`,
+      searchText: `${status.sdMounted ? "mounted ready" : "not available"} ${status.clients || 0} ${status.mediaRoot || ""} ${lastPlayed || ""}`,
     },
     {
       eyebrow: "Library",
@@ -9093,7 +8143,7 @@ function shouldPollDeviceStatus() {
     return false;
   }
   if (isDeviceAdminRoute()) {
-    return !deviceAccessLocked() && !state.uploadingLocally;
+    return !deviceAccessLocked();
   }
   if (state.route.name === "display") {
     return true;
@@ -9121,7 +8171,6 @@ async function pollDeviceStatus() {
 
   deviceStatusPollTimer = 0;
   deviceStatusPollInFlight = true;
-  const previousUpload = uploadStatusSnapshot();
   const previousMetadata = metadataRefreshSnapshot();
 
   try {
@@ -9134,20 +8183,8 @@ async function pollDeviceStatus() {
       render();
       return;
     }
-    const nextUpload = uploadStatusSnapshot();
     const nextMetadata = metadataRefreshSnapshot();
-    refreshLiveUploadActivity(nextUpload);
     refreshLiveMetadataActivity(nextMetadata);
-    const completionKey = uploadCompletionRefreshKey(nextUpload);
-    if (completionKey && completionKey !== lastCompletedUploadRefreshKey) {
-      state.preferServerLibrary = true;
-      await loadLibrary();
-      lastCompletedUploadRefreshKey = completionKey;
-    }
-
-    if (uploadCompletionRefreshKey(previousUpload) && !completionKey) {
-      lastCompletedUploadRefreshKey = "";
-    }
 
     if (metadataRefreshIsActive(previousMetadata) && !metadataRefreshIsActive(nextMetadata)) {
       state.preferServerLibrary = true;
@@ -9158,7 +8195,7 @@ async function pollDeviceStatus() {
   } finally {
     deviceStatusPollInFlight = false;
     scheduleDeviceStatusPolling(
-      uploadIsActive(uploadStatusSnapshot()) || metadataRefreshIsActive(metadataRefreshSnapshot()) ? 900 : 2500,
+      metadataRefreshIsActive(metadataRefreshSnapshot()) ? 900 : 2500,
     );
   }
 }
@@ -9170,28 +8207,9 @@ function syncDeviceStatusPolling() {
   }
   if (!deviceStatusPollTimer) {
     scheduleDeviceStatusPolling(
-      uploadIsActive(uploadStatusSnapshot()) || metadataRefreshIsActive(metadataRefreshSnapshot()) ? 900 : 2500,
+      metadataRefreshIsActive(metadataRefreshSnapshot()) ? 900 : 2500,
     );
   }
-}
-
-function ensureUploadDestinationsLoaded() {
-  if (state.route.name !== "device" || deviceAccessLocked() || state.uploadDestinations.length || uploadDestinationsRequest) {
-    return;
-  }
-
-  uploadDestinationsRequest = loadUploadDestinations()
-    .then(() => {
-      if (state.route.name === "device" && !state.uploadSelectionLocked && !state.uploadingLocally) {
-        render();
-      }
-    })
-    .catch((error) => {
-      console.warn("Unable to load upload destinations", error);
-    })
-    .finally(() => {
-      uploadDestinationsRequest = null;
-    });
 }
 
 function ensureDeviceConfigLoaded() {
@@ -9250,7 +8268,9 @@ function render() {
   renderPageFilters();
   updatePageActions(show, movie, season, documentBrowser);
   renderHero(show, movie, season, documentBrowser);
-  els.playerSection.hidden = isDeviceAdminRoute() || state.route.name === "display";
+  if ((isDeviceAdminRoute() || state.route.name === "display") && state.playingItem) {
+    closeFullscreenPlayer();
+  }
 
   disconnectCatalogAutoLoadObserver();
   els.content.innerHTML = "";
@@ -9300,7 +8320,6 @@ function render() {
   }
 
   syncDeviceStatusPolling();
-  ensureUploadDestinationsLoaded();
   ensureDeviceConfigLoaded();
 }
 
@@ -9316,19 +8335,6 @@ async function loadStatus() {
   }
   state.preferServerLibrary = Boolean((state.status && state.status.preferServerLibrary) || state.preferServerLibrary);
   return { changed };
-}
-
-async function loadUploadDestinations() {
-  const response = await fetch("/api/upload-destinations", { cache: "no-store" });
-  if (!response.ok) {
-    throw new Error(`Upload destinations returned HTTP ${response.status}`);
-  }
-
-  const payload = await response.json();
-  state.uploadDestinations = Array.isArray(payload.paths) ? payload.paths : [];
-  if (!normalizeUploadDestinationPath(state.uploadDraft.destination)) {
-    state.uploadDraft.destination = defaultUploadDestination();
-  }
 }
 
 async function loadLibraryFromIndex() {
@@ -9381,11 +8387,8 @@ async function loadLibrary() {
   if (state.playingItem) {
     const replacement = allMediaItems().find((item) => item.path === state.playingItem.path) || null;
     state.playingItem = replacement;
-    if (replacement) {
-      renderPlayerDetails(replacement);
-    } else {
+    if (!replacement) {
       resetPlayers();
-      renderPlayerDetails(null);
     }
   }
 
@@ -9449,7 +8452,6 @@ async function refreshAll() {
     applyDeviceConfigDraft(config);
     state.deviceConfigLoaded = true;
   }
-  lastCompletedUploadRefreshKey = uploadCompletionRefreshKey(uploadStatusSnapshot());
   render();
 }
 
@@ -9522,8 +8524,9 @@ els.search.addEventListener("input", (event) => {
 state.playbackProgress = {};
 state.watchedOverrides = {};
 resetPlayers();
-renderPlayerDetails(null);
 attachPlayerDiagnostics();
+els.playerClose.addEventListener("click", closeFullscreenPlayer);
+els.audioClose.addEventListener("click", closeAudioPlayer);
 render();
 prepareRouteDataForLoading();
 refreshAll().catch((error) => {

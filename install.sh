@@ -18,7 +18,6 @@ GITHUB_SLUG="${NOMADSCREEN_GITHUB_SLUG:-xxredxpandaxx/BackpackingMediaServer_piZ
 HTTP_PORT="${NOMADSCREEN_PORT:-80}"
 FILEBROWSER_PORT="${NOMADSCREEN_FILEBROWSER_PORT:-8081}"
 TMP_DIR="${NOMADSCREEN_TMP_DIR:-/var/tmp/backcountry-broadcast-install}"
-UPLOAD_TMP_DIR="${NOMADSCREEN_UPLOAD_TMP_DIR:-/var/tmp/backcountry-broadcast-upload}"
 BOOT_CONFIG_PATH="${NOMADSCREEN_BOOT_CONFIG_PATH:-}"
 WAVESHARE_FBCP_URL="${NOMADSCREEN_WAVESHARE_FBCP_URL:-https://files.waveshare.com/upload/1/18/Waveshare_fbcp.zip}"
 DISPLAY_BOOT_CONFIG_CHANGED=0
@@ -43,7 +42,6 @@ Options:
   --media-root PATH       Media library path (default: ~/media for the install user)
   --port PORT             HTTP port for the service (default: 80)
   --tmp-dir PATH          Temp build dir for venv/pip work (default: /var/tmp/backcountry-broadcast-install)
-  --upload-tmp-dir PATH   Temp dir for large web uploads (default: /var/tmp/backcountry-broadcast-upload)
   -h, --help              Show this help
 
 If no repo is provided, the installer uses:
@@ -125,11 +123,6 @@ parse_args() {
       --tmp-dir)
         [[ $# -ge 2 ]] || die "--tmp-dir requires a value"
         TMP_DIR="$2"
-        shift 2
-        ;;
-      --upload-tmp-dir)
-        [[ $# -ge 2 ]] || die "--upload-tmp-dir requires a value"
-        UPLOAD_TMP_DIR="$2"
         shift 2
         ;;
       -h|--help)
@@ -505,9 +498,6 @@ prepare_tmp_dir() {
   log "Preparing temp build directory at ${TMP_DIR}"
   run_root mkdir -p "${TMP_DIR}"
   run_root chown -R "${INSTALL_USER}:${INSTALL_GROUP}" "${TMP_DIR}"
-  log "Preparing upload temp directory at ${UPLOAD_TMP_DIR}"
-  run_root mkdir -p "${UPLOAD_TMP_DIR}"
-  run_root chown -R "${INSTALL_USER}:${INSTALL_GROUP}" "${UPLOAD_TMP_DIR}"
 }
 
 prepare_filebrowser_storage() {
@@ -555,6 +545,10 @@ install_python_deps() {
     "${INSTALL_DIR}/.venv/bin/pip" install --no-cache-dir --upgrade pip
   run_as_install_user env TMPDIR="${TMP_DIR}" PIP_DISABLE_PIP_VERSION_CHECK=1 \
     "${INSTALL_DIR}/.venv/bin/pip" install --no-cache-dir -r "${INSTALL_DIR}/requirements.txt"
+  if [[ -f "${INSTALL_DIR}/requirements-pi.txt" ]]; then
+    run_as_install_user env TMPDIR="${TMP_DIR}" PIP_DISABLE_PIP_VERSION_CHECK=1 \
+      "${INSTALL_DIR}/.venv/bin/pip" install --no-cache-dir -r "${INSTALL_DIR}/requirements-pi.txt"
+  fi
 }
 
 install_filebrowser_binary() {
@@ -632,15 +626,16 @@ WorkingDirectory=${INSTALL_DIR}
 Environment=PYTHONUNBUFFERED=1
 Environment=NOMADSCREEN_STORAGE_ROOT=${STORAGE_ROOT}
 Environment=NOMADSCREEN_MEDIA_ROOT=${MEDIA_ROOT}
-Environment=NOMADSCREEN_UPLOAD_TMP_DIR=${UPLOAD_TMP_DIR}
 Environment=NOMADSCREEN_PORT=${HTTP_PORT}
 Environment=NOMADSCREEN_FILEBROWSER_PORT=${FILEBROWSER_PORT}
-Environment=TMPDIR=${UPLOAD_TMP_DIR}
 ExecStart=${INSTALL_DIR}/.venv/bin/python ${INSTALL_DIR}/src/main.py
 Restart=on-failure
 RestartSec=5
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=${STORAGE_ROOT} ${MEDIA_ROOT}
 
 [Install]
 WantedBy=multi-user.target
@@ -713,6 +708,9 @@ ExecStart=/usr/local/bin/filebrowser --address 0.0.0.0 --port ${FILEBROWSER_PORT
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=${state_dir} ${MEDIA_ROOT}
 
 [Install]
 WantedBy=multi-user.target
@@ -816,7 +814,6 @@ print_success() {
   log "App directory: ${INSTALL_DIR}"
   log "Storage root: ${STORAGE_ROOT}"
   log "Media library: ${MEDIA_ROOT}"
-  log "Upload temp dir: ${UPLOAD_TMP_DIR}"
   log "Network service: ${NETWORK_SERVICE_NAME}.service"
   log "Service name: ${SERVICE_NAME}.service"
   log "Screen service: ${SCREEN_SERVICE_NAME}.service"
