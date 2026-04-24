@@ -621,13 +621,44 @@ def set_backcountry_wifi_enabled(settings: dict[str, object], enabled: bool) -> 
 
 
 def perform_power_action(action: str) -> None:
-    if action == "reboot":
-        subprocess.Popen(["systemctl", "reboot"], cwd=str(APP_ROOT))
-        return
-    if action == "poweroff":
-        subprocess.Popen(["systemctl", "poweroff"], cwd=str(APP_ROOT))
-        return
-    raise ValueError(f"Unsupported power action: {action}")
+    if action not in {"reboot", "poweroff"}:
+        raise ValueError(f"Unsupported power action: {action}")
+
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
+        raise RuntimeError(
+            "Power controls need the screen service to run as root. Rerun update.sh and restart the screen service."
+        )
+
+    command_sets = {
+        "reboot": [
+            ["systemctl", "start", "reboot.target"],
+            ["systemctl", "reboot"],
+            ["shutdown", "-r", "now"],
+            ["reboot"],
+        ],
+        "poweroff": [
+            ["systemctl", "start", "poweroff.target"],
+            ["systemctl", "poweroff"],
+            ["shutdown", "-h", "now"],
+            ["poweroff"],
+        ],
+    }
+
+    failures: list[str] = []
+    for command in command_sets[action]:
+        try:
+            result = run_command(command, timeout_seconds=8.0)
+        except (OSError, subprocess.SubprocessError) as error:
+            failures.append(f"{' '.join(command)}: {error}")
+            continue
+        if result.returncode == 0:
+            return
+        detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+        failures.append(f"{' '.join(command)}: {detail}")
+
+    raise RuntimeError(
+        f"Could not {action} the Raspberry Pi. " + " | ".join(failures[:3])
+    )
 
 
 def next_display_brightness(current_value: object) -> int:

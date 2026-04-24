@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Backcountry Broadcast logo</title>
+  <desc id="desc">A mountain beacon icon in warm brass, ivory, and moss on a dark forest tile.</desc>
+
+  <rect x="22" y="22" width="212" height="212" rx="54" fill="#1d241c"/>
+  <rect x="25" y="25" width="206" height="206" rx="51" fill="none" stroke="#c6a56b" stroke-width="3"/>
+  <path d="M44 54c28-24 132-28 168 6 9 8 16 17 22 28V46c0-13-11-24-24-24H46C33 22 22 33 22 46v46c4-15 11-28 22-38Z" fill="#f3eddf" opacity="0.05"/>
+
+  <path d="M48 194h160" fill="none" stroke="#f3eddf" stroke-opacity="0.18" stroke-linecap="round" stroke-width="18"/>
+  <path d="M66 184 102 140l22 24 24-34 42 54Z" fill="#536449"/>
+  <path d="M74 190 128 102l54 88Z" fill="#7d8f66"/>
+  <path d="M114 124 128 102l14 22-14-5Z" fill="#f3eddf"/>
+
+  <path d="M86 96Q128 50 170 96L160 102Q128 68 96 102Z" fill="#c6a56b"/>
+  <path d="M100 82Q128 58 156 82L149 88Q128 70 107 88Z" fill="#d8bb84"/>
+  <path d="M128 104v46" fill="none" stroke="#f3eddf" stroke-linecap="round" stroke-width="8"/>
+  <circle cx="128" cy="95" r="9" fill="#f3eddf"/>
+
+  <path d="M92 208h72" fill="none" stroke="#c6a56b" stroke-linecap="round" stroke-width="5"/>
+</svg>
