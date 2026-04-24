@@ -3064,9 +3064,16 @@ function showAudioPlayer(item) {
 }
 
 function requestPlayerFullscreen(item) {
-  const target = item && item.type === "video" && els.video.requestFullscreen
-    ? els.video
-    : els.playerSection;
+  if (item && item.type === "video" && typeof els.video.webkitEnterFullscreen === "function") {
+    try {
+      els.video.webkitEnterFullscreen();
+      return;
+    } catch (_error) {
+      // Fall through to the standards fullscreen API when available.
+    }
+  }
+
+  const target = item && item.type === "video" && els.video.requestFullscreen ? els.video : els.playerSection;
   if (target && target.requestFullscreen) {
     target.requestFullscreen().catch(() => {});
   }
@@ -3203,8 +3210,17 @@ async function playItem(item, options = {}) {
     els.video.src = item.streamUrl;
     els.video.load();
     els.video.style.display = "block";
-    requestPlayerFullscreen(item);
-    els.video.play().catch(() => {});
+    updateMediaSession(item);
+    const playPromise = els.video.play();
+    if (playPromise && typeof playPromise.then === "function") {
+      playPromise
+        .then(() => requestPlayerFullscreen(item))
+        .catch(() => {
+          els.playerCaption.textContent = `${item.title} | This browser rejected the video stream. MP4/H.264/AAC is the safest phone format.`;
+        });
+    } else {
+      requestPlayerFullscreen(item);
+    }
   } else if (item.type === "audio") {
     showAudioPlayer(item);
     els.audio.src = item.streamUrl;

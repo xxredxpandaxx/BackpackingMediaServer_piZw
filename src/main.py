@@ -565,6 +565,14 @@ def merge_string(current_value: str, new_value: str) -> str:
 
 def guess_mime_type(path: str) -> str:
     lowered = lowercase_copy(path)
+    if lowered.endswith((".mp4", ".m4v")):
+        return "video/mp4"
+    if lowered.endswith(".mov"):
+        return "video/quicktime"
+    if lowered.endswith(".webm"):
+        return "video/webm"
+    if lowered.endswith(".mkv"):
+        return "video/x-matroska"
     if lowered.endswith(".m4b"):
         return "audio/mp4"
     if lowered.endswith(".md"):

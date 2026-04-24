@@ -32,3 +32,13 @@ def test_runtime_config_merges_nested_values(tmp_path, monkeypatch) -> None:
         "display": {"enabled": True, "model": "waveshare-1.69"},
         "deviceName": "Base",
     }
+
+
+def test_guess_mime_type_prefers_phone_friendly_video_types(tmp_path, monkeypatch) -> None:
+    main = load_main(tmp_path, monkeypatch)
+
+    assert main.guess_mime_type("/media/movies/demo.mp4") == "video/mp4"
+    assert main.guess_mime_type("/media/movies/demo.m4v") == "video/mp4"
+    assert main.guess_mime_type("/media/movies/demo.mov") == "video/quicktime"
+    assert main.guess_mime_type("/media/movies/demo.webm") == "video/webm"
+    assert main.guess_mime_type("/media/movies/demo.mkv") == "video/x-matroska"
