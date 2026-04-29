@@ -6239,6 +6239,7 @@ function renderHero(show, movie, season, documentBrowser) {
 
   if (
     state.route.name === "home" ||
+    state.route.name === "movies" ||
     state.route.name === "movie" ||
     state.route.name === "audiobook" ||
     state.route.name === "show" ||
@@ -6545,7 +6546,7 @@ function renderHomePage(container) {
     emptyMessage: "Start a movie, episode, or audiobook on this device and it will show up here.",
   });
 
-  appendGridSection(container, {
+  appendCarouselSection(container, {
     eyebrow: "Movies",
     title: "Featured Movies",
     subtitle: "Posters, summaries, years, and ratings appear here when metadata is available.",
@@ -6556,15 +6557,23 @@ function renderHomePage(container) {
         includeYearInTitle: true,
         cardClassName: "movie-page-card",
       }),
+    itemClassName: "episode-carousel-card",
     emptyMessage: "Add files under /media/movies to fill this row.",
   });
 
-  appendGridSection(container, {
+  appendCarouselSection(container, {
     eyebrow: "TV Shows",
-    title: "Series Collection",
+    title: "Featured TV Shows",
     subtitle: "",
     items: sections.tv.slice(0, 8),
-    renderItem: (show) => createShowCard(show, { compact: true }),
+    renderItem: (show) =>
+      createShowCard(show, {
+        compact: true,
+        includeYearInTitle: true,
+        posterLayout: true,
+        cardClassName: "movie-page-card",
+      }),
+    itemClassName: "episode-carousel-card",
     emptyMessage: "Add shows under /media/tv/Show Name/Season 1.",
   });
 

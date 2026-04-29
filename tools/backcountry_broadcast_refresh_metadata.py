@@ -8,6 +8,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from audiobook_metadata import extract_audiobook_embedded_metadata
 
 
 GENERATOR_NAME = "Backcountry Broadcast Python Metadata Builder"
+MATCHER_VERSION = "title-matcher-v2"
 TMDB_API_ROOT = "https://api.themoviedb.org/3"
 TMDB_IMAGE_ROOT = "https://image.tmdb.org/t/p"
 DEFAULT_STORAGE_ROOT = SCRIPT_ROOT / ".backcountry-broadcast-runtime"
@@ -233,18 +235,57 @@ def strip_year_from_lookup_title(title: str, year: int | None) -> str:
     return cleaned
 
 
-def tmdb_search_queries(title: str, year: int | None) -> list[str]:
-    queries: list[str] = []
+ROMAN_NUMERAL_PATTERN = r"(?:i|ii|iii|iv|v|vi|vii|viii|ix|x|xi|xii|xiii|xiv|xv|xvi|xvii|xviii|xix|xx)"
+
+
+def normalize_match_text(value: object) -> str:
+    output: list[str] = []
+    for character in unicodedata.normalize("NFKD", str(value or "")):
+        if unicodedata.category(character) == "Mn":
+            continue
+        if character.isalnum():
+            output.append(character.lower())
+        else:
+            output.append(" ")
+    return re.sub(r"\s+", " ", "".join(output)).strip()
+
+
+def add_unique_text(values: list[str], seen: set[str], value: object) -> None:
+    normalized = normalize_match_text(value)
+    if normalized and normalized not in seen:
+        values.append(normalized)
+        seen.add(normalized)
+
+
+def expanded_title_queries(title: str, year: int | None) -> list[str]:
+    base = strip_year_from_lookup_title(title, year)
+    candidates: list[str] = []
     seen: set[str] = set()
-    for candidate in (
-        strip_year_from_lookup_title(title, year),
-        str(title or "").strip().lower(),
-    ):
-        normalized = re.sub(r"\s+", " ", str(candidate or "")).strip()
-        if normalized and normalized not in seen:
-            queries.append(normalized)
-            seen.add(normalized)
-    return queries
+
+    add_unique_text(candidates, seen, base)
+
+    without_episode = re.sub(
+        rf"\bepisode\s+{ROMAN_NUMERAL_PATTERN}\b",
+        " ",
+        base,
+        flags=re.IGNORECASE,
+    )
+    without_episode = re.sub(r"\bepisode\s+\d+\b", " ", without_episode, flags=re.IGNORECASE)
+    add_unique_text(candidates, seen, without_episode)
+
+    for separator in (" - ", ":"):
+        if separator in base:
+            pieces = [piece.strip() for piece in base.split(separator) if piece.strip()]
+            for piece in pieces:
+                add_unique_text(candidates, seen, piece)
+            if len(pieces) > 1:
+                add_unique_text(candidates, seen, pieces[-1])
+
+    return candidates
+
+
+def tmdb_search_queries(title: str, year: int | None) -> list[str]:
+    return expanded_title_queries(title, year)
 
 
 def get_runtime_minutes(file_path: Path) -> float:
@@ -341,6 +382,37 @@ def metadata_root_path(media_root: Path) -> Path:
     return media_root / DEFAULT_METADATA_DIRECTORY_NAME
 
 
+def title_values_from_movie_details(details: dict[str, object]) -> list[str]:
+    values: list[str] = []
+    seen: set[str] = set()
+    for key in ("title", "original_title"):
+        add_unique_text(values, seen, details.get(key))
+
+    alternative_titles = details.get("alternative_titles")
+    if isinstance(alternative_titles, dict):
+        title_entries = alternative_titles.get("titles")
+        if isinstance(title_entries, list):
+            for entry in title_entries:
+                if isinstance(entry, dict):
+                    add_unique_text(values, seen, entry.get("title"))
+    return values
+
+
+def title_similarity_score(local_titles: list[str], remote_titles: list[str]) -> float:
+    score = 0.0
+    for local_title in local_titles:
+        for remote_title in remote_titles:
+            if not local_title or not remote_title:
+                continue
+            score = max(
+                score,
+                fuzz.token_sort_ratio(local_title, remote_title) / 100.0,
+                fuzz.token_set_ratio(local_title, remote_title) / 100.0,
+                fuzz.partial_ratio(local_title, remote_title) / 100.0,
+            )
+    return score
+
+
 class TmdbClient:
     def __init__(self, config: dict[str, object]) -> None:
         self.api_key = str(config.get("tmdbApiKey") or "").strip()
@@ -382,6 +454,7 @@ class TmdbClient:
                 results = payload.get("results")
                 if not isinstance(results, list):
                     continue
+                plan_count = 0
                 for entry in results:
                     if not isinstance(entry, dict):
                         continue
@@ -391,9 +464,12 @@ class TmdbClient:
                     if movie_id > 0:
                         seen_ids.add(movie_id)
                     collected.append(entry)
-                if collected:
+                    plan_count += 1
+                    if plan_count >= 5:
+                        break
+                if len(collected) >= 30:
                     break
-            if collected:
+            if len(collected) >= 30:
                 break
         return collected
 
@@ -423,7 +499,7 @@ class TmdbClient:
     def movie_details(self, movie_id: int) -> dict[str, object]:
         return self.request(
             f"movie/{movie_id}",
-            params={"append_to_response": "credits,videos,keywords,release_dates"},
+            params={"append_to_response": "credits,videos,keywords,release_dates,alternative_titles"},
         )
 
     def tv_details(self, show_id: int) -> dict[str, object]:
@@ -672,18 +748,11 @@ def compute_movie_score(
     local_runtime: float,
     details: dict[str, object],
 ) -> float:
-    tmdb_title = str(details.get("title") or "")
-    tmdb_original_title = str(details.get("original_title") or "")
     local_title_candidates = tmdb_search_queries(local_title, local_year)
     if not local_title_candidates:
-        local_title_candidates = [str(local_title or "").strip().lower()]
-    title_similarity = 0.0
-    for local_candidate in local_title_candidates:
-        title_similarity = max(
-            title_similarity,
-            fuzz.token_sort_ratio(local_candidate, tmdb_title.lower()) / 100.0 if tmdb_title else 0.0,
-            fuzz.token_sort_ratio(local_candidate, tmdb_original_title.lower()) / 100.0 if tmdb_original_title else 0.0,
-        )
+        local_title_candidates = [normalize_match_text(local_title)]
+    title_similarity = title_similarity_score(local_title_candidates, title_values_from_movie_details(details))
+
     score = 0.0
     if title_similarity >= 0.9:
         score += 0.5
@@ -715,18 +784,13 @@ def compute_tv_score(
     local_year: int | None,
     details: dict[str, object],
 ) -> float:
-    tmdb_name = str(details.get("name") or "")
-    tmdb_original_name = str(details.get("original_name") or "")
     local_title_candidates = tmdb_search_queries(local_title, local_year)
     if not local_title_candidates:
-        local_title_candidates = [str(local_title or "").strip().lower()]
-    title_similarity = 0.0
-    for local_candidate in local_title_candidates:
-        title_similarity = max(
-            title_similarity,
-            fuzz.token_sort_ratio(local_candidate, tmdb_name.lower()) / 100.0 if tmdb_name else 0.0,
-            fuzz.token_sort_ratio(local_candidate, tmdb_original_name.lower()) / 100.0 if tmdb_original_name else 0.0,
-        )
+        local_title_candidates = [normalize_match_text(local_title)]
+    title_similarity = title_similarity_score(
+        local_title_candidates,
+        [normalize_match_text(details.get("name")), normalize_match_text(details.get("original_name"))],
+    )
     score = 0.0
     if title_similarity >= 0.9:
         score += 0.7
@@ -759,7 +823,7 @@ def enrich_movie_item(
     if local_runtime > 0:
         item["runtimeMinutes"] = local_runtime
 
-    candidates = client.search_movie(local_title, local_year)[:8]
+    candidates = client.search_movie(local_title, local_year)[:30]
     best_details: dict[str, object] | None = None
     best_score = 0.0
     close_candidates: list[dict[str, object]] = []
@@ -788,6 +852,7 @@ def enrich_movie_item(
             {
                 "path": item["path"],
                 "section": item["section"],
+                "matcherVersion": MATCHER_VERSION,
                 "query": local_title,
                 "searchQueries": tmdb_search_queries(local_title, local_year),
                 "year": local_year,
@@ -910,6 +975,7 @@ def enrich_show_record(
             {
                 "path": f"/media/tv/{slugify(str(show.get('title') or 'show'))}",
                 "section": "tv",
+                "matcherVersion": MATCHER_VERSION,
                 "query": local_title,
                 "searchQueries": tmdb_search_queries(local_title, local_year),
                 "year": local_year,
@@ -1308,6 +1374,7 @@ def build_library(storage_root: Path, media_root: Path, verbose: bool) -> dict[s
         "version": 1,
         "generatedAt": isoformat_now(),
         "generator": GENERATOR_NAME,
+        "matcherVersion": MATCHER_VERSION,
         "shows": shows,
         "items": items,
     }
