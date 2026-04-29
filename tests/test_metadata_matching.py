@@ -77,3 +77,66 @@ def test_tmdb_search_queries_include_episode_subtitles() -> None:
         "star wars episode iv",
         "a new hope",
     ]
+
+
+def test_infer_movie_sequence_from_episode_roman_numerals() -> None:
+    metadata = load_metadata_builder()
+
+    assert metadata.infer_movie_sequence_number("star wars episode iv - a new hope") == 4
+    assert metadata.infer_movie_sequence_number("Star Wars Episode VIII - The Last Jedi") == 8
+
+
+def test_collection_sort_title_uses_sequence_before_release_date() -> None:
+    metadata = load_metadata_builder()
+    items = [
+        {
+            "section": "movies",
+            "title": "Star Wars",
+            "year": "1977",
+            "releaseDate": "1977-05-25",
+            "movieCollectionId": 10,
+            "movieCollectionName": "Star Wars Collection",
+            "movieCollectionSequence": 4,
+        },
+        {
+            "section": "movies",
+            "title": "Star Wars: Episode I - The Phantom Menace",
+            "year": "1999",
+            "releaseDate": "1999-05-19",
+            "movieCollectionId": 10,
+            "movieCollectionName": "Star Wars Collection",
+            "movieCollectionSequence": 1,
+        },
+    ]
+
+    metadata.apply_movie_collection_sort_titles(items)
+
+    assert sorted(items, key=lambda item: item["sortTitle"])[0]["title"] == "Star Wars: Episode I - The Phantom Menace"
+
+
+def test_collection_sort_title_falls_back_to_release_date() -> None:
+    metadata = load_metadata_builder()
+    items = [
+        {
+            "section": "movies",
+            "title": "Second Movie",
+            "year": "2004",
+            "releaseDate": "2004-01-01",
+            "movieCollectionId": 20,
+            "movieCollectionName": "Example Collection",
+            "movieCollectionSequence": 0,
+        },
+        {
+            "section": "movies",
+            "title": "First Movie",
+            "year": "2001",
+            "releaseDate": "2001-01-01",
+            "movieCollectionId": 20,
+            "movieCollectionName": "Example Collection",
+            "movieCollectionSequence": 0,
+        },
+    ]
+
+    metadata.apply_movie_collection_sort_titles(items)
+
+    assert sorted(items, key=lambda item: item["sortTitle"])[0]["title"] == "First Movie"

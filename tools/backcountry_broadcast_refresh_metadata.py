@@ -236,6 +236,28 @@ def strip_year_from_lookup_title(title: str, year: int | None) -> str:
 
 
 ROMAN_NUMERAL_PATTERN = r"(?:i|ii|iii|iv|v|vi|vii|viii|ix|x|xi|xii|xiii|xiv|xv|xvi|xvii|xviii|xix|xx)"
+ROMAN_NUMERALS = {
+    "i": 1,
+    "ii": 2,
+    "iii": 3,
+    "iv": 4,
+    "v": 5,
+    "vi": 6,
+    "vii": 7,
+    "viii": 8,
+    "ix": 9,
+    "x": 10,
+    "xi": 11,
+    "xii": 12,
+    "xiii": 13,
+    "xiv": 14,
+    "xv": 15,
+    "xvi": 16,
+    "xvii": 17,
+    "xviii": 18,
+    "xix": 19,
+    "xx": 20,
+}
 
 
 def normalize_match_text(value: object) -> str:
@@ -286,6 +308,71 @@ def expanded_title_queries(title: str, year: int | None) -> list[str]:
 
 def tmdb_search_queries(title: str, year: int | None) -> list[str]:
     return expanded_title_queries(title, year)
+
+
+def collection_sort_label(value: object) -> str:
+    normalized = normalize_match_text(value)
+    normalized = re.sub(r"\b(collection|saga|series|trilogy|quadrilogy|anthology)\b", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized or normalize_match_text(value)
+
+
+def sequence_number_from_token(value: str) -> int:
+    normalized = normalize_match_text(value)
+    if normalized.isdigit():
+        return int(normalized)
+    return ROMAN_NUMERALS.get(normalized, 0)
+
+
+def infer_movie_sequence_number(*values: object) -> int:
+    patterns = [
+        rf"\bepisode\s+(\d+|{ROMAN_NUMERAL_PATTERN})\b",
+        rf"\b(?:part|chapter|volume|vol)\s+(\d+|{ROMAN_NUMERAL_PATTERN})\b",
+        rf"\b(\d+|{ROMAN_NUMERAL_PATTERN})\s*(?:st|nd|rd|th)?\s+(?:part|chapter|volume|vol)\b",
+    ]
+    for value in values:
+        text = normalize_match_text(value)
+        if not text:
+            continue
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                number = sequence_number_from_token(match.group(1))
+                if number > 0:
+                    return number
+    return 0
+
+
+def release_sort_value(value: object) -> str:
+    normalized = str(value or "").strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", normalized):
+        return normalized
+    year_match = re.search(r"\b(19\d{2}|20\d{2})\b", normalized)
+    return f"{year_match.group(1)}-99-99" if year_match else "9999-99-99"
+
+
+def apply_movie_collection_sort_titles(items: list[dict[str, object]]) -> None:
+    for item in items:
+        if str(item.get("section") or "") != "movies":
+            continue
+        collection_name = str(item.get("movieCollectionName") or "").strip()
+        collection_id = int(item.get("movieCollectionId") or 0)
+        if not collection_name or collection_id <= 0:
+            continue
+        sequence_number = int(item.get("movieCollectionSequence") or 0)
+        if sequence_number > 0:
+            order_key = f"sequence-{sequence_number:04d}"
+        else:
+            order_key = f"release-{release_sort_value(item.get('releaseDate') or item.get('year'))}"
+        item["sortTitle"] = " ".join(
+            value
+            for value in (
+                collection_sort_label(collection_name),
+                order_key,
+                normalize_match_text(item.get("title")),
+            )
+            if value
+        )
 
 
 def get_runtime_minutes(file_path: Path) -> float:
@@ -863,6 +950,7 @@ def enrich_movie_item(
         return
 
     release_date = str(best_details.get("release_date") or "")
+    collection = best_details.get("belongs_to_collection")
     genres_text = comma_join(
         names_from_entries(best_details.get("genres"))
     )
@@ -895,6 +983,18 @@ def enrich_movie_item(
         item["runtimeMinutes"] = round(float(best_details.get("runtime") or 0.0), 1)
     item["matchConfidence"] = best_score
     item["tmdbId"] = int(best_details.get("id") or 0)
+    if isinstance(collection, dict):
+        collection_id = int(collection.get("id") or 0)
+        collection_name = str(collection.get("name") or "").strip()
+        if collection_id > 0 and collection_name:
+            item["movieCollectionId"] = collection_id
+            item["movieCollectionName"] = collection_name
+            item["movieCollectionSequence"] = infer_movie_sequence_number(
+                local_title,
+                item.get("title"),
+                original_title,
+                file_path.stem,
+            )
     item["imdbId"] = imdb_id
     item["originalTitle"] = original_title
     item["status"] = status
@@ -1368,6 +1468,7 @@ def build_library(storage_root: Path, media_root: Path, verbose: bool) -> dict[s
             except requests.RequestException as error:
                 log(f"TMDb lookup failed for show {show.get('title')}: {error}")
         apply_show_metadata_to_items(items, shows)
+    apply_movie_collection_sort_titles(items)
     metadata_db_path = write_movie_metadata_database(metadata_root, items)
     write_show_metadata_database(metadata_root, shows)
     library = {
